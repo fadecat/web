@@ -14,6 +14,7 @@ from backend.tasks.valuation_tasks import run_valuation_daily
 from backend.tasks.style_rotation_tasks import run_style_rotation_daily
 from backend.tasks.cb_index_tasks import run_cb_index_daily
 from backend.tasks.cb_list_tasks import run_cb_list_daily
+from backend.tasks.cb_redeem_tasks import run_cb_redeem_daily
 
 scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
@@ -78,10 +79,23 @@ def start_scheduler() -> None:
         name="可转债全量快照抓取",
         replace_existing=True,
     )
+    # 可转债强赎列表日频任务: 周一至周五 15:50(全量快照之后5分钟)
+    scheduler.add_job(
+        run_cb_redeem_daily,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour=15,
+            minute=50,
+            timezone="Asia/Shanghai",
+        ),
+        id="cb_redeem_daily",
+        name="可转债强赎列表抓取",
+        replace_existing=True,
+    )
     scheduler.start()
     logger.info(
         "scheduler started: valuation@15:30, style_rotation@15:35, "
-        "cb_index@15:40, cb_list@15:45"
+        "cb_index@15:40, cb_list@15:45, cb_redeem@15:50"
     )
 
 

@@ -273,3 +273,55 @@ class CbDailySnapshot(Base):
         Index("ix_cb_snapshot_date", "trade_date"),
         Index("ix_cb_snapshot_bond", "bond_id"),
     )
+
+
+class CbRedeemDaily(Base):
+    """可转债强赎列表日频快照(每只强赎相关转债每天一行)。
+
+    数据源: 集思录 cbnew/redeem_list 接口。
+    用途: redeem_safe_days(强赎临近触发天数)判断 + 强赎状态精确展示。
+    唯一约束 (bond_id, trade_date) 保证幂等。
+    """
+
+    __tablename__ = "cb_redeem_daily"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False, comment="交易日")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, comment="落库时间")
+
+    # 转债标识
+    bond_id: Mapped[str] = mapped_column(String(16), nullable=False, comment="转债代码")
+    bond_nm: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="转债名称")
+    stock_id: Mapped[str | None] = mapped_column(String(16), nullable=True, comment="正股代码")
+    stock_nm: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="正股名称")
+
+    # 强赎状态
+    redeem_icon: Mapped[str | None] = mapped_column(String(8), nullable=True, comment="强赎标记(R/O/B/G)")
+    redeem_flag: Mapped[str | None] = mapped_column(String(8), nullable=True, comment="强赎公告标志")
+    redeem_remain_days: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="临近强赎触发剩余天数")
+    redeem_real_days: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="已满足天数")
+    redeem_count_days: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="需满足天数")
+    redeem_total_days: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="统计总天数")
+
+    # 强赎价格
+    redeem_price: Mapped[float | None] = mapped_column(Float, nullable=True, comment="赎回价")
+    redeem_price_ratio: Mapped[str | None] = mapped_column(String(16), nullable=True, comment="赎回价比例")
+    force_redeem_price: Mapped[float | None] = mapped_column(Float, nullable=True, comment="强赎触发价")
+
+    # 日期
+    redeem_dt: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="赎回日")
+    recount_dt: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="重新计数日")
+    delist_dt: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="退市日")
+
+    # 说明文字
+    force_redeem: Mapped[str | None] = mapped_column(String, nullable=True, comment="强赎公告文字")
+
+    # 原始 JSON(存全部字段)
+    raw_json: Mapped[str | None] = mapped_column(String, nullable=True, comment="原始 cell JSON")
+
+    __table_args__ = (
+        UniqueConstraint("bond_id", "trade_date", name="uq_cb_redeem_bond_date"),
+        Index("ix_cb_redeem_date", "trade_date"),
+        Index("ix_cb_redeem_bond", "bond_id"),
+    )

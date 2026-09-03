@@ -58,6 +58,31 @@ def _load_rows(db: Session) -> list[CbDailySnapshot]:
     ).all()
 
 
+def _load_redeem_map(db: Session) -> dict[str, dict[str, Any]]:
+    """加载最新交易日的强赎列表快照, 返回 {bond_id: cell dict}。
+
+    若 redeem 快照不存在, 返回空 dict(不影响筛选, 仅 redeem_safe_days 不生效)。
+    """
+    from backend.models.valuation import CbRedeemDaily
+
+    latest = db.query(func.max(CbRedeemDaily.trade_date)).scalar()
+    if not latest:
+        return {}
+    rows = db.query(CbRedeemDaily).filter(
+        CbRedeemDaily.trade_date == latest
+    ).all()
+    result: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        result[r.bond_id] = {
+            "redeem_icon": r.redeem_icon,
+            "redeem_remain_days": r.redeem_remain_days,
+            "redeem_real_days": r.redeem_real_days,
+            "redeem_count_days": r.redeem_count_days,
+            "redeem_total_days": r.redeem_total_days,
+        }
+    return result
+
+
 @router.post("/cb-list/screen")
 def screen(body: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any]:
     """按传入模板配置筛选打分。
@@ -68,7 +93,8 @@ def screen(body: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any
     if not rows:
         return {"total_all": 0, "total_filtered": 0, "top_n": 0, "keep_n": 0, "rows": []}
 
-    return screen_bonds(rows, body)
+    redeem_map = _load_redeem_map(db)
+    return screen_bonds(rows, body, redeem_map=redeem_map)
 
 
 @router.get("/cb-list/screen/active")
@@ -82,7 +108,8 @@ def screen_active(db: Session = Depends(get_db)) -> dict[str, Any]:
     if not rows:
         return {"total_all": 0, "total_filtered": 0, "top_n": 0, "keep_n": 0, "rows": []}
 
-    result = screen_bonds(rows, tmpl)
+    redeem_map = _load_redeem_map(db)
+    result = screen_bonds(rows, tmpl, redeem_map=redeem_map)
     result["template_id"] = tmpl.get("id")
     result["template_name"] = tmpl.get("name")
     return result

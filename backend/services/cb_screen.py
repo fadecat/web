@@ -212,11 +212,12 @@ def filter_cb(
     redeem_safe_days: int | None = None,
     excluded_bond_codes: list | None = None,
     min_listing_days: int | None = None,
+    redeem_remain_days_map: dict[str, int] | None = None,
 ) -> list[dict]:
-    """组合过滤: 强赎/ST + 数值阈值 + 排除代码 + 上市天数。
+    """组合过滤: 强赎/ST + 数值阈值 + 排除代码 + 上市天数 + 强赎临近触发。
 
-    注意: redeem_safe_days 依赖 redeem_list 的 redeem_remain_days 字段,
-    新仓库未抓取 redeem_list,故此项暂不生效(保留接口兼容)。
+    redeem_remain_days_map: {bond_id: redeem_remain_days}, 来自 redeem_list 快照,
+    用于 redeem_safe_days 判断(临近强赎触发天数)。
     """
     safe_days = int(redeem_safe_days) if redeem_safe_days is not None else -1
     try:
@@ -225,6 +226,7 @@ def filter_cb(
         min_days = 0
 
     excluded_set = build_bond_code_match_set(excluded_bond_codes)
+    remain_days_map = redeem_remain_days_map or {}
 
     result: list[dict] = []
     for row in rows:
@@ -238,8 +240,9 @@ def filter_cb(
                 reasons.append("命中全局排除代码")
 
         if safe_days >= 0:
-            # 新仓库无 redeem_list,强赎临近触发天数判断留待后续补齐
-            pass
+            remain = remain_days_map.get(c.get("bond_id"))
+            if remain is not None and 0 <= remain <= safe_days:
+                reasons.append(f"临近强赎触发(还需{remain}天)")
 
         if min_days > 0:
             listed_days = _get_listed_days(c.get("list_dt"))
@@ -262,16 +265,23 @@ def filter_cb(
 def screen_bonds(
     rows: list[Any],
     template: dict[str, Any],
+    redeem_map: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """对 DB 行列表执行完整筛选打分,返回可序列化结果。
 
     参数:
         rows: CbDailySnapshot ORM 对象列表
         template: 策略模板配置(dict)
+        redeem_map: {bond_id: redeem_cell}, 来自 CbRedeemDaily 快照, 可选
 
     返回:
         {total_all, total_filtered, top_n, keep_n, rows: [...]}
     """
+    redeem_map = redeem_map or {}
+    remain_days_map = {
+        bid: c.get("redeem_remain_days") for bid, c in redeem_map.items()
+    }
+
     # 1. DB 行 → cell dict(兼容 v2 结构)
     cell_rows = [{"cell": _row_to_cell(r)} for r in rows]
     total_all = len(cell_rows)
@@ -284,6 +294,7 @@ def screen_bonds(
         redeem_safe_days=template.get("redeem_safe_days"),
         excluded_bond_codes=template.get("excluded_bond_codes"),
         min_listing_days=template.get("min_listing_days"),
+        redeem_remain_days_map=remain_days_map,
     )
 
     # 3. 打分排序
@@ -315,7 +326,7 @@ def screen_bonds(
             "pb": _safe_float(c.get("pb")),
             "ytm_rt": _safe_float(c.get("ytm_rt")),
             "rating": c.get("rating_cd", ""),
-            "redeem": _redeem_status_text(c),
+            "redeem": format_redeem_status(c, redeem_map.get(c.get("bond_id"))),
             "total_score": row.get("total_score", 0.0),
         })
 
@@ -328,9 +339,30 @@ def screen_bonds(
     }
 
 
-def _redeem_status_text(cell: dict[str, Any]) -> str:
-    """从 icons 提取强赎状态文本。"""
-    icons = cell.get("icons") or {}
+def format_redeem_status(bond_cell: dict[str, Any], redeem_cell: dict[str, Any] | None) -> str:
+    """格式化强赎状态(对齐 v2)。
+
+    优先用 redeem_cell 的精确计数, fallback 到 bond_cell 的 icons 标记。
+    """
+    if redeem_cell:
+        icon = redeem_cell.get("redeem_icon")
+        real = redeem_cell.get("redeem_real_days", "")
+        need = redeem_cell.get("redeem_count_days", "")
+        total = redeem_cell.get("redeem_total_days", "")
+        count_str = f"{real}/{need} | {total}" if (real != "" and need != "") else ""
+
+        if icon == "R":
+            return "已公告强赎"
+        elif icon == "O":
+            return f"公告要强赎 {count_str}".strip()
+        elif icon == "G":
+            return "公告不强赎"
+        elif icon == "B":
+            return f"已满足强赎条件 {count_str}".strip()
+        elif count_str:
+            return count_str
+
+    icons = bond_cell.get("icons") or {}
     for icon in ("R", "O", "G", "B"):
         if icon in icons:
             return _REDEEM_LABELS.get(icon, icon)
