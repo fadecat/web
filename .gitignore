@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 环境变量(含敏感配置)
+.env
+.env.local
+
+# 数据与运行产物
+data/*.db
+data/*.sqlite3
+data/*.log
+logs/
+*.log
+
+# 会话状态(含集思录登录 cookie, 严禁入库)
+data/state/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统
+.DS_Store
+Thumbs.db

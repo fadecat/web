@@ -1,0 +1,53 @@
+# 市场估值板块标的配置
+# 仅 type: valuation 的标的;type: etf/index 的回撤监控分支已退役。
+# 字段:
+#   name                 标的名称
+#   code                 标的代码(用于归档命名/展示)
+#   index_detail_url     易方达 efunds/etf.com.cn 指数详情接口(PE/PB/股息率)
+#   index_dividend_yield_url  可选,独立股息率 JSON(覆盖 detail 接口)
+#   spread_overlay         可选,true 时 PE 分位图叠股债利差右轴(缺省不画)
+
+targets:
+
+  - name: "中证价值100"
+    code: "512040"
+    type: "valuation"
+    index_detail_url: "https://www.etf.com.cn/api/etf-api-service/index/detail?indexCode=931052"
+
+  - name: "国证价值100"
+    code: "159263"
+    type: "valuation"
+    index_detail_url: "https://www.etf.com.cn/api/etf-api-service/index/detail?indexCode=980081"
+
+  - name: "红利低波动100"
+    code: "930955"
+    type: "valuation"
+    spread_overlay: true
+    index_detail_url: "https://www.etf.com.cn/api/etf-api-service/index/detail?indexCode=930955"
+    index_dividend_yield_url: "https://cdn.efunds.com.cn/etf-net/index_dividend_ratio_930955.json"
+
+  - name: "沪深300"
+    code: "000300"
+    type: "valuation"
+    spread_overlay: true
+    index_detail_url: "https://www.etf.com.cn/api/etf-api-service/index/detail?indexCode=000300"
+
+  - name: "国证2000"
+    code: "399303"
+    type: "valuation"
+    index_detail_url: "https://www.etf.com.cn/api/etf-api-service/index/detail?indexCode=399303"
+
+  - name: "深证成长40指数"
+    code: "399326"
+    type: "valuation"
+    index_detail_url: "https://www.etf.com.cn/api/etf-api-service/index/detail?indexCode=399326"
+
+  - name: "港股通央企红利"
+    code: "931233"
+    type: "valuation"
+    index_detail_url: "https://www.etf.com.cn/api/etf-api-service/index/detail?indexCode=931233"
+
+  - name: "香港证券指数"
+    code: "930709"
+    type: "valuation"
+    index_detail_url: "https://www.etf.com.cn/api/etf-api-service/index/detail?indexCode=930709"
