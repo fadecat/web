@@ -7,9 +7,12 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend.api.routes import cb_index, cb_list, cb_screen, health, style_rotation, valuation
 from backend.config import settings
@@ -61,6 +64,24 @@ def create_app() -> FastAPI:
     )
     async def api_not_found(path: str):
         raise HTTPException(status_code=404, detail="Not Found")
+
+    # ---- 前端静态托管(生产模式) ----
+    # 仅当 frontend/dist 存在时挂载, 本地 vite dev 开发不受影响。
+    dist_dir = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    if dist_dir.is_dir():
+        app.mount(
+            "/assets",
+            StaticFiles(directory=dist_dir / "assets"),
+            name="assets",
+        )
+
+        @app.get("/{path:path}", include_in_schema=False)
+        async def spa_fallback(path: str):
+            """SPA 路由回退: 命中真实文件则返回, 否则回退 index.html。"""
+            candidate = dist_dir / path
+            if path and candidate.is_file():
+                return FileResponse(candidate)
+            return FileResponse(dist_dir / "index.html")
 
     return app
 
