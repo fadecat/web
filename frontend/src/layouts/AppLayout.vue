@@ -17,7 +17,7 @@ const menus = [
     group: '市场分析',
     items: [
       { path: '/valuation', title: '市场估值', icon: '📊', disabled: true },
-      { path: '/style-rotation', title: '风格轮动', icon: '🔄', disabled: true },
+      { path: '/style-rotation', title: '风格轮动', icon: '🔄' },
     ],
   },
 ];

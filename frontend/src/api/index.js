@@ -29,4 +29,8 @@ export const screenBonds = (template) =>
 export const screenBondsActive = () =>
   api.get('/cb-list/screen/active', { timeout: 30000 }).then((r) => r.data);
 
+// 风格轮动主图
+export const getRotationAnalysis = (params = {}) =>
+  api.get('/style-rotation/analysis', { params, timeout: 30000 }).then((r) => r.data);
+
 export default api;

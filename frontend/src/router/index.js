@@ -22,6 +22,12 @@ const routes = [
         component: () => import('../pages/Factors.vue'),
         meta: { title: '选债因子', group: '转债' },
       },
+      {
+        path: 'style-rotation',
+        name: 'style-rotation',
+        component: () => import('../pages/Rotation.vue'),
+        meta: { title: '风格轮动', group: '市场' },
+      },
     ],
   },
 ];
