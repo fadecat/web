@@ -144,11 +144,22 @@ function buildOption() {
         type: 'slider',
         xAxisIndex: [0],
         bottom: 14,
-        height: mobile ? 22 : 18, // 手机上加高滑块便于手指拖动
+        height: mobile ? 30 : 18, // 手机端 30px: 给手指足够的落点面积
         start: zoomRange.start,
         end: zoomRange.end,
         borderColor: 'rgba(148, 163, 184, 0.32)',
         fillerColor: 'rgba(39, 76, 119, 0.12)',
+        // 手机端触控优化:
+        // 1) brushSelect 关掉——默认在滑块空白处拖动是"刷选新区间",
+        //    和拖手柄/拖窗口两种手势挤在 30px 高的窄条里, 手指极易误触
+        // 2) 手柄做成大圆钮+加粗边框, 单边拉宽/收窄区间好按
+        // 剩余手势只有两种明确语义: 拖手柄=调边, 拖中间=平移
+        brushSelect: !mobile,
+        handleSize: mobile ? '60%' : '100%',
+        handleStyle: mobile
+          ? { color: '#274c77', borderColor: '#ffffff', borderWidth: 2, shadowBlur: 4, shadowColor: 'rgba(15, 23, 42, 0.3)' }
+          : {},
+        moveHandleSize: mobile ? 0 : 7, // 隐藏顶部移动条(平移条), 减少一层误触源
       },
       {
         type: 'inside',
