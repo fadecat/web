@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import { ElMessage } from 'element-plus';
 import { screenBondsIntraday } from '../api';
 
@@ -84,7 +84,6 @@ const runScreen = async () => {
   loading.value = true;
   try {
     result.value = await screenBondsIntraday(normalizeFilters(filters.value));
-    page.value = 1; // 新查询重置分页
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '实时数据拉取失败,请重试');
   } finally {
@@ -92,11 +91,9 @@ const runScreen = async () => {
   }
 };
 
-// ── 结果排序 + 分页 ──────────────────────────────────
-// 排序作用于全量结果(不只是当前页), 默认到期收益率降序
-// 分页为前端切片: 后端一次返回全部符合条件的行, 翻页零等待且数据时点一致
-const PAGE_SIZE = 10;
-const page = ref(1);
+// ── 结果排序 ─────────────────────────────────────────
+// 不分页: 筛选后通常仅十几条, 一页全展示, 底部仅一行汇总
+// 排序作用于全量结果, 默认到期收益率降序
 const tableRef = ref(null);
 const sortState = ref({ prop: 'ytm_simple', order: 'descending' }); // 与 default-sort 一致
 
@@ -116,22 +113,28 @@ const sortedRows = computed(() => {
   return rows;
 });
 
-const totalPages = computed(() => {
-  const n = sortedRows.value.length;
-  return Math.max(1, Math.ceil(n / PAGE_SIZE));
-});
-
-// 排序变化时回到第 1 页(跨页序号由 seqStart 保证连续)
-const seqStart = computed(() => (page.value - 1) * PAGE_SIZE + 1);
-const pagedRows = computed(() => {
-  const start = (page.value - 1) * PAGE_SIZE;
-  return sortedRows.value.slice(start, start + PAGE_SIZE);
-});
-
 const onSortChange = ({ prop, order }) => {
   sortState.value = { prop, order };
-  page.value = 1;
 };
+
+// ── 表格视口自适应高度 ────────────────────────────────
+// 不分页后行数不定, max-height 动态取"视口高度-表格顶部偏移", 数据多时表头固定+内部滚动
+const tableMaxHeight = ref(600);
+const updateTableHeight = () => {
+  const el = document.querySelector('.result-card .el-table');
+  const top = el ? el.getBoundingClientRect().top : 400;
+  tableMaxHeight.value = Math.max(320, window.innerHeight - top - 24);
+};
+onMounted(() => {
+  window.addEventListener('resize', updateTableHeight);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', updateTableHeight);
+});
+watch(result, () => {
+  // 查询结果渲染后按实际位置重算一次
+  requestAnimationFrame(updateTableHeight);
+});
 </script>
 
 <template>
@@ -241,26 +244,27 @@ const onSortChange = ({ prop, order }) => {
         </span>
       </div>
       <p class="result-summary">
-        实时 {{ result.total_all }} 只 → 符合条件 <b>{{ result.total_filtered }}</b> 只 · 默认按到期收益率降序（点表头可换序，序号跨页连续）
+        实时 {{ result.total_all }} 只 → 符合条件 <b>{{ result.total_filtered }}</b> 只 · 默认按到期收益率降序（点表头可换序）
       </p>
       <el-table
         ref="tableRef"
-        :data="pagedRows"
+        :data="sortedRows"
         stripe
         size="small"
-        max-height="65vh"
+        :max-height="tableMaxHeight"
         :default-sort="{ prop: 'ytm_simple', order: 'descending' }"
         @sort-change="onSortChange"
       >
-        <el-table-column label="序" width="55" align="center">
-          <template #default="{ $index }">{{ seqStart + $index }}</template>
+        <!-- 序/名称/代码均固定左侧: Element Plus 会把 fixed 列排到最前, 序号想排第一必须同为 fixed -->
+        <el-table-column label="序" width="45" align="center" fixed="left">
+          <template #default="{ $index }">{{ $index + 1 }}</template>
         </el-table-column>
-        <el-table-column prop="code" label="代码" width="90" fixed="left" />
         <el-table-column prop="name" label="名称" width="100" fixed="left" />
+        <el-table-column prop="code" label="代码" width="84" fixed="left" />
         <el-table-column prop="price" label="现价" width="80" align="right">
           <template #default="{ row }">{{ fmtNum(row.price, 2) }}</template>
         </el-table-column>
-        <el-table-column prop="change_rt" label="涨跌幅" width="85" align="right" sortable>
+        <el-table-column prop="change_rt" label="涨跌幅" width="84" align="right" sortable>
           <template #default="{ row }">
             <span
               v-if="row.change_rt != null"
@@ -269,7 +273,10 @@ const onSortChange = ({ prop, order }) => {
             <span v-else>—</span>
           </template>
         </el-table-column>
-        <el-table-column prop="ytm_simple" label="到期收益率" width="100" align="right" sortable>
+        <el-table-column prop="redeem_price" label="到期赎回价" width="95" align="right">
+          <template #default="{ row }">{{ fmtNum(row.redeem_price, 1) }}</template>
+        </el-table-column>
+        <el-table-column prop="ytm_simple" label="到期收益率" width="96" align="right" sortable>
           <template #default="{ row }">
             <span
               v-if="row.ytm_simple != null"
@@ -278,32 +285,18 @@ const onSortChange = ({ prop, order }) => {
             <span v-else>—</span>
           </template>
         </el-table-column>
-        <el-table-column prop="redeem_price" label="到期赎回价" width="95" align="right">
-          <template #default="{ row }">{{ fmtNum(row.redeem_price, 1) }}</template>
-        </el-table-column>
-        <el-table-column prop="premium_rt" label="转股溢价率" width="100" align="right" sortable>
-          <template #default="{ row }">{{ fmtPct(row.premium_rt) }}</template>
-        </el-table-column>
-        <el-table-column prop="year_left" label="剩余年限" width="85" align="right" sortable>
+        <el-table-column prop="year_left" label="剩余年限" width="84" align="right" sortable>
           <template #default="{ row }">{{ fmtNum(row.year_left, 1) }}</template>
         </el-table-column>
-        <el-table-column prop="curr_iss_amt" label="规模(亿)" width="90" align="right" sortable>
+        <el-table-column prop="premium_rt" label="转股溢价率" width="96" align="right" sortable>
+          <template #default="{ row }">{{ fmtPct(row.premium_rt) }}</template>
+        </el-table-column>
+        <el-table-column prop="curr_iss_amt" label="规模(亿)" width="84" align="right" sortable>
           <template #default="{ row }">{{ fmtNum(row.curr_iss_amt, 1) }}</template>
         </el-table-column>
-        <el-table-column prop="rating" label="评级" width="70" align="center" />
-        <el-table-column prop="redeem" label="强赎" width="110" />
+        <el-table-column prop="rating" label="评级" width="60" align="center" />
+        <el-table-column prop="redeem" label="强赎" width="96" />
       </el-table>
-      <div class="pager-bar">
-        <el-button size="small" :disabled="page <= 1" @click="page -= 1">
-          上一页
-        </el-button>
-        <span class="pager-info">
-          第 {{ page }} / {{ totalPages }} 页 · 共 {{ result.total_filtered }} 只
-        </span>
-        <el-button size="small" :disabled="page >= totalPages" @click="page += 1">
-          下一页
-        </el-button>
-      </div>
     </el-card>
     <el-empty
       v-else-if="!loading"
@@ -315,12 +308,15 @@ const onSortChange = ({ prop, order }) => {
 
 <style scoped>
 .bonds-page {
-  max-width: 960px;
+  /* PC 端尽量用满宽度(侧栏 220px), 表格 12 列无需横向拖拽; 手机端回落 100% */
+  max-width: 1400px;
 }
 
 /* ── 集思录风格竖排筛选表单 ── */
 .filter-card {
   margin-bottom: 16px;
+  /* 竖排表单限宽, 避免宽屏下被拉得过长; 结果表格仍用满页面宽度 */
+  max-width: 640px;
 }
 
 .jfilter-row {
@@ -436,19 +432,6 @@ const onSortChange = ({ prop, order }) => {
 
 .result-summary b {
   color: #67c23a;
-}
-
-.pager-bar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  margin-top: 14px;
-}
-
-.pager-info {
-  font-size: 13px;
-  color: #606266;
 }
 
 /* ── 移动端适配 ── */
