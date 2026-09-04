@@ -37,6 +37,56 @@ let chart = null;
 
 const isMobile = () => window.innerWidth < 768;
 
+// ── 移动端原生双滑杆(方案B) ─────────────────────────────
+// 手机端隐藏 ECharts slider(触控目标过小/三种手势挤一条窄条, 详见 buildOption 注释),
+// 改用图表下方两根原生 <input type="range">: 左杆=左边界, 右杆=右边界。
+// 原生控件由浏览器调优过触控: 44px 命中、按下可微调、无跳变, 且两杆职责天然分离。
+// 双杆驱动图表用 dispatchAction(dataZoom), 图表窗口变化同步回滑杆用 'dataZoom' 事件。
+const rangeMin = ref(0);       // 滑杆值域下界(数据点序号)
+const rangeMax = ref(100);     // 滑杆值域上界(数据点总数, 渲染时设置)
+const leftPct = ref(0);        // 左边界(数据点序号)
+const rightPct = ref(100);     // 右边界(数据点序号)
+let syncingFromChart = false;  // 防循环: 图表事件回写滑杆时不再 dispatch
+
+// 滑杆值域是"点序号", dataZoom 的 start/end 是"百分比", 两套量纲在此换算
+const toPercent = (v) => (rangeMax.value ? (v / rangeMax.value) * 100 : 0);
+const toPoint = (pct) => Math.round((pct / 100) * rangeMax.value);
+
+const applyZoomFromSliders = () => {
+  if (!chart) return;
+  let lo = leftPct.value;
+  let hi = rightPct.value;
+  if (hi - lo < 1) {
+    // 最小窗口保护: 至少 1 个数据点跨度, 拉到一起时顶开另一端
+    if (lo === leftPct.value) lo = hi - 1;
+    else hi = lo + 1;
+    leftPct.value = Math.max(rangeMin.value, lo);
+    rightPct.value = Math.min(rangeMax.value, hi);
+  }
+  syncingFromChart = true;
+  chart.dispatchAction({
+    type: 'dataZoom',
+    start: toPercent(leftPct.value),
+    end: toPercent(rightPct.value),
+  });
+  nextTick(() => { syncingFromChart = false; });
+};
+
+const onLeftSliderInput = () => {
+  if (leftPct.value > rightPct.value - 1) leftPct.value = rightPct.value - 1;
+  applyZoomFromSliders();
+};
+
+const onRightSliderInput = () => {
+  if (rightPct.value < leftPct.value + 1) rightPct.value = leftPct.value + 1;
+  applyZoomFromSliders();
+};
+
+const syncSlidersFromChart = (start, end) => {
+  leftPct.value = Math.min(Math.max(toPoint(start), rangeMin.value), rangeMax.value);
+  rightPct.value = Math.min(Math.max(toPoint(end), rangeMin.value), rangeMax.value);
+};
+
 function buildStrengthAreaData(series, predicate) {
   const result = [];
   for (let i = 0; i < series.length; i++) {
@@ -144,22 +194,16 @@ function buildOption() {
         type: 'slider',
         xAxisIndex: [0],
         bottom: 14,
-        height: mobile ? 30 : 18, // 手机端 30px: 给手指足够的落点面积
+        height: 18,
         start: zoomRange.start,
         end: zoomRange.end,
         borderColor: 'rgba(148, 163, 184, 0.32)',
         fillerColor: 'rgba(39, 76, 119, 0.12)',
-        // 手机端触控优化:
-        // 1) brushSelect 关掉——默认在滑块空白处拖动是"刷选新区间",
-        //    和拖手柄/拖窗口两种手势挤在 30px 高的窄条里, 手指极易误触
-        // 2) 手柄做成大圆钮+加粗边框, 单边拉宽/收窄区间好按
-        // 剩余手势只有两种明确语义: 拖手柄=调边, 拖中间=平移
-        brushSelect: !mobile,
-        handleSize: mobile ? '60%' : '100%',
-        handleStyle: mobile
-          ? { color: '#274c77', borderColor: '#ffffff', borderWidth: 2, shadowBlur: 4, shadowColor: 'rgba(15, 23, 42, 0.3)' }
-          : {},
-        moveHandleSize: mobile ? 0 : 7, // 隐藏顶部移动条(平移条), 减少一层误触源
+        // 手机端隐藏 ECharts 自绘滑块——它按桌面鼠标设计: 触控目标小于 44px 人体工学标准、
+        // 手柄/窗口/刷选三种手势挤一条窄条、按下手柄会跳变。
+        // 替代方案: 组件模板里的原生双滑杆(见 rangeMin/leftPct 注释)
+        show: !mobile,
+        brushSelect: false,
       },
       {
         type: 'inside',
@@ -277,8 +321,22 @@ function buildOption() {
 
 const render = () => {
   if (!chartRef.value) return;
-  if (!chart) chart = init(chartRef.value);
+  if (!chart) {
+    chart = init(chartRef.value);
+    // 图表侧窗口变化(双指捏合/inside 缩放/桌面滑块) → 回写原生滑杆
+    chart.on('datazoom', (params) => {
+      if (syncingFromChart) return;
+      const z = chart.getOption().dataZoom[0];
+      if (z && z.start != null && z.end != null) syncSlidersFromChart(z.start, z.end);
+    });
+  }
   chart.setOption(buildOption(), true);
+  // 重渲染后滑杆回归全区间(与 buildDefaultZoomRange 的 start:0/end:100 一致)
+  const n = props.data?.series?.dates?.length || 0;
+  rangeMin.value = 0;
+  rangeMax.value = Math.max(n, 2); // 步进=1 个数据点, 拖一格前进一天
+  leftPct.value = 0;
+  rightPct.value = rangeMax.value; // 右边界初始=数据点总数(点序号语义, 不是百分比!)
 };
 
 // 手机旋转屏幕/窗口尺寸跨越断点时重渲染(布局参数随断点变化)
@@ -311,7 +369,36 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="chartRef" style="width: 100%; height: 420px" class="rotation-chart" />
+  <div>
+    <div ref="chartRef" style="width: 100%; height: 420px" class="rotation-chart" />
+    <!-- 移动端原生双滑杆: 左杆=区间左边界, 右杆=区间右边界, 职责分离无歧义 -->
+    <div v-if="isMobile()" class="range-sliders">
+      <div class="slider-row">
+        <span class="slider-label">起点</span>
+        <input
+          v-model.number="leftPct"
+          type="range"
+          :min="rangeMin"
+          :max="rangeMax"
+          step="1"
+          class="range-input"
+          @input="onLeftSliderInput"
+        />
+      </div>
+      <div class="slider-row">
+        <span class="slider-label">终点</span>
+        <input
+          v-model.number="rightPct"
+          type="range"
+          :min="rangeMin"
+          :max="rangeMax"
+          step="1"
+          class="range-input"
+          @input="onRightSliderInput"
+        />
+      </div>
+    </div>
+  </div>
 </template>
 
 <style scoped>
@@ -326,5 +413,78 @@ onBeforeUnmount(() => {
   .rotation-chart {
     height: 380px;
   }
+}
+
+/* ── 移动端原生双滑杆 ─────────────────────────────── */
+.range-sliders {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .range-sliders {
+    display: block;
+    padding: 10px 14px 2px;
+    border-top: 1px dashed rgba(148, 163, 184, 0.4);
+    margin-top: -6px;
+  }
+}
+
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.slider-label {
+  flex: 0 0 34px;
+  font-size: 12px;
+  color: #475467;
+  font-weight: 600;
+}
+
+.range-input {
+  flex: 1;
+  height: 28px;          /* 触控目标高度: 含轨道总命中区 ≥44px(行高) */
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  touch-action: pan-y;   /* 拖杆时横向归滑杆, 纵向仍可滚页面 */
+}
+
+/* 轨道 */
+.range-input::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(39, 76, 119, 0.18);
+}
+
+.range-input::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(39, 76, 119, 0.18);
+}
+
+/* 手柄: 22px 圆钮, 深蓝底白边, 与图表配色一致 */
+.range-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  margin-top: -8px;      /* (轨道6 - 手柄22)/2, 垂直居中 */
+  border-radius: 50%;
+  background: #274c77;
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.35);
+}
+
+.range-input::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #274c77;
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.35);
 }
 </style>
