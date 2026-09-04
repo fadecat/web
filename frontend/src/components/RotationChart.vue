@@ -49,8 +49,10 @@ function buildFlatReference(dates, value) {
 }
 
 function buildDefaultZoomRange(length) {
-  if (length <= 250) return { start: 0, end: 100 };
-  return { start: Math.max(0, 100 - Math.floor(250 / length * 100)), end: 100 };
+  // 查询窗口 = 显示窗口: 选了 2021-2026 就铺满 2021-2026,
+  // 不再默认只显示最后 250 个交易日(那需要用户手动拖滑块)。
+  // 需要看局部细节时用户可自行用滑块/滚轮缩放。
+  return { start: 0, end: 100 };
 }
 
 function buildOption() {
