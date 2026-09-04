@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, onMounted, watch } from 'vue';
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import { getRotationAnalysis } from '../api';
 import RotationChart from '../components/RotationChart.vue';
 
@@ -82,6 +82,30 @@ const form = reactive({
 
 const dateRangePreset = ref('3y'); // 默认「最近3年」
 
+// ── 移动端交互: 筛选折叠 + 断点监听 ──────────────────────
+// 手机端信息密度优先级: 图表 > 指标 > 筛选条件。
+// 筛选表单默认折叠成一行摘要, 点开才展开——否则 7 项条件占满首屏,
+// 图表被挤到第二三屏, 这不是手机端布局而是 PC 压缩版。
+const isMobile = ref(false);
+let mq = null;
+const updateIsMobile = () => {
+  isMobile.value = window.innerWidth < 768;
+};
+const filtersExpanded = ref(false);
+
+// 折叠条摘要: 标的 + 范围, 让用户不看表单也知道当前在查什么
+const filterSummary = computed(() => {
+  const left = LEFT_OPTIONS.find((o) => o.code === form.leftSymbol)?.name || form.leftSymbol;
+  const right = RIGHT_OPTIONS.find((o) => o.code === form.rightSymbol)?.name || form.rightSymbol;
+  const preset = DATE_RANGE_PRESETS.find((p) => p.key === dateRangePreset.value);
+  const rangeText = preset && preset.key !== 'custom' ? preset.label : `${form.startDate} ~ ${form.endDate}`;
+  return `${left} vs ${right} · ${rangeText}`;
+});
+
+const toggleFilters = () => {
+  filtersExpanded.value = !filtersExpanded.value;
+};
+
 const data = ref(null);
 const loading = ref(false);
 const errorMsg = ref('');
@@ -114,6 +138,13 @@ onMounted(() => {
   form.endDate = todayIso();
   applyDateRangePreset();
   fetchAnalysis();
+  updateIsMobile();
+  mq = window.matchMedia('(max-width: 767px)');
+  mq.addEventListener('change', updateIsMobile);
+});
+
+onBeforeUnmount(() => {
+  mq?.removeEventListener('change', updateIsMobile);
 });
 
 watch(
@@ -125,7 +156,18 @@ watch(
 <template>
   <div class="rotation-page">
     <el-card class="filter-card" shadow="never">
-      <el-form :inline="true" size="small" label-width="80px">
+      <!-- 移动端: 折叠摘要条(点开才显示表单) -->
+      <div v-if="isMobile" class="filter-collapse-bar" @click="toggleFilters">
+        <span class="filter-summary">{{ filterSummary }}</span>
+        <span class="filter-toggle" :class="{ expanded: filtersExpanded }">▾</span>
+      </div>
+      <el-form
+        v-show="!isMobile || filtersExpanded"
+        :inline="true"
+        size="small"
+        label-width="80px"
+        :class="{ 'mobile-form': isMobile }"
+      >
         <el-form-item label="左侧标的">
           <el-select v-model="form.leftSymbol" style="width: 200px">
             <el-option
@@ -227,7 +269,35 @@ watch(
     />
 
     <el-card v-if="data && data.summary" class="summary-card" shadow="never">
-      <div class="summary-grid">
+      <!-- 移动端: 横向滑动胶囊片(股票 App 风格, 一屏可见 + 左右滑看更多) -->
+      <div v-if="isMobile" class="summary-strip">
+        <div class="summary-chip">
+          <div class="label">最新日期</div>
+          <div class="value">{{ data.summary.latest_date }}</div>
+        </div>
+        <div class="summary-chip">
+          <div class="label">最新 spread</div>
+          <div class="value" :class="{ positive: data.summary.latest_spread > 0, negative: data.summary.latest_spread < 0 }">
+            {{ data.summary.latest_spread }}%
+          </div>
+        </div>
+        <div class="summary-chip">
+          <div class="label">MA{{ form.maWindow }}</div>
+          <div class="value" :class="{ positive: data.summary.latest_ma > 0, negative: data.summary.latest_ma < 0 }">
+            {{ data.summary.latest_ma }}%
+          </div>
+        </div>
+        <div class="summary-chip">
+          <div class="label">P90 / P10</div>
+          <div class="value small">
+            <span style="color: #dc2626">{{ data.summary.global_p90 }}</span>
+            /
+            <span style="color: #16a34a">{{ data.summary.global_p10 }}</span>
+          </div>
+        </div>
+      </div>
+      <!-- 桌面端: 原四列网格 -->
+      <div v-else class="summary-grid">
         <div class="summary-item">
           <div class="label">最新日期</div>
           <div class="value">{{ data.summary.latest_date }}</div>
@@ -273,6 +343,8 @@ watch(
 .summary-card {
   margin-bottom: 0;
 }
+
+/* ---------- 桌面端指标四列网格 ---------- */
 .summary-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -299,27 +371,113 @@ watch(
   font-weight: 600;
 }
 
-/* ---------- 移动端适配 ---------- */
+/* ---------- 移动端 ---------- */
 @media (max-width: 767px) {
-  .summary-grid {
-    grid-template-columns: repeat(2, 1fr); /* 4 列 → 2 列 */
-    gap: 12px;
+  :deep(.el-card__body) {
+    padding: 12px;
   }
-  .summary-item .value {
-    font-size: 16px;
-  }
-  :deep(.el-form--inline .el-form-item) {
+}
+
+/* 折叠摘要条: 仅移动端渲染(v-if=isMobile), 桌面端不参与 */
+.filter-collapse-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 2px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.filter-summary {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: #274c77;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.filter-toggle {
+  flex: 0 0 auto;
+  color: #98a2b3;
+  font-size: 14px;
+  transition: transform 0.2s ease;
+}
+
+.filter-toggle.expanded {
+  transform: rotate(180deg);
+}
+
+.mobile-form {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(148, 163, 184, 0.45);
+}
+
+/* 指标胶囊滑动条: 一排横滑, 股票 App 风格 */
+.summary-strip {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.summary-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.summary-chip {
+  flex: 0 0 auto;
+  min-width: 96px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: rgba(39, 76, 119, 0.06);
+}
+
+.summary-chip .label {
+  font-size: 11px;
+  color: #6b7280;
+  margin-bottom: 3px;
+  white-space: nowrap;
+}
+
+.summary-chip .value {
+  font-size: 16px;
+  font-weight: 700;
+  color: #111827;
+  white-space: nowrap;
+}
+
+.summary-chip .value.positive {
+  color: #dc2626;
+}
+
+.summary-chip .value.negative {
+  color: #16a34a;
+}
+
+.summary-chip .value.small {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* 移动端表单两列布局(展开后) */
+@media (max-width: 767px) {
+  .mobile-form.el-form--inline .el-form-item {
     margin-right: 0;
-    width: calc(50% - 8px); /* 每行两个控件 */
+    width: calc(50% - 8px);
   }
-  :deep(.el-form-item__label) {
-    width: auto !important; /* 覆盖固定 label-width, 省横向空间 */
+  .mobile-form :deep(.el-form-item__label) {
+    width: auto !important;
     padding-right: 6px;
   }
-  :deep(.el-select),
-  :deep(.el-date-editor),
-  :deep(.el-input-number) {
-    width: 100% !important; /* 控件撑满所在半行 */
+  .mobile-form :deep(.el-select),
+  .mobile-form :deep(.el-date-editor),
+  .mobile-form :deep(.el-input-number) {
+    width: 100% !important;
   }
 }
 </style>
