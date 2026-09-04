@@ -19,3 +19,6 @@ apscheduler>=3.10.0,<4.0.0
 # ---- 配置 / 日志 ----
 pyyaml>=6.0.1
 loguru>=0.7.2
+
+# ---- 数值计算(风格轮动 spread/MA/percentile 等算法)----
+numpy>=2.0.0
