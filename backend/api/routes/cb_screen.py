@@ -121,19 +121,17 @@ def screen_active(db: Session = Depends(get_db)) -> dict[str, Any]:
 def screen_intraday(
     price_min: float | None = None,
     price_max: float | None = None,
-    convert_value_min: float | None = None,
-    convert_value_max: float | None = None,
-    premium_rt_min: float | None = None,
     premium_rt_max: float | None = None,
+    curr_iss_amt_max: float | None = None,
     year_left_min: float | None = None,
     year_left_max: float | None = None,
-    curr_iss_amt_min: float | None = None,
-    curr_iss_amt_max: float | None = None,
+    ytm_min: float | None = None,
     ratings: str | None = None,
 ) -> dict[str, Any]:
     """盘中选债: 实时拉集思录列表+强赎 → 纯条件过滤(不打分不排序)。
 
-    六字段区间筛选: 现价/转换价值/溢价率/剩余年限/剩余规模 + 评级多选。
+    字段对齐集思录筛选页: 转债价格区间/溢价率≤/剩余规模≤/剩余年限区间/
+    到期收益率>(简化口径: (赎回价-现价)/现价/年限 年化) + 评级多选。
     返回全部通过条件的债(顺序=集思录自然顺序, 默认双低升序)。
     不读快照、不落库: 价格/双低/溢价率/强赎计数全部是当次请求的实时值。
     盘后调用返回当日收盘数据(比日频任务快照更新)。
@@ -142,14 +140,11 @@ def screen_intraday(
     filters = {
         "price_min": price_min,
         "price_max": price_max,
-        "convert_value_min": convert_value_min,
-        "convert_value_max": convert_value_max,
-        "premium_rt_min": premium_rt_min,
         "premium_rt_max": premium_rt_max,
+        "curr_iss_amt_max": curr_iss_amt_max,
         "year_left_min": year_left_min,
         "year_left_max": year_left_max,
-        "curr_iss_amt_min": curr_iss_amt_min,
-        "curr_iss_amt_max": curr_iss_amt_max,
+        "ytm_min": ytm_min,
         # ratings 以逗号分隔传递: ?ratings=AA,AA+
         "ratings": [r.strip() for r in ratings.split(",") if r.strip()] if ratings else [],
     }
