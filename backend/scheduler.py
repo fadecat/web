@@ -127,12 +127,12 @@ def _register_daily_jobs() -> None:
 
     顺序依赖: cb_redeem(含到期赎回价/强赎计数)是 cb_screen 筛选链路的上游,
     排在 cb_list 之前, 保证 15:06 手动筛选时两张表同日对齐。
-    估值板块与风格轮动两个指数数据源更新慢, 放晚上 22 点档。
+    转债等权指数集思录 15:04 即更新, 提前排; 风格轮动/估值数据源更新慢, 放 22 点档。
     """
     jobs = [
         ("cb_redeem_daily", run_cb_redeem_daily, "可转债强赎列表抓取", 15, 3),
+        ("cb_index_daily", run_cb_index_daily, "可转债等权指数日频抓取", 15, 4),
         ("cb_list_daily", run_cb_list_daily, "可转债全量快照抓取", 15, 6),
-        ("cb_index_daily", run_cb_index_daily, "可转债等权指数日频抓取", 22, 0),
         ("style_rotation_daily", run_style_rotation_daily, "风格轮动日频抓取", 22, 3),
         ("valuation_daily", run_valuation_daily, "估值板块日频抓取", 22, 6),
     ]
@@ -168,8 +168,8 @@ def start_scheduler() -> None:
     # 启动后异步巡检全部日频表的完整性(概况+空洞,只报告不修复)
     _startup_integrity_scan()
     logger.info(
-        "scheduler started: cb_redeem@15:03, cb_list@15:06, "
-        "cb_index@22:00, style_rotation@22:03, valuation@22:06 "
+        "scheduler started: cb_redeem@15:03, cb_index@15:04, cb_list@15:06, "
+        "style_rotation@22:03, valuation@22:06 "
         "(misfire_grace_time=3600, coalesce=True)"
     )
 
