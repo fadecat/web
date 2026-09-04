@@ -80,7 +80,7 @@ const form = reactive({
   maWindow: 20,      // spread 的 MA 趋势线窗口
 });
 
-const dateRangePreset = ref('1y'); // 默认「最近1年」,对齐源项目
+const dateRangePreset = ref('3y'); // 默认「最近3年」
 
 const data = ref(null);
 const loading = ref(false);
