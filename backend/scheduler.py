@@ -118,6 +118,37 @@ def _startup_integrity_scan() -> None:
     )
 
 
+def _register_daily_jobs() -> None:
+    """注册五个日频抓取任务(周一至周五, 收盘后错峰执行)。
+
+    misfire_grace_time=3600: 错过触发时间后 1 小时内仍补跑
+    (如 15:30 定时任务遇到 15:50 才重启的服务, 重启后立即补抓当天数据)。
+    coalesce=True: 积压多次触发只跑一次, 防止重启风暴后连环抓取。
+    """
+    jobs = [
+        ("valuation_daily", run_valuation_daily, "估值板块日频抓取", 15, 30),
+        ("style_rotation_daily", run_style_rotation_daily, "风格轮动日频抓取", 15, 35),
+        ("cb_index_daily", run_cb_index_daily, "可转债等权指数日频抓取", 15, 40),
+        ("cb_list_daily", run_cb_list_daily, "可转债全量快照抓取", 15, 45),
+        ("cb_redeem_daily", run_cb_redeem_daily, "可转债强赎列表抓取", 15, 50),
+    ]
+    for job_id, func, name, hour, minute in jobs:
+        scheduler.add_job(
+            func,
+            trigger=CronTrigger(
+                day_of_week="mon-fri",
+                hour=hour,
+                minute=minute,
+                timezone="Asia/Shanghai",
+            ),
+            id=job_id,
+            name=name,
+            replace_existing=True,
+            misfire_grace_time=3600,
+            coalesce=True,
+        )
+
+
 def start_scheduler() -> None:
     """启动调度器并注册任务。
 
@@ -126,71 +157,7 @@ def start_scheduler() -> None:
     if scheduler.running:
         return
 
-    # 估值板块日频任务: 周一至周五 15:30
-    scheduler.add_job(
-        run_valuation_daily,
-        trigger=CronTrigger(
-            day_of_week="mon-fri",
-            hour=15,
-            minute=30,
-            timezone="Asia/Shanghai",
-        ),
-        id="valuation_daily",
-        name="估值板块日频抓取",
-        replace_existing=True,
-    )
-    # 风格轮动日频任务: 周一至周五 15:35(估值任务后5分钟)
-    scheduler.add_job(
-        run_style_rotation_daily,
-        trigger=CronTrigger(
-            day_of_week="mon-fri",
-            hour=15,
-            minute=35,
-            timezone="Asia/Shanghai",
-        ),
-        id="style_rotation_daily",
-        name="风格轮动日频抓取",
-        replace_existing=True,
-    )
-    # 可转债等权指数日频任务: 周一至周五 15:40
-    scheduler.add_job(
-        run_cb_index_daily,
-        trigger=CronTrigger(
-            day_of_week="mon-fri",
-            hour=15,
-            minute=40,
-            timezone="Asia/Shanghai",
-        ),
-        id="cb_index_daily",
-        name="可转债等权指数日频抓取",
-        replace_existing=True,
-    )
-    # 可转债全量快照日频任务: 周一至周五 15:45(等权指数任务后5分钟)
-    scheduler.add_job(
-        run_cb_list_daily,
-        trigger=CronTrigger(
-            day_of_week="mon-fri",
-            hour=15,
-            minute=45,
-            timezone="Asia/Shanghai",
-        ),
-        id="cb_list_daily",
-        name="可转债全量快照抓取",
-        replace_existing=True,
-    )
-    # 可转债强赎列表日频任务: 周一至周五 15:50(全量快照之后5分钟)
-    scheduler.add_job(
-        run_cb_redeem_daily,
-        trigger=CronTrigger(
-            day_of_week="mon-fri",
-            hour=15,
-            minute=50,
-            timezone="Asia/Shanghai",
-        ),
-        id="cb_redeem_daily",
-        name="可转债强赎列表抓取",
-        replace_existing=True,
-    )
+    _register_daily_jobs()
     scheduler.start()
     # 启动后异步检查风格轮动数据,空表自动回补(不阻塞启动)
     _maybe_backfill_style_rotation()
@@ -198,7 +165,8 @@ def start_scheduler() -> None:
     _startup_integrity_scan()
     logger.info(
         "scheduler started: valuation@15:30, style_rotation@15:35, "
-        "cb_index@15:40, cb_list@15:45, cb_redeem@15:50"
+        "cb_index@15:40, cb_list@15:45, cb_redeem@15:50 "
+        "(misfire_grace_time=3600, coalesce=True)"
     )
 
 

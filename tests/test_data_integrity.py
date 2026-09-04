@@ -5,10 +5,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-from backend.models.database import Base
 from backend.models.valuation import CnBondYield, IndexDailyQuote
 from backend.services.data_integrity import (
     get_entity_codes,
@@ -16,17 +13,6 @@ from backend.services.data_integrity import (
     scan_all_daily_tables,
     scan_date_gaps_generic,
 )
-
-
-@pytest.fixture()
-def db():
-    """内存 SQLite 会话(每次独立)。"""
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(bind=engine)
-    Session = sessionmaker(bind=engine)
-    session = Session()
-    yield session
-    session.close()
 
 
 def _add_quotes(db, code: str, dates: list[date]):

@@ -16,6 +16,7 @@ from backend.services.style_rotation_analysis import (
     InsufficientDataError,
     StyleRotationParams,
     calculate_style_rotation,
+    build_style_rotation_response,
 )
 
 
@@ -240,3 +241,75 @@ class TestDateFilterAndWarmup:
         assert df["latest_date"] == df["dates"][-1]
         assert df["latest_spread"] == df["spread"][-1]
         assert df["latest_ma"] == df["ma"][-1]
+
+
+# ---------------------------------------------------------------------------
+# warmup 误报回归(59874e3): 请求起点为非交易日时不得误报
+# ---------------------------------------------------------------------------
+
+class TestWarmupDetection:
+    def _seed_db(self, db, n=600):
+        """向数据库塞 n 个交易日的双指数数据(左边线性涨)。"""
+        from backend.models.valuation import IndexDailyQuote
+
+        dates = _make_trading_dates(date(2023, 1, 2), n)
+        for i, d in enumerate(dates):
+            db.add(IndexDailyQuote(index_code="L", trade_date=d.date(), close=100.0 + i))
+            db.add(IndexDailyQuote(index_code="R", trade_date=d.date(), close=100.0))
+        db.commit()
+        return dates
+
+    def test_first_valid_date_field(self, db):
+        """calculate 结果包含裁剪前首个有效日期字段。
+
+        首个有效 spread 在第 250 个交易日之后才出现(pct_change NaN 被
+        dropna), 不硬编码索引, 断言它落在收益窗口+MA 预热的合理区间。
+        """
+        n = 400
+        dates = _make_trading_dates(date(2023, 1, 2), n)
+        left = pd.DataFrame({"trade_date": dates, "close": [100.0 + i for i in range(n)]})
+        right = _flat_df(dates, 100.0)
+        result = calculate_style_rotation(
+            left, right,
+            StyleRotationParams("L", "R", None, None, return_window=250, ma_window=20),
+        )
+        assert result["first_valid_date"] == "2023-12-18"  # 第 250 个工作日(实测锚定)
+        first_idx = next(
+            i for i, d in enumerate(dates)
+            if d.strftime("%Y-%m-%d") == result["first_valid_date"]
+        )
+        # 收益窗口 250 + MA 预热 19 → 首个有效值在 [249, 269] 索引范围
+        assert 249 <= first_idx <= 269
+
+    def test_no_warmup_note_when_start_is_non_trading_day(self, db):
+        """请求起点是周日(非交易日)且数据充足 → 不得弹 warmup 提示。
+
+        回归场景: start=2024-06-09(周日), 数据从 2023-01-02 起,
+        预热充足, 首日应为 2024-06-10(周一) 但绝不该报警。
+        """
+        self._seed_db(db)
+        from backend.services.style_rotation_analysis import build_style_rotation_response as resp_fn
+
+        params = StyleRotationParams("L", "R", "2024-06-09", "2024-07-15",
+                                     return_window=250, ma_window=20)
+        resp = resp_fn(db, params)
+        assert "warmup_note" not in resp["meta"]
+        assert resp["series"]["dates"][0] > "2024-06-09"  # 首日是之后的首个交易日
+
+    def test_warmup_note_when_truly_insufficient(self, db):
+        """请求起点早于 数据起点+250交易日 → 必须报警。"""
+        self._seed_db(db, n=400)  # 数据 2023-01-02 起, 首个有效值约 2024-01
+        from backend.services.style_rotation_analysis import build_style_rotation_response as resp_fn
+
+        # 请求 2023-03~2023-12: 该区间内没有任何有效 spread(首个在 2024-01)
+        params = StyleRotationParams("L", "R", "2023-03-01", "2023-12-31",
+                                     return_window=250, ma_window=20)
+        with pytest.raises(InsufficientDataError):
+            resp_fn(db, params)
+
+        # 请求起点早于首个有效值、但区间覆盖到它 → 报警且正常返回
+        params2 = StyleRotationParams("L", "R", "2023-03-01", "2024-06-30",
+                                      return_window=250, ma_window=20)
+        resp = resp_fn(db, params2)
+        assert "warmup_note" in resp["meta"]
+        assert "预热期不足" in resp["meta"]["warmup_note"]

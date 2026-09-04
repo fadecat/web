@@ -42,10 +42,12 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS —— 前端 Vite 开发服务器(后续接入)
+    # CORS —— 前端 Vite 开发服务器(默认) / 生产域名可通过 CORS_ORIGINS 环境变量追加
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origins=[
+            o.strip() for o in settings.cors_origins.split(",") if o.strip()
+        ],
         allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )

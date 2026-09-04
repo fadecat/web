@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     env: str = "development"
     log_level: str = "INFO"
 
+    # CORS 允许的前端来源(逗号分隔; 生产部署加自己的域名)
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
     # 数据库
     database_url: str = f"sqlite:///{(PROJECT_ROOT / 'data' / 'web.db').as_posix()}"
 
