@@ -7,6 +7,7 @@
 3. POST /cb-list/factors          — 保存策略模板配置
 4. POST /cb-list/screen           — 按模板筛选打分(基于最新交易日快照)
 5. GET  /cb-list/screen/active    — 按当前 active 模板筛选打分
+6. GET  /cb-list/screen/intraday  — 盘中选债(实时拉集思录, 纯条件过滤)
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ from backend.services.cb_factors import (
     read_config,
     write_config,
 )
+from backend.services.cb_intraday import screen_bonds_intraday
 from backend.services.cb_screen import screen_bonds
 
 router = APIRouter()
@@ -112,4 +114,47 @@ def screen_active(db: Session = Depends(get_db)) -> dict[str, Any]:
     result = screen_bonds(rows, tmpl, redeem_map=redeem_map)
     result["template_id"] = tmpl.get("id")
     result["template_name"] = tmpl.get("name")
+    return result
+
+
+@router.get("/cb-list/screen/intraday")
+def screen_intraday(
+    price_min: float | None = None,
+    price_max: float | None = None,
+    convert_value_min: float | None = None,
+    convert_value_max: float | None = None,
+    premium_rt_min: float | None = None,
+    premium_rt_max: float | None = None,
+    year_left_min: float | None = None,
+    year_left_max: float | None = None,
+    curr_iss_amt_min: float | None = None,
+    curr_iss_amt_max: float | None = None,
+    ratings: str | None = None,
+) -> dict[str, Any]:
+    """盘中选债: 实时拉集思录列表+强赎 → 纯条件过滤(不打分不排序)。
+
+    六字段区间筛选: 现价/转换价值/溢价率/剩余年限/剩余规模 + 评级多选。
+    返回全部通过条件的债(顺序=集思录自然顺序, 默认双低升序)。
+    不读快照、不落库: 价格/双低/溢价率/强赎计数全部是当次请求的实时值。
+    盘后调用返回当日收盘数据(比日频任务快照更新)。
+    耗时约 1~2s(两次实时 HTTP), 前端超时需放宽。
+    """
+    filters = {
+        "price_min": price_min,
+        "price_max": price_max,
+        "convert_value_min": convert_value_min,
+        "convert_value_max": convert_value_max,
+        "premium_rt_min": premium_rt_min,
+        "premium_rt_max": premium_rt_max,
+        "year_left_min": year_left_min,
+        "year_left_max": year_left_max,
+        "curr_iss_amt_min": curr_iss_amt_min,
+        "curr_iss_amt_max": curr_iss_amt_max,
+        # ratings 以逗号分隔传递: ?ratings=AA,AA+
+        "ratings": [r.strip() for r in ratings.split(",") if r.strip()] if ratings else [],
+    }
+    try:
+        result = screen_bonds_intraday(filters)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"实时数据拉取失败: {exc}")
     return result

@@ -310,13 +310,15 @@ def screen_bonds(
     result_rows: list[dict] = []
     for i, row in enumerate(ranked, 1):
         c = row["cell"]
+        price = _safe_float(c.get("price"))
+        redeem_price = _safe_float((redeem_map.get(c.get("bond_id")) or {}).get("redeem_price"))
         result_rows.append({
             "rank": i,
             "selected": i <= target,
             "holdable": i <= keep_n,
             "code": c.get("bond_id", ""),
             "name": c.get("bond_nm", ""),
-            "price": _safe_float(c.get("price")),
+            "price": price,
             "change_rt": _safe_float(c.get("increase_rt")),
             "dblow": _safe_float(c.get("dblow")),
             "premium_rt": _safe_float(c.get("premium_rt")),
@@ -325,6 +327,13 @@ def screen_bonds(
             "year_left": _safe_float(c.get("year_left")),
             "pb": _safe_float(c.get("pb")),
             "ytm_rt": _safe_float(c.get("ytm_rt")),
+            "redeem_price": redeem_price,
+            # 保本价差 = 到期赎回价 - 现价, 正数越大保本垫越厚(负数=现价已高于赎回价)
+            "redeem_gap": (
+                round(redeem_price - price, 3)
+                if redeem_price is not None and price is not None
+                else None
+            ),
             "rating": c.get("rating_cd", ""),
             "redeem": format_redeem_status(c, redeem_map.get(c.get("bond_id"))),
             "total_score": row.get("total_score", 0.0),
