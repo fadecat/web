@@ -300,6 +300,13 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* 触摸手势分配: 横向拖动交给 ECharts(tooltip/十字光标/滑块平移),
+   纵向仍留给页面滚动(避免手指被困在占半屏的图表上滑不走页面)。
+   桌面端鼠标事件不受 touch-action 影响,全局生效无副作用 */
+.rotation-chart {
+  touch-action: pan-y;
+}
+
 @media (max-width: 767px) {
   .rotation-chart {
     height: 380px;
