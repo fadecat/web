@@ -39,7 +39,8 @@ def fetch_redeem_list() -> list[dict[str, Any]]:
     cookie = get_cookie()
     headers = {**CB_REDEEM_HEADERS, "Cookie": cookie}
     params = {"___jsl": f"LST___t={int(time.time() * 1000)}"}
-    payload = {"rp": 50, "page": 1}
+    # rp=page size: 接口当前忽略该参数默认全量, 但显式给大值防哪天开始尊重分页时静默截断
+    payload = {"rp": 1000, "page": 1}
 
     resp = httpx.post(
         CB_REDEEM_LIST_URL, headers=headers, params=params, data=payload, timeout=15

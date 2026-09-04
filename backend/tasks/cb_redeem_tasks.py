@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """可转债强赎列表日频任务: 拉取集思录 redeem_list → 全量落库。
 
-调度: 交易日 15:50 CST(cb_list 全量快照之后)。
+调度: 交易日 15:03 CST(强赎计数/到期赎回价是筛选链路上游, 先于 cb_list 快照)。
 也可手动调用: python -m backend.tasks.cb_redeem_tasks
 """
 from __future__ import annotations

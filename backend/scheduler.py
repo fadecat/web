@@ -124,13 +124,16 @@ def _register_daily_jobs() -> None:
     misfire_grace_time=3600: 错过触发时间后 1 小时内仍补跑
     (如 15:30 定时任务遇到 15:50 才重启的服务, 重启后立即补抓当天数据)。
     coalesce=True: 积压多次触发只跑一次, 防止重启风暴后连环抓取。
+
+    顺序依赖: cb_redeem(含到期赎回价/强赎计数)是 cb_screen 筛选链路的上游,
+    排在 cb_list 之前, 保证 15:45 手动筛选时两张表同日对齐。
     """
     jobs = [
-        ("valuation_daily", run_valuation_daily, "估值板块日频抓取", 15, 30),
-        ("style_rotation_daily", run_style_rotation_daily, "风格轮动日频抓取", 15, 35),
-        ("cb_index_daily", run_cb_index_daily, "可转债等权指数日频抓取", 15, 40),
-        ("cb_list_daily", run_cb_list_daily, "可转债全量快照抓取", 15, 45),
-        ("cb_redeem_daily", run_cb_redeem_daily, "可转债强赎列表抓取", 15, 50),
+        ("valuation_daily", run_valuation_daily, "估值板块日频抓取", 15, 1),
+        ("cb_redeem_daily", run_cb_redeem_daily, "可转债强赎列表抓取", 15, 3),
+        ("cb_list_daily", run_cb_list_daily, "可转债全量快照抓取", 15, 6),
+        ("cb_index_daily", run_cb_index_daily, "可转债等权指数日频抓取", 15, 9),
+        ("style_rotation_daily", run_style_rotation_daily, "风格轮动日频抓取", 15, 12),
     ]
     for job_id, func, name, hour, minute in jobs:
         scheduler.add_job(
@@ -164,8 +167,8 @@ def start_scheduler() -> None:
     # 启动后异步巡检全部日频表的完整性(概况+空洞,只报告不修复)
     _startup_integrity_scan()
     logger.info(
-        "scheduler started: valuation@15:30, style_rotation@15:35, "
-        "cb_index@15:40, cb_list@15:45, cb_redeem@15:50 "
+        "scheduler started: valuation@15:01, cb_redeem@15:03, "
+        "cb_list@15:06, cb_index@15:09, style_rotation@15:12 "
         "(misfire_grace_time=3600, coalesce=True)"
     )
 
