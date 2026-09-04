@@ -22,3 +22,4 @@ loguru>=0.7.2
 
 # ---- 数值计算(风格轮动 spread/MA/percentile 等算法)----
 numpy>=2.0.0
+pandas>=2.0.0
