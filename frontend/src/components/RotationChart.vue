@@ -35,6 +35,8 @@ const props = defineProps({
 const chartRef = ref(null);
 let chart = null;
 
+const isMobile = () => window.innerWidth < 768;
+
 function buildStrengthAreaData(series, predicate) {
   const result = [];
   for (let i = 0; i < series.length; i++) {
@@ -81,28 +83,38 @@ function buildOption() {
   const globalP10 = buildFlatReference(masterDates, summary.global_p10);
   const zoomRange = buildDefaultZoomRange(masterDates.length);
 
+  // 移动端: 缩小字号/边距, 图例收到底部一行滚动, 图表加高便于触屏查看
+  const mobile = isMobile();
+  const gridLeft = mobile ? '4%' : '7%';
+  const gridRight = mobile ? '3%' : '5%';
+  const legendTop = mobile ? 30 : 16;
+
   return {
     animation: false,
     title: [
       {
         text: '收益差值(spread) %',
         top: '4%',
-        left: '7%',
-        textStyle: { fontSize: 13, fontWeight: 700, color: '#475467' },
+        left: gridLeft,
+        textStyle: { fontSize: mobile ? 12 : 13, fontWeight: 700, color: '#475467' },
       },
       {
-        text: `左 ${leftLabel}  spread ${summary.latest_spread}  MA ${summary.latest_ma}`,
+        text: mobile
+          ? `spread ${summary.latest_spread}  MA ${summary.latest_ma}`
+          : `左 ${leftLabel}  spread ${summary.latest_spread}  MA ${summary.latest_ma}`,
         top: '11%',
-        left: '7%',
-        textStyle: { fontSize: 12, fontWeight: 600, color: '#475467' },
+        left: gridLeft,
+        textStyle: { fontSize: mobile ? 11 : 12, fontWeight: 600, color: '#475467' },
       },
     ],
     legend: {
-      top: 16,
+      top: legendTop,
       left: 'center',
-      itemWidth: 12,
-      itemHeight: 12,
-      textStyle: { color: '#475467', fontSize: 12, fontWeight: 600 },
+      itemWidth: mobile ? 10 : 12,
+      itemHeight: mobile ? 10 : 12,
+      textStyle: { color: '#475467', fontSize: mobile ? 10 : 12, fontWeight: 600 },
+      type: mobile ? 'scroll' : 'plain',
+      pageIconSize: 10,
       data: [
         'spread>0(左强)',
         'spread<0(右强)',
@@ -132,7 +144,7 @@ function buildOption() {
         type: 'slider',
         xAxisIndex: [0],
         bottom: 14,
-        height: 18,
+        height: mobile ? 22 : 18, // 手机上加高滑块便于手指拖动
         start: zoomRange.start,
         end: zoomRange.end,
         borderColor: 'rgba(148, 163, 184, 0.32)',
@@ -143,9 +155,10 @@ function buildOption() {
         xAxisIndex: [0],
         start: zoomRange.start,
         end: zoomRange.end,
+        zoomOnMouseWheel: true,
       },
     ],
-    grid: [{ top: '20%', height: '65%', left: '7%', right: '5%' }],
+    grid: [{ top: mobile ? '26%' : '20%', height: mobile ? '58%' : '65%', left: gridLeft, right: gridRight }],
     xAxis: [
       {
         type: 'category',
@@ -157,7 +170,7 @@ function buildOption() {
           hideOverlap: true,
           showMinLabel: true,
           showMaxLabel: true,
-          fontSize: 11,
+          fontSize: mobile ? 9 : 11,
           margin: 10,
         },
         axisTick: { show: false },
@@ -170,9 +183,10 @@ function buildOption() {
         gridIndex: 0,
         name: 'spread(%)',
         nameLocation: 'middle',
-        nameGap: 38,
+        nameGap: mobile ? 28 : 38,
+        nameFontSize: mobile ? 10 : 12,
         scale: true,
-        axisLabel: { color: '#667085' },
+        axisLabel: { color: '#667085', fontSize: mobile ? 9 : 11 },
         axisLine: { show: false },
         splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.18)' } },
       },
@@ -252,24 +266,43 @@ const render = () => {
   chart.setOption(buildOption(), true);
 };
 
+// 手机旋转屏幕/窗口尺寸跨越断点时重渲染(布局参数随断点变化)
+let lastMobile = isMobile();
+const onResize = () => {
+  if (!chart) return;
+  const nowMobile = isMobile();
+  if (nowMobile !== lastMobile) {
+    lastMobile = nowMobile;
+    render();
+  } else {
+    chart.resize();
+  }
+};
+
 watch(() => props.data, () => nextTick(render), { deep: true });
 
 onMounted(() => {
   nextTick(render);
-  window.addEventListener('resize', resize);
+  window.addEventListener('resize', onResize);
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', resize);
+  window.removeEventListener('resize', onResize);
   if (chart) {
     chart.dispose();
     chart = null;
   }
 });
-
-const resize = () => chart && chart.resize();
 </script>
 
 <template>
-  <div ref="chartRef" style="width: 100%; height: 420px" />
+  <div ref="chartRef" style="width: 100%; height: 420px" class="rotation-chart" />
 </template>
+
+<style scoped>
+@media (max-width: 767px) {
+  .rotation-chart {
+    height: 380px;
+  }
+}
+</style>

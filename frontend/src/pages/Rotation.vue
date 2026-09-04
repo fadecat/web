@@ -298,4 +298,28 @@ watch(
   font-size: 14px;
   font-weight: 600;
 }
+
+/* ---------- 移动端适配 ---------- */
+@media (max-width: 767px) {
+  .summary-grid {
+    grid-template-columns: repeat(2, 1fr); /* 4 列 → 2 列 */
+    gap: 12px;
+  }
+  .summary-item .value {
+    font-size: 16px;
+  }
+  :deep(.el-form--inline .el-form-item) {
+    margin-right: 0;
+    width: calc(50% - 8px); /* 每行两个控件 */
+  }
+  :deep(.el-form-item__label) {
+    width: auto !important; /* 覆盖固定 label-width, 省横向空间 */
+    padding-right: 6px;
+  }
+  :deep(.el-select),
+  :deep(.el-date-editor),
+  :deep(.el-input-number) {
+    width: 100% !important; /* 控件撑满所在半行 */
+  }
+}
 </style>

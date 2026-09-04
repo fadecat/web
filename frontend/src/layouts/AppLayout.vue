@@ -4,6 +4,10 @@ import { useRoute } from 'vue-router';
 
 const route = useRoute();
 const collapsed = ref(false);
+const mobileOpen = ref(false);
+
+// 简易移动端判定: <768px 视为手机, 侧边栏改为抽屉
+const isMobile = () => window.innerWidth < 768;
 
 const menus = [
   {
@@ -23,33 +27,48 @@ const menus = [
 ];
 
 const currentTitle = computed(() => route.meta.title || '');
+
+function onMenuClick(item) {
+  if (item.disabled) return;
+  if (isMobile()) mobileOpen.value = false; // 手机点完菜单收起抽屉
+}
 </script>
 
 <template>
   <div class="app-layout">
-    <!-- 侧边栏 -->
-    <aside class="sidebar" :class="{ collapsed }">
+    <!-- 移动端遮罩 -->
+    <div
+      v-if="mobileOpen"
+      class="mobile-mask"
+      @click="mobileOpen = false"
+    />
+
+    <!-- 侧边栏: 桌面常驻 / 手机抽屉 -->
+    <aside
+      class="sidebar"
+      :class="{ collapsed, 'mobile-open': mobileOpen }"
+    >
       <div class="logo">
         <span class="logo-icon">📈</span>
-        <span v-if="!collapsed" class="logo-text">市场数据平台</span>
+        <span v-if="!collapsed || mobileOpen" class="logo-text">市场数据平台</span>
       </div>
       <nav class="menu">
         <div v-for="group in menus" :key="group.group" class="menu-group">
-          <div v-if="!collapsed" class="menu-group-title">{{ group.group }}</div>
+          <div v-if="!collapsed || mobileOpen" class="menu-group-title">{{ group.group }}</div>
           <router-link
             v-for="item in group.items"
             :key="item.path"
             :to="item.disabled ? '' : item.path"
             class="menu-item"
             :class="{ active: route.path === item.path, disabled: item.disabled }"
-            @click.prevent="item.disabled && undefined"
+            @click="onMenuClick(item)"
           >
             <span class="menu-icon">{{ item.icon }}</span>
-            <span v-if="!collapsed" class="menu-text">{{ item.title }}</span>
+            <span v-if="!collapsed || mobileOpen" class="menu-text">{{ item.title }}</span>
           </router-link>
         </div>
       </nav>
-      <div class="collapse-btn" @click="collapsed = !collapsed">
+      <div v-if="!mobileOpen" class="collapse-btn" @click="collapsed = !collapsed">
         <span v-if="!collapsed">⟨ 收起</span>
         <span v-else>⟩</span>
       </div>
@@ -58,6 +77,8 @@ const currentTitle = computed(() => route.meta.title || '');
     <!-- 主内容 -->
     <div class="main">
       <header class="header">
+        <!-- 手机汉堡按钮 -->
+        <button class="hamburger" @click="mobileOpen = !mobileOpen">☰</button>
         <h2 class="page-title">{{ currentTitle }}</h2>
       </header>
       <main class="content">
@@ -71,6 +92,11 @@ const currentTitle = computed(() => route.meta.title || '');
 .app-layout {
   display: flex;
   height: 100%;
+}
+
+/* ---------- 移动端遮罩 ---------- */
+.mobile-mask {
+  display: none;
 }
 
 .sidebar {
@@ -183,6 +209,17 @@ const currentTitle = computed(() => route.meta.title || '');
   align-items: center;
   padding: 0 24px;
   flex-shrink: 0;
+  gap: 10px;
+}
+
+.hamburger {
+  display: none;
+  border: none;
+  background: none;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px 8px;
+  color: #303133;
 }
 
 .page-title {
@@ -195,5 +232,43 @@ const currentTitle = computed(() => route.meta.title || '');
   flex: 1;
   overflow-y: auto;
   padding: 20px 24px;
+}
+
+/* ---------- 移动端适配 ---------- */
+@media (max-width: 767px) {
+  .mobile-mask {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 99;
+  }
+
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 100;
+    width: 220px !important;
+    transform: translateX(-100%);
+    transition: transform 0.25s;
+  }
+
+  .sidebar.mobile-open {
+    transform: translateX(0);
+  }
+
+  .hamburger {
+    display: block;
+  }
+
+  .header {
+    padding: 0 12px;
+  }
+
+  .content {
+    padding: 12px;
+  }
 }
 </style>
