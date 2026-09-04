@@ -150,7 +150,11 @@ def build_style_rotation_response(
     db: Session,
     params: StyleRotationParams,
 ) -> dict[str, Any]:
-    """路由层入口: 加载数据 + 计算 + 包装 meta/series/summary。"""
+    """路由层入口: 加载数据 + 计算 + 包装 meta/series/summary。
+
+    query_start 会向前多取 return_window + 150 个自然日的数据作为收益窗口预热,
+    保证裁剪后首日就有有效 spread 值。
+    """
     query_start = None
     if params.start_date:
         query_start = date.fromisoformat(params.start_date) - timedelta(
@@ -168,15 +172,28 @@ def build_style_rotation_response(
 
     result = calculate_style_rotation(df_left, df_right, params)
 
+    # 预热不足检测: 请求起点早于首个有效 spread 起点 → 提示数据预热期被裁掉
+    warmup_note = None
+    if params.start_date and result["dates"] and result["dates"][0] > params.start_date:
+        warmup_note = (
+            f"请求起点 {params.start_date} 早于首个有效数据 {result['dates'][0]} "
+            f"(收益窗口 {params.return_window} 日预热期不足, 数据库该指数最早数据点之后 "
+            f"需累计 {params.return_window} 个交易日才有首个 spread 值)"
+        )
+
+    meta = {
+        "left_symbol": params.left_symbol,
+        "right_symbol": params.right_symbol,
+        "return_window": params.return_window,
+        "ma_window": params.ma_window,
+        "start_date": params.start_date,
+        "end_date": params.end_date,
+    }
+    if warmup_note:
+        meta["warmup_note"] = warmup_note
+
     return {
-        "meta": {
-            "left_symbol": params.left_symbol,
-            "right_symbol": params.right_symbol,
-            "return_window": params.return_window,
-            "ma_window": params.ma_window,
-            "start_date": params.start_date,
-            "end_date": params.end_date,
-        },
+        "meta": meta,
         "series": {
             "dates": result["dates"],
             "spread": result["spread"],
