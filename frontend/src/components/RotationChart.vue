@@ -156,6 +156,10 @@ function buildOption() {
         start: zoomRange.start,
         end: zoomRange.end,
         zoomOnMouseWheel: true,
+        // 手机端: 单指拖动只查值(tooltip/十字光标跟手), 不平移窗口——
+        // 否则用滑块框好区间后手指一碰画布窗口就滑走; 平移用底部滑块, 缩放用双指捏合。
+        // 桌面端保留鼠标拖拽平移的习惯用法
+        moveOnMouseMove: !mobile,
       },
     ],
     grid: [{ top: mobile ? '26%' : '20%', height: mobile ? '58%' : '65%', left: gridLeft, right: gridRight }],
