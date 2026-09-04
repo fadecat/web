@@ -117,6 +117,10 @@ def calculate_style_rotation(
 
     df["date_str"] = df["trade_date"].dt.strftime("%Y-%m-%d")
 
+    # 裁剪前的首个有效 spread 日期(供预热不足判断用):
+    # 若它 >= 请求起点, 说明连计算序列的第一个值都在请求起点之后, 预热真的不够
+    first_valid_date = df["date_str"].iloc[0]
+
     # 日期范围裁剪
     if params.start_date:
         df = df[df["date_str"] >= params.start_date].reset_index(drop=True)
@@ -136,6 +140,7 @@ def calculate_style_rotation(
 
     return {
         "dates": df["date_str"].tolist(),
+        "first_valid_date": first_valid_date,
         "spread": [round(float(v), 2) for v in df["spread"].tolist()],
         "ma": [round(float(v), 2) for v in df["ma"].tolist()],
         "p90_dynamic": [round(float(v), 2) for v in df["p90_dynamic"].tolist()],
@@ -154,13 +159,21 @@ def build_style_rotation_response(
 ) -> dict[str, Any]:
     """路由层入口: 加载数据 + 计算 + 包装 meta/series/summary。
 
-    query_start 会向前多取 return_window + 150 个自然日的数据作为收益窗口预热,
-    保证裁剪后首日就有有效 spread 值。
+    query_start 会向前多取约 return_window+ma_window 个交易日对应的自然日
+    作为收益窗口预热, 保证裁剪后首日就有有效 spread 值。
     """
     query_start = None
     if params.start_date:
+        # 预热缓冲: 首个 spread 出现在 query_start 后第 return_window 个交易日,
+        # 要它 ≤ start_date, query_start 必须提前 ≥ return_window+ma_window 个交易日。
+        # 交易日/自然日比 A 股实测约 0.68 (全年约 243/365), 取 0.65 留余量;
+        # 再加 45 天防节假日分布不均的边界抖动。
+        # 250/20 时 buffer = 270/0.65+45 ≈ 460 自然日 ≈ 285 个交易日 > 269 需求。
+        buffer_days = int(
+            (params.return_window + params.ma_window) / 0.65
+        ) + 45
         query_start = date.fromisoformat(params.start_date) - timedelta(
-            days=max(400, params.return_window + 150)
+            days=max(buffer_days, 460)
         )
     query_end = date.fromisoformat(params.end_date) if params.end_date else None
 
@@ -174,14 +187,21 @@ def build_style_rotation_response(
 
     result = calculate_style_rotation(df_left, df_right, params)
 
-    # 预热不足检测: 请求起点早于首个有效 spread 起点 → 提示数据预热期被裁掉
+    # 预热不足检测: 判断「计算序列里是否存在本应落在请求起点之前的有效数据」。
+    # 不能用裁剪后首日 > start_date 判断 —— 请求起点是非交易日(周末/节假日)时,
+    # 首个交易日必然晚于 start_date, 字符串比较恒为 True 导致每次都误报。
+    # 正确口径: 计算(裁剪前)的首个有效 spread 日期 < start_date 即预热充足;
+    # 首个有效 spread 日期 >= start_date 才说明预热期真的不够。
     warmup_note = None
-    if params.start_date and result["dates"] and result["dates"][0] > params.start_date:
-        warmup_note = (
-            f"请求起点 {params.start_date} 早于首个有效数据 {result['dates'][0]} "
-            f"(收益窗口 {params.return_window} 日预热期不足, 数据库该指数最早数据点之后 "
-            f"需累计 {params.return_window} 个交易日才有首个 spread 值)"
-        )
+    if params.start_date and result["dates"]:
+        first_valid_date = result["first_valid_date"]
+        if first_valid_date and first_valid_date >= params.start_date:
+            warmup_note = (
+                f"预热期不足: 数据库该指数最早数据点之后需累计 "
+                f"{params.return_window} 个交易日才有首个 spread 值 "
+                f"(首个有效数据 {first_valid_date}, 晚于请求起点 {params.start_date}), "
+                f"请将起始日期推迟或等待历史数据积累"
+            )
 
     meta = {
         "left_symbol": params.left_symbol,
