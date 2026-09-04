@@ -13,40 +13,68 @@ const result = ref(null); // 盘中筛选结果 { total_all, total_filtered, row
 //     这里把白名单内 7 档的选择权完整交给用户, 默认全选
 const FILTERS_STORAGE_KEY = 'cb-intraday-filters';
 
+// 旧版 localStorage 存的是数字+可能混入 el-input-number 的 0 值, 版本号升位直接作废重建
+const FILTERS_STORAGE_VERSION = 'v2';
+
+function loadSavedFilters() {
+  try {
+    const saved = localStorage.getItem(FILTERS_STORAGE_KEY);
+    if (!saved) return null;
+    const parsed = JSON.parse(saved);
+    if (parsed?._v !== FILTERS_STORAGE_VERSION) return null; // 旧格式作废
+    return parsed;
+  } catch (e) {
+    return null;
+  }
+}
+
 const RATING_OPTIONS = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-'];
 
 // 默认预置(对齐集思录截图): 价格≤120 / 溢价率≤30 / 评级全选
+// 数值条件用字符串存(普通输入框所见即所得, 无 .00 强制格式化), 查询时才转数字
+// premium_rt 为转股溢价率(现价/转换价值-1, 集思录字段实测吻合), 表单标签写全称防歧义
 const defaultFilters = () => ({
-  price_min: null,
-  price_max: 120,
-  premium_rt_max: 30,
-  curr_iss_amt_max: null,
-  ytm_min: null,
-  year_left_min: null,
-  year_left_max: null,
+  price_min: '',
+  price_max: '120',
+  premium_rt_max: '30',
+  curr_iss_amt_max: '',
+  ytm_min: '',
+  year_left_min: '',
+  year_left_max: '',
   ratings: [...RATING_OPTIONS],
 });
 const filters = ref(defaultFilters());
 
 // 恢复上次条件(集思录同款体验: 记住筛选)
 onMounted(() => {
-  try {
-    const saved = localStorage.getItem(FILTERS_STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      filters.value = { ...defaultFilters(), ...parsed };
-    }
-  } catch (e) { /* 忽略恢复失败 */ }
+  const saved = loadSavedFilters();
+  if (saved) {
+    filters.value = { ...defaultFilters(), ...saved };
+  }
 });
 
 watch(filters, (f) => {
   try {
-    localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(f));
+    localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify({ ...f, _v: FILTERS_STORAGE_VERSION }));
   } catch (e) { /* 忽略持久化失败 */ }
 }, { deep: true });
 
 const resetFilters = () => {
   filters.value = defaultFilters();
+};
+
+// 查询前把字符串条件转数字: 空串/非法输入 → 剔除该条件
+const normalizeFilters = (f) => {
+  const numKeys = [
+    'price_min', 'price_max', 'premium_rt_max', 'curr_iss_amt_max',
+    'ytm_min', 'year_left_min', 'year_left_max',
+  ];
+  const out = { ratings: [...(f.ratings || [])] };
+  for (const k of numKeys) {
+    const v = parseFloat(String(f[k]).trim());
+    if (!Number.isNaN(v)) out[k] = v;
+  }
+  return out;
 };
 
 const fmtNum = (v, d = 2) => (v == null ? '—' : Number(v).toFixed(d));
@@ -55,7 +83,7 @@ const fmtPct = (v) => (v == null ? '—' : `${Number(v).toFixed(2)}%`);
 const runScreen = async () => {
   loading.value = true;
   try {
-    result.value = await screenBondsIntraday(filters.value);
+    result.value = await screenBondsIntraday(normalizeFilters(filters.value));
     page.value = 1; // 新查询重置分页
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '实时数据拉取失败,请重试');
@@ -64,18 +92,46 @@ const runScreen = async () => {
   }
 };
 
-// ── 结果分页: 每页 10 条, 手动翻页 ────────────────────
+// ── 结果排序 + 分页 ──────────────────────────────────
+// 排序作用于全量结果(不只是当前页), 默认到期收益率降序
+// 分页为前端切片: 后端一次返回全部符合条件的行, 翻页零等待且数据时点一致
 const PAGE_SIZE = 10;
 const page = ref(1);
+const tableRef = ref(null);
+const sortState = ref({ prop: 'ytm_simple', order: 'descending' }); // 与 default-sort 一致
+
+const sortedRows = computed(() => {
+  const rows = [...(result.value?.rows ?? [])];
+  const { prop, order } = sortState.value;
+  if (!prop || !order) return rows;
+  const dir = order === 'ascending' ? 1 : -1;
+  rows.sort((a, b) => {
+    const va = a[prop];
+    const vb = b[prop];
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1; // 缺数据沉底
+    if (vb == null) return -1;
+    return va < vb ? -dir : va > vb ? dir : 0;
+  });
+  return rows;
+});
+
 const totalPages = computed(() => {
-  const n = result.value?.total_filtered ?? 0;
+  const n = sortedRows.value.length;
   return Math.max(1, Math.ceil(n / PAGE_SIZE));
 });
+
+// 排序变化时回到第 1 页(跨页序号由 seqStart 保证连续)
+const seqStart = computed(() => (page.value - 1) * PAGE_SIZE + 1);
 const pagedRows = computed(() => {
-  const rows = result.value?.rows ?? [];
   const start = (page.value - 1) * PAGE_SIZE;
-  return rows.slice(start, start + PAGE_SIZE);
+  return sortedRows.value.slice(start, start + PAGE_SIZE);
 });
+
+const onSortChange = ({ prop, order }) => {
+  sortState.value = { prop, order };
+  page.value = 1;
+};
 </script>
 
 <template>
@@ -102,27 +158,24 @@ const pagedRows = computed(() => {
         <div class="jfilter-row">
           <div class="jfilter-label">转债价格</div>
           <div class="jfilter-control range-row">
-            <el-input-number
+            <el-input
               v-model="filters.price_min"
-              :min="0" :max="1000" :precision="2" :controls="false"
-              placeholder="最低" size="small"
+              placeholder="最低" size="small" clearable
             />
             <span class="sep">-</span>
-            <el-input-number
+            <el-input
               v-model="filters.price_max"
-              :min="0" :max="1000" :precision="2" :controls="false"
-              placeholder="最高" size="small"
+              placeholder="最高" size="small" clearable
             />
             <span class="unit">元</span>
           </div>
         </div>
         <div class="jfilter-row">
-          <div class="jfilter-label">溢价率≤</div>
+          <div class="jfilter-label">转股溢价率≤</div>
           <div class="jfilter-control range-row">
-            <el-input-number
+            <el-input
               v-model="filters.premium_rt_max"
-              :min="-100" :max="1000" :precision="2" :controls="false"
-              placeholder="不限" size="small"
+              placeholder="不限" size="small" clearable
             />
             <span class="unit">%</span>
           </div>
@@ -130,10 +183,9 @@ const pagedRows = computed(() => {
         <div class="jfilter-row">
           <div class="jfilter-label">剩余规模≤</div>
           <div class="jfilter-control range-row">
-            <el-input-number
+            <el-input
               v-model="filters.curr_iss_amt_max"
-              :min="0" :max="500" :precision="2" :controls="false"
-              placeholder="不限" size="small"
+              placeholder="不限" size="small" clearable
             />
             <span class="unit">亿元</span>
           </div>
@@ -141,10 +193,9 @@ const pagedRows = computed(() => {
         <div class="jfilter-row">
           <div class="jfilter-label">到期收益率≥</div>
           <div class="jfilter-control range-row">
-            <el-input-number
+            <el-input
               v-model="filters.ytm_min"
-              :min="-100" :max="100" :precision="2" :controls="false"
-              placeholder="不限" size="small"
+              placeholder="不限" size="small" clearable
             />
             <span class="unit">%</span>
           </div>
@@ -152,16 +203,14 @@ const pagedRows = computed(() => {
         <div class="jfilter-row">
           <div class="jfilter-label">剩余年限</div>
           <div class="jfilter-control range-row">
-            <el-input-number
+            <el-input
               v-model="filters.year_left_min"
-              :min="0" :max="10" :precision="1" :controls="false"
-              placeholder="最低" size="small"
+              placeholder="最低" size="small" clearable
             />
             <span class="sep">-</span>
-            <el-input-number
+            <el-input
               v-model="filters.year_left_max"
-              :min="0" :max="10" :precision="1" :controls="false"
-              placeholder="最高" size="small"
+              placeholder="最高" size="small" clearable
             />
             <span class="unit">年</span>
           </div>
@@ -179,7 +228,7 @@ const pagedRows = computed(() => {
         </div>
       </div>
       <div class="form-tip">
-        实时数据来自集思录，每次查询现拉最新行情（约 1~2 秒）；到期收益率 = (到期赎回价 − 现价) ÷ 现价，即持有到期的总回报率（未年化、不计利息税）
+        实时数据来自集思录，每次查询现拉最新行情（约 1~2 秒）；到期收益率 = (到期赎回价 − 现价) ÷ 现价，即持有到期的总回报率（未年化、不计利息税）；转股溢价率 = 现价 ÷ 转换价值 − 1
       </div>
     </el-card>
 
@@ -192,14 +241,20 @@ const pagedRows = computed(() => {
         </span>
       </div>
       <p class="result-summary">
-        实时 {{ result.total_all }} 只 → 符合条件 <b>{{ result.total_filtered }}</b> 只
+        实时 {{ result.total_all }} 只 → 符合条件 <b>{{ result.total_filtered }}</b> 只 · 默认按到期收益率降序（点表头可换序，序号跨页连续）
       </p>
       <el-table
+        ref="tableRef"
         :data="pagedRows"
         stripe
         size="small"
         max-height="65vh"
+        :default-sort="{ prop: 'ytm_simple', order: 'descending' }"
+        @sort-change="onSortChange"
       >
+        <el-table-column label="序" width="55" align="center">
+          <template #default="{ $index }">{{ seqStart + $index }}</template>
+        </el-table-column>
         <el-table-column prop="code" label="代码" width="90" fixed="left" />
         <el-table-column prop="name" label="名称" width="100" fixed="left" />
         <el-table-column prop="price" label="现价" width="80" align="right">
@@ -223,7 +278,10 @@ const pagedRows = computed(() => {
             <span v-else>—</span>
           </template>
         </el-table-column>
-        <el-table-column prop="premium_rt" label="溢价率" width="90" align="right" sortable>
+        <el-table-column prop="redeem_price" label="到期赎回价" width="95" align="right">
+          <template #default="{ row }">{{ fmtNum(row.redeem_price, 1) }}</template>
+        </el-table-column>
+        <el-table-column prop="premium_rt" label="转股溢价率" width="100" align="right" sortable>
           <template #default="{ row }">{{ fmtPct(row.premium_rt) }}</template>
         </el-table-column>
         <el-table-column prop="year_left" label="剩余年限" width="85" align="right" sortable>
@@ -233,18 +291,6 @@ const pagedRows = computed(() => {
           <template #default="{ row }">{{ fmtNum(row.curr_iss_amt, 1) }}</template>
         </el-table-column>
         <el-table-column prop="rating" label="评级" width="70" align="center" />
-        <el-table-column prop="redeem_price" label="赎回价" width="80" align="right">
-          <template #default="{ row }">{{ fmtNum(row.redeem_price, 1) }}</template>
-        </el-table-column>
-        <el-table-column prop="redeem_gap" label="保本价差" width="90" align="right" sortable>
-          <template #default="{ row }">
-            <span
-              v-if="row.redeem_gap != null"
-              :style="{ color: row.redeem_gap >= 0 ? '#67c23a' : '#f56c6c' }"
-            >{{ row.redeem_gap >= 0 ? '+' : '' }}{{ fmtNum(row.redeem_gap, 1) }}</span>
-            <span v-else>—</span>
-          </template>
-        </el-table-column>
         <el-table-column prop="redeem" label="强赎" width="110" />
       </el-table>
       <div class="pager-bar">
