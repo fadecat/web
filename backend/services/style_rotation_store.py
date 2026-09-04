@@ -52,3 +52,41 @@ def save_index_quotes(
 
     db.commit()
     return inserted
+
+
+def get_index_data_summary(db: Session, index_code: str) -> dict[str, Any] | None:
+    """返回某指数的落库概况: 条数、最早/最晚日期。空表返回 None。"""
+    rows = db.query(IndexDailyQuote.trade_date).filter(
+        IndexDailyQuote.index_code == index_code,
+    ).order_by(IndexDailyQuote.trade_date.asc()).all()
+    if not rows:
+        return None
+    dates = [r[0] for r in rows]
+    return {"count": len(dates), "first": dates[0], "last": dates[-1]}
+
+
+def scan_date_gaps(
+    db: Session,
+    index_code: str,
+    max_gap_days: int = 11,
+) -> list[dict[str, Any]]:
+    """扫描某指数相邻交易日期间的异常空洞。
+
+    相邻落库日期间隔超过 max_gap_days 天视为可疑(正常周末 2-3 天,长假最多约 9 天)。
+    返回 [{prev, next, gap_days}, ...] 升序。
+    """
+    rows = db.query(IndexDailyQuote.trade_date).filter(
+        IndexDailyQuote.index_code == index_code,
+    ).order_by(IndexDailyQuote.trade_date.asc()).all()
+    dates = [r[0] for r in rows]
+
+    gaps: list[dict[str, Any]] = []
+    for i in range(1, len(dates)):
+        gap = (dates[i] - dates[i - 1]).days
+        if gap > max_gap_days:
+            gaps.append({
+                "prev": dates[i - 1].isoformat(),
+                "next": dates[i].isoformat(),
+                "gap_days": gap,
+            })
+    return gaps
