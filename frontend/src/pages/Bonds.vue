@@ -235,12 +235,13 @@ const onSortChange = ({ prop, order }) => {
         :default-sort="{ prop: 'ytm_simple', order: 'descending' }"
         @sort-change="onSortChange"
       >
-        <!-- 序/名称/代码均固定左侧: Element Plus 会把 fixed 列排到最前, 序号想排第一必须同为 fixed -->
-        <el-table-column label="序" width="45" align="center" fixed="left">
-          <template #default="{ $index }">{{ $index + 1 }}</template>
+        <!-- 可转债列: 名称+代码合并(代码灰色小字在名称下方), 手机端左侧固定 -->
+        <el-table-column label="可转债" width="108" fixed="left">
+          <template #default="{ row }">
+            <div class="cb-name">{{ row.name }}</div>
+            <div class="cb-code">{{ row.code }}</div>
+          </template>
         </el-table-column>
-        <el-table-column prop="name" label="名称" width="100" fixed="left" />
-        <el-table-column prop="code" label="代码" width="84" fixed="left" />
         <el-table-column prop="price" label="现价" width="80" align="right">
           <template #default="{ row }">{{ fmtNum(row.price, 2) }}</template>
         </el-table-column>
@@ -414,6 +415,18 @@ const onSortChange = ({ prop, order }) => {
   color: #67c23a;
 }
 
+/* ── 可转债列: 名称+灰色小字代码 ── */
+.cb-name {
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.cb-code {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.3;
+}
+
 /* ── 移动端适配 ── */
 @media (max-width: 767px) {
   .jfilter-label {
@@ -424,6 +437,23 @@ const onSortChange = ({ prop, order }) => {
   .range-row .unit {
     width: 24px;
     font-size: 12px;
+  }
+
+  /* ── 表头吸顶 ──
+     手机屏幕短, 行数多时下滑后看不到列名; 表头吸附在滚动容器(.content)顶部
+     el-card__body(el-card 继承) / el-table 默认 overflow 非 visible, 会把 sticky
+     约束在自己盒内导致表头只能吸在卡片内部, 需全部放开让约束上溯到 .content */
+  .result-card,
+  .result-card :deep(.el-card__body),
+  .result-card :deep(.el-table) {
+    overflow: visible;
+  }
+
+  .result-card :deep(.el-table__header-wrapper) {
+    position: sticky;
+    top: 0;
+    z-index: 6; /* 盖过表体(含固定列 z-index:3), 低于抽屉遮罩(99) */
+    background: var(--el-table-header-bg-color, #f8f8f8);
   }
 }
 </style>
