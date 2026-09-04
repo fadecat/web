@@ -9,17 +9,22 @@ const result = ref(null); // 盘中筛选结果 { total_all, total_filtered, row
 // ── 筛选条件(仿集思录手机端) ─────────────────────────
 // 页面唯一筛选机制: 实时拉集思录 → 纯条件过滤, 不打分不排序
 // 顺序=集思录自然顺序(默认双低升序); 结果页内直出, 不用弹窗
+// 注: 抓取层已有评级白名单(AAA~A-, 剔除无评级/BB 及以下),
+//     这里把白名单内 7 档的选择权完整交给用户, 默认全选
 const FILTERS_STORAGE_KEY = 'cb-intraday-filters';
 
+const RATING_OPTIONS = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-'];
+
+// 默认预置(对齐集思录截图): 价格≤120 / 溢价率≤30 / 评级全选
 const defaultFilters = () => ({
   price_min: null,
-  price_max: null,
-  premium_rt_max: null,
+  price_max: 120,
+  premium_rt_max: 30,
   curr_iss_amt_max: null,
   ytm_min: null,
   year_left_min: null,
   year_left_max: null,
-  ratings: [],
+  ratings: [...RATING_OPTIONS],
 });
 const filters = ref(defaultFilters());
 
@@ -39,8 +44,6 @@ watch(filters, (f) => {
     localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(f));
   } catch (e) { /* 忽略持久化失败 */ }
 }, { deep: true });
-
-const RATING_OPTIONS = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A'];
 
 const resetFilters = () => {
   filters.value = defaultFilters();
@@ -176,7 +179,7 @@ const pagedRows = computed(() => {
         </div>
       </div>
       <div class="form-tip">
-        实时数据来自集思录，每次查询现拉最新行情（约 1~2 秒）；到期收益率为简化口径：(到期赎回价 − 现价) ÷ 现价 ÷ 剩余年限
+        实时数据来自集思录，每次查询现拉最新行情（约 1~2 秒）；到期收益率 = (到期赎回价 − 现价) ÷ 现价，即持有到期的总回报率（未年化、不计利息税）
       </div>
     </el-card>
 

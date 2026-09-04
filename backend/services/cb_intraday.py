@@ -9,9 +9,10 @@
 - 时点元信息: 返回 quote_time(集思录行情时点) 供前端展示数据时点
 
 到期收益率(简化口径, 区别于集思录 YTM):
-    ytm_simple = (到期赎回价 − 现价) / 现价 / 剩余年限 × 100
-    假设持有到期按赎回价兑付, 不计各期利息与税; 年限缺失或 ≤0 时不计算。
-    各平台 YTM 口径参差(计息/扣税差异), 用该简化口径保证内部一致性。
+    ytm_simple = (到期赎回价 − 现价) / 现价 × 100
+    即"持有到期的总回报率"(未年化): 假设持有到期按赎回价兑付,
+    不计各期利息与税, 也不做年限年化。赎回价缺失时不计算。
+    各平台 YTM 口径参差(计息/扣税/年化差异), 用该简化口径保证内部一致性。
 
 盘后调用同样有意义: 集思录收盘后列表接口返回当日收盘价,
 比"上一次日频任务的快照"更新(任务失败/漏跑的兜底)。
@@ -111,11 +112,10 @@ def _live_row(rec: dict[str, Any], redeem_cell: dict[str, Any] | None) -> dict[s
     redeem_price = _num((redeem_cell or {}).get("redeem_price"))
     year_left = _num(rec.get("year_left"))
 
-    # 到期收益率(简化): (赎回价-现价)/现价/剩余年限 年化; 数据缺失或年限≤0 不算
+    # 到期收益率(简化): (赎回价-现价)/现价, 持有到期总回报率(未年化); 赎回价缺失不算
     ytm_simple: float | None = None
     if redeem_price is not None and price is not None and price > 0:
-        if year_left is not None and year_left > 0:
-            ytm_simple = round((redeem_price - price) / price / year_left * 100, 3)
+        ytm_simple = round((redeem_price - price) / price * 100, 3)
 
     return {
         "code": str(rec.get("bond_id") or ""),
