@@ -6,11 +6,14 @@
 from __future__ import annotations
 
 import re
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml
+from loguru import logger
 
 from backend.config import CONFIG_DIR
 
@@ -94,6 +97,54 @@ DEFAULT_HEADERS: dict[str, str] = {
 # 易方达 CDN 对默认 python-requests UA 易限流,统一带浏览器头
 DEFAULT_TIMEOUT: float = 15.0
 DEFAULT_RETRIES: int = 3
+
+
+def fetch_with_retry(
+    method: str,
+    url: str,
+    *,
+    retries: int = DEFAULT_RETRIES,
+    backoff_base: float = 1.5,
+    _transport: httpx.BaseTransport | None = None,
+    **kwargs,
+):
+    """带指数退避的 HTTP 请求。
+
+    网络错误/超时/5xx/429 时重试; 其他 4xx 直接抛出(客户端错误重试无意义)。
+    返回 httpx.Response; 重试耗尽后抛出最后一次异常。
+
+    _transport: 仅测试用(httpx.MockTransport), 注入后走 httpx.Client。
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, retries + 1):
+        retryable = False
+        try:
+            if _transport is not None:
+                with httpx.Client(transport=_transport, timeout=DEFAULT_TIMEOUT) as client:
+                    resp = client.request(method, url, **kwargs)
+            else:
+                resp = httpx.request(method, url, timeout=DEFAULT_TIMEOUT, **kwargs)
+            if resp.status_code == 429 or resp.status_code >= 500:
+                retryable = True
+                last_exc = httpx.HTTPStatusError(
+                    f"server error {resp.status_code}", request=resp.request, response=resp,
+                )
+            else:
+                return resp
+        except (httpx.HTTPError, OSError) as exc:
+            # 网络错误/超时/连接失败 → 可重试
+            retryable = True
+            last_exc = exc
+
+        if retryable and attempt < retries:
+            sleep_s = backoff_base ** attempt
+            logger.warning(
+                f"HTTP 请求失败(第 {attempt}/{retries} 次), {sleep_s:.1f}s 后重试: "
+                f"{url} - {last_exc}"
+            )
+            time.sleep(sleep_s)
+
+    raise last_exc if last_exc else RuntimeError("fetch_with_retry: 未知错误")
 
 
 # ---------------------------------------------------------------------------

@@ -117,10 +117,6 @@ def calculate_style_rotation(
 
     df["date_str"] = df["trade_date"].dt.strftime("%Y-%m-%d")
 
-    # 全局阈值(整个历史区间的 90/10 分位)
-    global_p90 = round(float(df["spread"].quantile(0.9)), 2)
-    global_p10 = round(float(df["spread"].quantile(0.1)), 2)
-
     # 日期范围裁剪
     if params.start_date:
         df = df[df["date_str"] >= params.start_date].reset_index(drop=True)
@@ -131,6 +127,12 @@ def calculate_style_rotation(
 
     if df.empty:
         raise InsufficientDataError("empty after date filter")
+
+    # 全局阈值(最终输出序列的 90/10 分位)。
+    # 注意: 必须在 MA/分位预热行 dropna 之后计算 —— 若在预热前算,
+    # 样本会混入 19 行不出现在输出里的预热数据, 导致阈值线与图上序列不一致。
+    global_p90 = round(float(df["spread"].quantile(0.9)), 2)
+    global_p10 = round(float(df["spread"].quantile(0.1)), 2)
 
     return {
         "dates": df["date_str"].tolist(),

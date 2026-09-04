@@ -216,6 +216,16 @@ watch(
       style="margin-bottom: 16px"
     />
 
+    <el-alert
+      v-if="data?.meta?.warmup_note"
+      :title="`数据预热期不足: 显示范围早于可用数据`"
+      :description="data.meta.warmup_note"
+      type="warning"
+      :closable="false"
+      show-icon
+      style="margin-bottom: 16px"
+    />
+
     <el-card v-if="data && data.summary" class="summary-card" shadow="never">
       <div class="summary-grid">
         <div class="summary-item">

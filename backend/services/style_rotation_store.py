@@ -55,14 +55,15 @@ def save_index_quotes(
 
 
 def get_index_data_summary(db: Session, index_code: str) -> dict[str, Any] | None:
-    """返回某指数的落库概况: 条数、最早/最晚日期。空表返回 None。"""
-    rows = db.query(IndexDailyQuote.trade_date).filter(
-        IndexDailyQuote.index_code == index_code,
-    ).order_by(IndexDailyQuote.trade_date.asc()).all()
-    if not rows:
-        return None
-    dates = [r[0] for r in rows]
-    return {"count": len(dates), "first": dates[0], "last": dates[-1]}
+    """返回某指数的落库概况: 条数、最早/最晚日期。空表返回 None。
+
+    实现已泛化到 backend.services.data_integrity, 此处保留原签名向后兼容。
+    """
+    from backend.services.data_integrity import get_table_summary
+
+    return get_table_summary(
+        db, IndexDailyQuote, "trade_date", "index_code", index_code,
+    )
 
 
 def scan_date_gaps(
@@ -74,19 +75,11 @@ def scan_date_gaps(
 
     相邻落库日期间隔超过 max_gap_days 天视为可疑(正常周末 2-3 天,长假最多约 9 天)。
     返回 [{prev, next, gap_days}, ...] 升序。
-    """
-    rows = db.query(IndexDailyQuote.trade_date).filter(
-        IndexDailyQuote.index_code == index_code,
-    ).order_by(IndexDailyQuote.trade_date.asc()).all()
-    dates = [r[0] for r in rows]
 
-    gaps: list[dict[str, Any]] = []
-    for i in range(1, len(dates)):
-        gap = (dates[i] - dates[i - 1]).days
-        if gap > max_gap_days:
-            gaps.append({
-                "prev": dates[i - 1].isoformat(),
-                "next": dates[i].isoformat(),
-                "gap_days": gap,
-            })
-    return gaps
+    实现已泛化到 backend.services.data_integrity, 此处保留原签名向后兼容。
+    """
+    from backend.services.data_integrity import scan_date_gaps_generic
+
+    return scan_date_gaps_generic(
+        db, IndexDailyQuote, "trade_date", "index_code", index_code, max_gap_days,
+    )

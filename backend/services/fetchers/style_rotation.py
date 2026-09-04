@@ -11,9 +11,11 @@ import json
 from datetime import date, timedelta
 from typing import Any
 
-import httpx
-
-from backend.utils import DEFAULT_HEADERS, DEFAULT_TIMEOUT, parse_float
+from backend.utils import (
+    DEFAULT_HEADERS,
+    fetch_with_retry,
+    parse_float,
+)
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -78,7 +80,10 @@ def fetch_index_kline(
     }
     headers = {**DEFAULT_HEADERS, "Referer": "https://gu.qq.com/"}
 
-    resp = httpx.get(TENCENT_KLINE_URL, params=params, headers=headers, timeout=DEFAULT_TIMEOUT)
+    # 带指数退避重试: 网络抖动/超时/5xx/429 自动重试, 4xx 直接抛出
+    resp = fetch_with_retry(
+        "GET", TENCENT_KLINE_URL, params=params, headers=headers,
+    )
     resp.raise_for_status()
 
     # 响应是 JS 赋值格式: kline_day={...}

@@ -62,6 +62,62 @@ def _maybe_backfill_style_rotation() -> None:
     )
 
 
+def _startup_integrity_scan() -> None:
+    """启动巡检: 对全部日频表做一次概况+空洞扫描,结果只写日志。
+
+    放在调度器线程池执行,不阻塞启动; 发现空洞不自动修复,
+    由人判断是否需要手动回补(转债类表历史本就无法回补,只报告)。
+    """
+    def _scan():
+        try:
+            from backend.services.data_integrity import scan_all_daily_tables
+
+            db = SessionLocal()
+            try:
+                report = scan_all_daily_tables(db)
+            finally:
+                db.close()
+
+            for t in report["tables"]:
+                ents = t.get("entities") or []
+                counts = [
+                    f"{e['code']}:{e['count']}" if "code" in e else f"{e['count']}"
+                    for e in ents[:8]
+                ]
+                extra = f", {len(ents)} 个实体" if len(ents) > 1 else ""
+                skipped = f" | {t['skipped']}" if t.get("skipped") else ""
+                logger.info(
+                    f"[完整性巡检] {t['name']}: "
+                    f"{', '.join(counts) if counts else '空表'}{extra}{skipped}"
+                )
+                for g in t["gaps"][:10]:
+                    ent = f"[{g['entity']}] " if g.get("entity") else ""
+                    logger.warning(
+                        f"[完整性巡检] {t['name']} {ent}可疑空洞: "
+                        f"{g['prev']} -> {g['next']} ({g['gap_days']} 天)"
+                    )
+                if len(t["gaps"]) > 10:
+                    logger.warning(
+                        f"[完整性巡检] {t['name']} 还有 {len(t['gaps']) - 10} 处空洞未展开"
+                    )
+            if report["total_gaps"] == 0:
+                logger.info("[完整性巡检] 全部日频表无异常空洞")
+            else:
+                logger.warning(
+                    f"[完整性巡检] 共发现 {report['total_gaps']} 处可疑空洞,详见上方日志"
+                )
+        except Exception as exc:
+            logger.error(f"启动完整性巡检失败(不影响服务): {exc}")
+
+    scheduler.add_job(
+        _scan,
+        trigger="date",
+        id="startup_integrity_scan",
+        name="启动数据完整性巡检",
+        replace_existing=True,
+    )
+
+
 def start_scheduler() -> None:
     """启动调度器并注册任务。
 
@@ -138,6 +194,8 @@ def start_scheduler() -> None:
     scheduler.start()
     # 启动后异步检查风格轮动数据,空表自动回补(不阻塞启动)
     _maybe_backfill_style_rotation()
+    # 启动后异步巡检全部日频表的完整性(概况+空洞,只报告不修复)
+    _startup_integrity_scan()
     logger.info(
         "scheduler started: valuation@15:30, style_rotation@15:35, "
         "cb_index@15:40, cb_list@15:45, cb_redeem@15:50"
