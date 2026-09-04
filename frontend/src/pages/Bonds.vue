@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { ElMessage } from 'element-plus';
 import { screenBondsIntraday } from '../api';
 
@@ -116,25 +116,6 @@ const sortedRows = computed(() => {
 const onSortChange = ({ prop, order }) => {
   sortState.value = { prop, order };
 };
-
-// ── 表格视口自适应高度 ────────────────────────────────
-// 不分页后行数不定, max-height 动态取"视口高度-表格顶部偏移", 数据多时表头固定+内部滚动
-const tableMaxHeight = ref(600);
-const updateTableHeight = () => {
-  const el = document.querySelector('.result-card .el-table');
-  const top = el ? el.getBoundingClientRect().top : 400;
-  tableMaxHeight.value = Math.max(320, window.innerHeight - top - 24);
-};
-onMounted(() => {
-  window.addEventListener('resize', updateTableHeight);
-});
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', updateTableHeight);
-});
-watch(result, () => {
-  // 查询结果渲染后按实际位置重算一次
-  requestAnimationFrame(updateTableHeight);
-});
 </script>
 
 <template>
@@ -251,7 +232,6 @@ watch(result, () => {
         :data="sortedRows"
         stripe
         size="small"
-        :max-height="tableMaxHeight"
         :default-sort="{ prop: 'ytm_simple', order: 'descending' }"
         @sort-change="onSortChange"
       >
