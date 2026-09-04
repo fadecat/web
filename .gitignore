@@ -39,3 +39,7 @@ Thumbs.db
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+
+# SQLite WAL 伴随文件
+data/*.db-shm
+data/*.db-wal
