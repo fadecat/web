@@ -561,4 +561,26 @@ const factorMeta = (field) => catalog.value.find((f) => f.field === field) || {}
 .info-text {
   color: #409eff;
 }
+
+/* 移动端适配 */
+@media (max-width: 767px) {
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+
+  .rule-row {
+    flex-wrap: wrap;
+  }
+
+  .bottom-toolbar .left,
+  .bottom-toolbar .right {
+    flex-wrap: wrap;
+  }
+
+  :deep(.el-checkbox-group) {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+  }
+}
 </style>

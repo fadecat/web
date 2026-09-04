@@ -229,4 +229,28 @@ onMounted(loadList);
   gap: 16px;
   margin-bottom: 16px;
 }
+
+/* 移动端适配 */
+@media (max-width: 767px) {
+  .toolbar {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .toolbar :deep(.el-input) {
+    width: 100% !important;
+  }
+
+  .date-tip {
+    flex-basis: 100%;
+  }
+
+  .charts-row {
+    grid-template-columns: 1fr;
+  }
+
+  :deep(.el-dialog) {
+    width: 95% !important;
+  }
+}
 </style>
