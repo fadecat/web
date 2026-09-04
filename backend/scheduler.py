@@ -127,14 +127,14 @@ def _register_daily_jobs() -> None:
 
     顺序依赖: cb_redeem(含到期赎回价/强赎计数)是 cb_screen 筛选链路的上游,
     排在 cb_list 之前, 保证 15:06 手动筛选时两张表同日对齐。
-    估值板块数据源更新最慢, 放晚上 22:00 单独跑。
+    估值板块与风格轮动两个指数数据源更新慢, 放晚上 22 点档。
     """
     jobs = [
         ("cb_redeem_daily", run_cb_redeem_daily, "可转债强赎列表抓取", 15, 3),
         ("cb_list_daily", run_cb_list_daily, "可转债全量快照抓取", 15, 6),
-        ("cb_index_daily", run_cb_index_daily, "可转债等权指数日频抓取", 15, 9),
-        ("style_rotation_daily", run_style_rotation_daily, "风格轮动日频抓取", 15, 12),
-        ("valuation_daily", run_valuation_daily, "估值板块日频抓取", 22, 0),
+        ("cb_index_daily", run_cb_index_daily, "可转债等权指数日频抓取", 22, 0),
+        ("style_rotation_daily", run_style_rotation_daily, "风格轮动日频抓取", 22, 3),
+        ("valuation_daily", run_valuation_daily, "估值板块日频抓取", 22, 6),
     ]
     for job_id, func, name, hour, minute in jobs:
         scheduler.add_job(
@@ -169,7 +169,7 @@ def start_scheduler() -> None:
     _startup_integrity_scan()
     logger.info(
         "scheduler started: cb_redeem@15:03, cb_list@15:06, "
-        "cb_index@15:09, style_rotation@15:12, valuation@22:00 "
+        "cb_index@22:00, style_rotation@22:03, valuation@22:06 "
         "(misfire_grace_time=3600, coalesce=True)"
     )
 
