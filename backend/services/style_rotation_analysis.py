@@ -34,9 +34,9 @@ class StyleRotationParams:
     right_symbol: str
     start_date: str | None
     end_date: str | None
-    return_window: int = 20
-    max_window: int = 20
-    quantile_window_min: int = 20
+    return_window: int = 250  # 收益率计算窗口(源项目默认 250 日 ≈ 一年涨跌幅)
+    ma_window: int = 20       # spread 的 MA 趋势线窗口
+    quantile_window_min: int = 20  # 动态分位线最少累积天数
 
 
 def _load_price_frame(
@@ -105,7 +105,7 @@ def calculate_style_rotation(
         raise InsufficientDataError("not enough data after return window")
 
     # MA 趋势线
-    df["ma"] = df["spread"].rolling(params.max_window).mean()
+    df["ma"] = df["spread"].rolling(params.ma_window).mean()
 
     # 滚动分位阈值(expanding 累积, 前段 quantile_window_min 天不计算)
     df["p90_dynamic"] = (
@@ -173,7 +173,7 @@ def build_style_rotation_response(
             "left_symbol": params.left_symbol,
             "right_symbol": params.right_symbol,
             "return_window": params.return_window,
-            "max_window": params.max_window,
+            "ma_window": params.ma_window,
             "start_date": params.start_date,
             "end_date": params.end_date,
         },

@@ -12,13 +12,75 @@ const RIGHT_OPTIONS = [
   { code: '399376', name: '国证小盘成长' },
 ];
 
+// 快捷日期范围预设(对齐源项目 DATE_RANGE_PRESETS)
+const DATE_RANGE_PRESETS = [
+  { key: 'custom', label: '自定义' },
+  { key: '1m', label: '最近1个月' },
+  { key: '3m', label: '最近3个月' },
+  { key: '6m', label: '最近6个月' },
+  { key: 'ytd', label: '年初至今' },
+  { key: '1y', label: '最近1年' },
+  { key: '3y', label: '最近3年' },
+  { key: '5y', label: '最近5年' },
+  { key: '10y', label: '最近10年' },
+  { key: '20y', label: '最近20年' },
+];
+
+function formatDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function subtractMonths(d, months) {
+  const copy = new Date(d);
+  copy.setMonth(copy.getMonth() - months);
+  return copy;
+}
+
+function subtractYears(d, years) {
+  const copy = new Date(d);
+  copy.setFullYear(copy.getFullYear() - years);
+  return copy;
+}
+
+function getPresetStartDate(endDate, presetKey) {
+  let startDate = null;
+  if (presetKey === '1m') startDate = subtractMonths(endDate, 1);
+  else if (presetKey === '3m') startDate = subtractMonths(endDate, 3);
+  else if (presetKey === '6m') startDate = subtractMonths(endDate, 6);
+  else if (presetKey === 'ytd') startDate = new Date(endDate.getFullYear(), 0, 1);
+  else if (presetKey === '1y') startDate = subtractYears(endDate, 1);
+  else if (presetKey === '3y') startDate = subtractYears(endDate, 3);
+  else if (presetKey === '5y') startDate = subtractYears(endDate, 5);
+  else if (presetKey === '10y') startDate = subtractYears(endDate, 10);
+  else if (presetKey === '20y') startDate = subtractYears(endDate, 20);
+  return startDate ? formatDate(startDate) : null;
+}
+
+function applyDateRangePreset() {
+  if (dateRangePreset.value === 'custom') return;
+  const end = form.endDate ? new Date(form.endDate) : new Date();
+  if (!form.endDate) form.endDate = formatDate(end);
+  const start = getPresetStartDate(end, dateRangePreset.value);
+  if (start) form.startDate = start;
+}
+
+function markCustomRange() {
+  dateRangePreset.value = 'custom';
+}
+
 const form = reactive({
   leftSymbol: '399376',
   rightSymbol: '399373',
-  startDate: '2024-01-01',
+  startDate: '',
   endDate: '',
-  returnWindow: 20,
+  returnWindow: 250, // 收益率计算窗口(交易日)
+  maWindow: 20,      // spread 的 MA 趋势线窗口
 });
+
+const dateRangePreset = ref('1y'); // 默认「最近1年」,对齐源项目
 
 const data = ref(null);
 const loading = ref(false);
@@ -36,6 +98,7 @@ async function fetchAnalysis() {
       start_date: form.startDate || undefined,
       end_date: form.endDate || undefined,
       return_window: form.returnWindow,
+      ma_window: form.maWindow,
     };
     data.value = await getRotationAnalysis(params);
   } catch (e) {
@@ -49,11 +112,12 @@ async function fetchAnalysis() {
 
 onMounted(() => {
   form.endDate = todayIso();
+  applyDateRangePreset();
   fetchAnalysis();
 });
 
 watch(
-  () => [form.leftSymbol, form.rightSymbol, form.startDate, form.endDate, form.returnWindow],
+  () => [form.leftSymbol, form.rightSymbol, form.startDate, form.endDate, form.returnWindow, form.maWindow],
   () => fetchAnalysis(),
 );
 </script>
@@ -82,12 +146,27 @@ watch(
             />
           </el-select>
         </el-form-item>
+        <el-form-item label="快捷范围">
+          <el-select
+            v-model="dateRangePreset"
+            style="width: 130px"
+            @change="applyDateRangePreset"
+          >
+            <el-option
+              v-for="preset in DATE_RANGE_PRESETS"
+              :key="preset.key"
+              :value="preset.key"
+              :label="preset.label"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="起始日期">
           <el-date-picker
             v-model="form.startDate"
             type="date"
             value-format="YYYY-MM-DD"
-            style="width: 160px"
+            style="width: 150px"
+            @change="markCustomRange"
           />
         </el-form-item>
         <el-form-item label="结束日期">
@@ -95,17 +174,28 @@ watch(
             v-model="form.endDate"
             type="date"
             value-format="YYYY-MM-DD"
-            style="width: 160px"
+            style="width: 150px"
+            @change="markCustomRange"
           />
         </el-form-item>
-        <el-form-item label="窗口">
+        <el-form-item label="收益窗口">
           <el-input-number
             v-model="form.returnWindow"
             :min="5"
+            :max="750"
+            :step="5"
+            controls-position="right"
+            style="width: 110px"
+          />
+        </el-form-item>
+        <el-form-item label="MA窗口">
+          <el-input-number
+            v-model="form.maWindow"
+            :min="2"
             :max="120"
             :step="1"
             controls-position="right"
-            style="width: 110px"
+            style="width: 100px"
           />
         </el-form-item>
         <el-form-item>
@@ -139,7 +229,7 @@ watch(
           </div>
         </div>
         <div class="summary-item">
-          <div class="label">最新 MA{{ form.returnWindow }}</div>
+          <div class="label">最新 MA{{ form.maWindow }}</div>
           <div class="value" :class="{ positive: data.summary.latest_ma > 0, negative: data.summary.latest_ma < 0 }">
             {{ data.summary.latest_ma }} %
           </div>

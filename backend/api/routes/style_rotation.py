@@ -61,7 +61,8 @@ def style_rotation_analysis(
     right_symbol: str = Query(default="399373", description="右侧指数代码(默认 399373 大盘价值)"),
     start_date: str | None = Query(default=None, description="起始日期 YYYY-MM-DD"),
     end_date: str | None = Query(default=None, description="结束日期 YYYY-MM-DD"),
-    return_window: int = Query(default=20, ge=1, le=250, description="收益率窗口(交易日)"),
+    return_window: int = Query(default=250, ge=1, le=750, description="收益率计算窗口(交易日),源项目默认250"),
+    ma_window: int = Query(default=20, ge=1, le=120, description="spread 的 MA 趋势线窗口"),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """大小盘风格轮动主图数据。
@@ -77,7 +78,7 @@ def style_rotation_analysis(
         start_date=start_date,
         end_date=end_date,
         return_window=return_window,
-        max_window=return_window,
+        ma_window=ma_window,
     )
     try:
         return build_style_rotation_response(db, params)
