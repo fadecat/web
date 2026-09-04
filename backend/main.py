@@ -75,12 +75,27 @@ def create_app() -> FastAPI:
             name="assets",
         )
 
+        # dist 目录解析后的真实路径, 作为路径穿越防护的安全边界
+        dist_resolved = dist_dir.resolve()
+
         @app.get("/{path:path}", include_in_schema=False)
         async def spa_fallback(path: str):
-            """SPA 路由回退: 命中真实文件则返回, 否则回退 index.html。"""
-            candidate = dist_dir / path
-            if path and candidate.is_file():
-                return FileResponse(candidate)
+            """SPA 路由回退: 命中真实文件则返回, 否则回退 index.html。
+
+            安全场检查: 解析后的候选路径必须位于 dist 目录内。
+            否则 `..%2f..%2f.env` 之类的路径穿越可读取项目根目录的
+            .env / 源码等敏感文件(已实测可复现, 必须拦截)。
+            """
+            try:
+                candidate = (dist_dir / path).resolve()
+                if (
+                    path
+                    and candidate.is_file()
+                    and candidate.is_relative_to(dist_resolved)
+                ):
+                    return FileResponse(candidate)
+            except (OSError, ValueError):
+                pass
             return FileResponse(dist_dir / "index.html")
 
     return app
