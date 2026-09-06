@@ -3,13 +3,22 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { getRotationAnalysis } from '../api';
 import RotationChart from '../components/RotationChart.vue';
 
-const LEFT_OPTIONS = [
-  { code: '399376', name: '国证小盘成长' },
-  { code: '399373', name: '国证大盘价值' },
-];
-const RIGHT_OPTIONS = [
-  { code: '399373', name: '国证大盘价值' },
-  { code: '399376', name: '国证小盘成长' },
+// 预设对照组(用户定版: 不开放任意组合, 只有两档)
+// 惯例: 左=进攻侧(小盘/成长), 右=防守侧(大盘/红利) → spread>0 恒为进攻侧强
+// 大小盘走腾讯源, 红利组走易方达源(后端 index_eod 任务入库), 前端只管选组
+const PAIR_PRESETS = [
+  {
+    key: 'size',
+    label: '大小盘轮动',
+    left: { code: '399376', name: '国证小盘成长' },
+    right: { code: '399373', name: '国证大盘价值' },
+  },
+  {
+    key: 'dividend',
+    label: '成长 vs 红利',
+    left: { code: '399296', name: '创成长' },
+    right: { code: '930955', name: '红利低波100' },
+  },
 ];
 
 // 快捷日期范围预设(对齐源项目 DATE_RANGE_PRESETS)
@@ -72,12 +81,27 @@ function markCustomRange() {
 }
 
 const form = reactive({
+  pairKey: 'size',   // 当前对照组
   leftSymbol: '399376',
   rightSymbol: '399373',
   startDate: '',
   endDate: '',
   returnWindow: 250, // 收益率计算窗口(交易日)
   maWindow: 20,      // spread 的 MA 趋势线窗口
+});
+
+// 切换对照组: 覆写左右标的(触发 watch 自动刷新)
+function onPairChange(key) {
+  const preset = PAIR_PRESETS.find((p) => p.key === key);
+  if (!preset) return;
+  form.leftSymbol = preset.left.code;
+  form.rightSymbol = preset.right.code;
+}
+
+// 当前对照组的左右名称(摘要条/标题用)
+const currentPair = computed(() => {
+  const preset = PAIR_PRESETS.find((p) => p.key === form.pairKey) || PAIR_PRESETS[0];
+  return preset;
 });
 
 const dateRangePreset = ref('3y'); // 默认「最近3年」
@@ -93,10 +117,10 @@ const updateIsMobile = () => {
 };
 const filtersExpanded = ref(false);
 
-// 折叠条摘要: 标的 + 范围, 让用户不看表单也知道当前在查什么
+// 折叠条摘要: 对照组 + 范围, 让用户不看表单也知道当前在查什么
 const filterSummary = computed(() => {
-  const left = LEFT_OPTIONS.find((o) => o.code === form.leftSymbol)?.name || form.leftSymbol;
-  const right = RIGHT_OPTIONS.find((o) => o.code === form.rightSymbol)?.name || form.rightSymbol;
+  const left = currentPair.value.left.name;
+  const right = currentPair.value.right.name;
   const preset = DATE_RANGE_PRESETS.find((p) => p.key === dateRangePreset.value);
   const rangeText = preset && preset.key !== 'custom' ? preset.label : `${form.startDate} ~ ${form.endDate}`;
   return `${left} vs ${right} · ${rangeText}`;
@@ -168,23 +192,13 @@ watch(
         label-width="80px"
         :class="{ 'mobile-form': isMobile }"
       >
-        <el-form-item label="左侧标的">
-          <el-select v-model="form.leftSymbol" style="width: 200px">
+        <el-form-item label="对照组">
+          <el-select v-model="form.pairKey" style="width: 200px" @change="onPairChange">
             <el-option
-              v-for="opt in LEFT_OPTIONS"
-              :key="opt.code"
-              :value="opt.code"
-              :label="`${opt.code} ${opt.name}`"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="右侧标的">
-          <el-select v-model="form.rightSymbol" style="width: 200px">
-            <el-option
-              v-for="opt in RIGHT_OPTIONS"
-              :key="opt.code"
-              :value="opt.code"
-              :label="`${opt.code} ${opt.name}`"
+              v-for="p in PAIR_PRESETS"
+              :key="p.key"
+              :value="p.key"
+              :label="`${p.label}（${p.left.name} vs ${p.right.name}）`"
             />
           </el-select>
         </el-form-item>

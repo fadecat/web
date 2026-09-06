@@ -187,6 +187,27 @@ def load_valuation_targets(config_path: str | Path | None = None) -> list[dict[s
     return targets
 
 
+def load_index_eod_targets(config_path: str | Path | None = None) -> list[dict[str, Any]]:
+    """加载指数日线收盘价(eod)标的配置(config/index_eod.yaml)。
+
+    用途: 易方达 CDN 指数日收盘价全量入库(风格轮动红利对照组等),
+    与 load_valuation_targets 同一模式: YAML 清单驱动, 加标的只改配置不改代码。
+
+    返回: targets 列表,每项含 name / code / source 字段。
+    """
+    if config_path:
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    else:
+        data = load_yaml_config("index_eod.yaml")
+
+    targets = data.get("targets") or []
+    targets = [t for t in targets if isinstance(t, dict) and t.get("code")]
+    if not targets:
+        raise ValueError("index_eod 配置无有效标的")
+    return targets
+
+
 # ---------------------------------------------------------------------------
 # 交易日判断
 # ---------------------------------------------------------------------------

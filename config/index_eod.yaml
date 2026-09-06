@@ -1,0 +1,20 @@
+# 指数日线收盘价(eod)标的配置
+# 用途: 易方达 CDN 指数日收盘价数据入库, 供风格轮动等板块使用。
+# 数据源: https://cdn.efunds.com.cn/etf-net/index_eod_price_{code}.json
+#         单文件全历史, 每次运行=全量同步(幂等, 已存在日期自动跳过)。
+# 字段:
+#   name   指数名称(仅日志展示用, 真实名称以接口返回为准)
+#   code   指数代码(即 index_eod_price_{code}.json 中的 {code})
+#   source 数据源标识, 当前固定 efunds(预留, 与腾讯源标的区分)
+#
+# 注意: 仅入库日线 close; 易方达 eod 接口无 OHLCV, open/high/low/volume 落库为空。
+
+targets:
+
+  - name: "红利低波动100"
+    code: "930955"
+    source: "efunds"
+
+  - name: "创成长"
+    code: "399296"
+    source: "efunds"

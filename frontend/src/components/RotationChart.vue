@@ -124,8 +124,10 @@ function buildOption() {
   }
 
   const { meta, series, summary } = data;
-  const leftLabel = meta.left_symbol;
-  const rightLabel = meta.right_symbol;
+  // 图例标签: 带指数名称的优先(后端 meta 若有 code_name 映射), 否则回退纯代码
+  const nameMap = meta.symbol_names || {};
+  const leftLabel = nameMap[meta.left_symbol] || meta.left_symbol;
+  const rightLabel = nameMap[meta.right_symbol] || meta.right_symbol;
   const masterDates = series.dates;
   const positiveArea = buildStrengthAreaData(series.spread, (v) => v > 0);
   const negativeArea = buildStrengthAreaData(series.spread, (v) => v < 0);
@@ -166,8 +168,8 @@ function buildOption() {
       type: mobile ? 'scroll' : 'plain',
       pageIconSize: 10,
       data: [
-        'spread>0(左强)',
-        'spread<0(右强)',
+        'spread>0(进攻侧强)',
+        'spread<0(防守侧强)',
         '收益价差',
         'MA20',
         '全局P90',
@@ -252,7 +254,7 @@ function buildOption() {
     ],
     series: [
       {
-        name: 'spread>0(左强)',
+        name: 'spread>0(进攻侧强)',
         type: 'line',
         xAxisIndex: 0,
         yAxisIndex: 0,
@@ -264,7 +266,7 @@ function buildOption() {
         z: 1,
       },
       {
-        name: 'spread<0(右强)',
+        name: 'spread<0(防守侧强)',
         type: 'line',
         xAxisIndex: 0,
         yAxisIndex: 0,

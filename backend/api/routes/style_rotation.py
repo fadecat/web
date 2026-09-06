@@ -20,8 +20,16 @@ from backend.services.style_rotation_analysis import (
     StyleRotationParams,
     build_style_rotation_response,
 )
-
 router = APIRouter()
+
+# 指数代码 -> 简称(仅图表展示用)
+# 大小盘组走腾讯源, 红利组走易方达源(index_eod 任务入库), 分析层不区分来源
+INDEX_DISPLAY_NAMES: dict[str, str] = {
+    "399376": "国证小盘成长",
+    "399373": "国证大盘价值",
+    "930955": "红利低波100",
+    "399296": "创成长",
+}
 
 
 @router.get("/style-rotation/quotes")
@@ -81,6 +89,9 @@ def style_rotation_analysis(
         ma_window=ma_window,
     )
     try:
-        return build_style_rotation_response(db, params)
+        response = build_style_rotation_response(db, params)
+        # 注入指数名称映射(图表图例用代码显示名称)
+        response["meta"]["symbol_names"] = INDEX_DISPLAY_NAMES
+        return response
     except InsufficientDataError as e:
         raise HTTPException(status_code=404, detail=f"数据不足: {e}")

@@ -19,6 +19,7 @@ from backend.tasks.style_rotation_tasks import (
     run_style_rotation_daily,
     run_style_rotation_backfill,
 )
+from backend.tasks.index_eod_tasks import run_index_eod_daily
 from backend.tasks.cb_index_tasks import run_cb_index_daily
 from backend.tasks.cb_list_tasks import run_cb_list_daily
 from backend.tasks.cb_redeem_tasks import run_cb_redeem_daily
@@ -135,6 +136,7 @@ def _register_daily_jobs() -> None:
         ("cb_list_daily", run_cb_list_daily, "可转债全量快照抓取", 15, 6),
         ("style_rotation_daily", run_style_rotation_daily, "风格轮动日频抓取", 22, 3),
         ("valuation_daily", run_valuation_daily, "估值板块日频抓取", 22, 6),
+        ("index_eod_daily", run_index_eod_daily, "指数日线收盘价(eod)抓取", 22, 9),
     ]
     for job_id, func, name, hour, minute in jobs:
         scheduler.add_job(
@@ -169,7 +171,7 @@ def start_scheduler() -> None:
     _startup_integrity_scan()
     logger.info(
         "scheduler started: cb_redeem@15:03, cb_index@15:04, cb_list@15:06, "
-        "style_rotation@22:03, valuation@22:06 "
+        "style_rotation@22:03, valuation@22:06, index_eod@22:09 "
         "(misfire_grace_time=3600, coalesce=True)"
     )
 
