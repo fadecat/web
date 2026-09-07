@@ -153,6 +153,13 @@ def start_scheduler() -> None:
     if scheduler.running:
         return
 
+    # 上次进程中断留下的 running 记录显式结转, 避免"永久运行中"的假状态
+    from backend.services.run_logger import recover_interrupted_runs
+
+    recovered = recover_interrupted_runs()
+    if recovered:
+        logger.warning(f"启动: 结转 {recovered} 条中断的任务运行记录(interrupted)")
+
     _register_daily_jobs()
     scheduler.start()
     # 启动后异步检查风格轮动数据,空表自动回补(不阻塞启动)

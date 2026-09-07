@@ -96,6 +96,50 @@ def test_build_data_status_shape(db):
     job = status["jobs"][0]
     assert job["status"] == "never"
     assert job["success_rate"] is None
+    # 目录接入后: 每个实体带纳管/来源/预期信息, 任务带下次计划时间
+    ent = status["datasets"][0]["entities"][0]
+    assert ent.get("managed") is True
+    assert "expected_date" in ent and "next_due_at" in ent
+    assert ent.get("policy_provisional") is True
+    assert all(j.get("next_run_at") for j in status["jobs"])
+
+
+def test_catalog_matches_expected_lag(db):
+    """易方达估值 T+1 规则: 周一晚 20 点应预期上周五(周一估值周二才到期)。"""
+    from datetime import datetime
+
+    from backend.services.data_catalog import Policy
+
+    pe = Policy("efunds", "valuation_daily", 12, trading_day_offset=1)
+    # 2026-09-07 周一 20:00 → 周一估值尚未到期, 应到日期仍是上周五 09-04
+    expected, next_due = pe.expected(datetime(2026, 9, 7, 20, 0))
+    assert expected.isoformat() == "2026-09-04"
+    assert next_due.isoformat().startswith("2026-09-08T12:00")
+    # 周二 14:00 → 周一估值已到期, 应到日期 = 09-07
+    expected2, _ = pe.expected(datetime(2026, 9, 8, 14, 0))
+    assert expected2.isoformat() == "2026-09-07"
+
+
+def test_catalog_marks_unmanaged_legacy(db):
+    """库中存在但不在目录清单里的代码 → 单列 unmanaged, 不进主清单也不误报。"""
+    from datetime import datetime
+
+    from backend.models.valuation import IndexValuationSnapshot
+    from backend.services.data_catalog import apply_catalog
+
+    d = latest_trading_day()
+    db.add(IndexValuationSnapshot(index_code="999999", index_name="孤儿指数", trade_date=d, pe=1.0))
+    db.commit()
+
+    groups = get_dataset_freshness(db)
+    groups = apply_catalog(groups, _freshness_state, now=datetime(2026, 9, 8, 14, 0))
+    pe = next(g for g in groups if g["name"] == "指数估值(PE/PB)")
+    codes = [e["index_code"] for e in pe["entities"]]
+    assert "999999" not in codes, "孤儿不应混入纳管清单"
+    legacy = [e for e in pe.get("unmanaged_entities", [])]
+    assert any(e["label"].startswith("孤儿指数") for e in legacy)
+    # 孤儿即使最新也不影响组状态
+    assert pe["state"] in {"fresh", "no_data", "stale", "lagging"}
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +172,73 @@ def test_run_with_logging_success(log_db):
     assert "新写入 3 条" in row.summary
 
 
-def test_run_with_logging_partial(log_db):
+def test_run_with_logging_writes_running_first(log_db):
+    """执行开始即持久化 running 记录, 任务完成前状态页可见真实运行态。"""
+    seen = {}
+
+    def job():
+        row = log_db.query(TaskRunLog).one()
+        seen["status_during"] = row.status
+        seen["trigger"] = row.summary
+
+    run_logger.run_with_logging("cb_list_daily", job, trigger="manual")
+
+    assert seen["status_during"] == "running", "任务执行中必须能查到 running 记录"
+    assert "manual" in seen["trigger"]
+    row = log_db.query(TaskRunLog).one()
+    assert row.status == "success"
+
+
+def test_run_with_logging_all_failed_is_failed(log_db):
+    """全失败(无成功子项)必须记 failed, 不能记 partial。"""
+    run_logger.run_with_logging(
+        "style_rotation_daily", lambda: {"success_count": 0, "fail_count": 2}
+    )
+    row = log_db.query(TaskRunLog).one()
+    assert row.status == "failed"
+
+
+def test_run_with_logging_skipped(log_db):
+    run_logger.run_with_logging(
+        "valuation_daily", lambda: {"status": "skipped", "fail_count": 0}
+    )
+    row = log_db.query(TaskRunLog).one()
+    assert row.status == "skipped"
+
+
+def test_runner_lock_blocks_concurrent_same_job(log_db):
+    """同一任务不允许并发执行(手动+定时共用一把锁)。"""
+    from backend.services.run_logger import reserve_job
+
+    assert reserve_job("cb_list_daily") is True
+    result = run_logger.run_with_logging("cb_list_daily", lambda: None)
+    assert result["status"] == "busy"
+    # 模拟任务结束释放
+    from backend.services.run_logger import release_job
+
+    release_job("cb_list_daily")
+    result = run_logger.run_with_logging("cb_list_daily", lambda: None)
+    assert result["status"] == "success"
+
+
+def test_recover_interrupted_runs(log_db):
+    """启动结转: 遗留 running 记录标 interrupted, 不算成功也不永久转圈。"""
+    from backend.services.run_logger import recover_interrupted_runs
+
+    db = log_db
+    db.add(TaskRunLog(job_id="valuation_daily", started_at=__import__("datetime").datetime(2026, 9, 6, 22, 6), status="running"))
+    db.commit()
+
+    n = recover_interrupted_runs()
+    assert n == 1
+    row = db.query(TaskRunLog).one()
+    assert row.status == "interrupted"
+    assert row.finished_at is not None
+    # 幂等: 再跑一次不再产生新变化
+    assert recover_interrupted_runs() == 0
+
+
+def test_partial_still_works(log_db):
     run_logger.run_with_logging(
         "valuation_daily", lambda: {"success_count": 7, "fail_count": 1}
     )
@@ -155,6 +265,38 @@ def test_run_with_logging_never_lets_exception_escape(log_db):
     # 不应向外抛异常(调度器线程被拖垮比丢一次日志严重)
     run_logger.run_with_logging("cb_index_daily", bad)
     assert log_db.query(TaskRunLog).count() == 1
+
+
+def test_failed_run_triggers_notification(log_db, monkeypatch):
+    """任务全失败后应触发一次失败通知(通知失败自吞, 不影响运行记录)。"""
+    from backend.services import notifications
+
+    calls = []
+    monkeypatch.setattr(
+        notifications, "notify_task_failure",
+        lambda job_id, status, error: calls.append((job_id, status, error)),
+    )
+
+    run_logger.run_with_logging(
+        "style_rotation_daily", lambda: {"success_count": 0, "fail_count": 2}
+    )
+
+    assert calls == [("style_rotation_daily", "failed", "2 个标的失败,详见日志")]
+
+
+def test_success_run_does_not_notify(log_db, monkeypatch):
+    """任务成功不触发通知。"""
+    from backend.services import notifications
+
+    calls = []
+    monkeypatch.setattr(
+        notifications, "notify_task_failure",
+        lambda job_id, status, error: calls.append((job_id, status, error)),
+    )
+
+    run_logger.run_with_logging("valuation_daily", lambda: None)
+
+    assert calls == []
 
 
 def test_success_rate_window(db, log_db):
@@ -262,3 +404,45 @@ def test_save_bond_yields_keeps_other_dates(db):
     assert len(rows) == 2
     assert rows[0].yield_10y == 1.8
     assert rows[1].yield_10y == 2.5
+
+
+# ---------------------------------------------------------------------------
+# 系统配置(SMTP 通知) 存储层
+# ---------------------------------------------------------------------------
+
+def test_app_settings_defaults_and_masking(db):
+    from backend.services.app_settings import get_settings_dict, get_settings_masked
+
+    # 无配置时返回 QQ 邮箱默认值
+    values = get_settings_dict(db)
+    assert values["smtp_host"] == "smtp.qq.com"
+    assert values["smtp_port"] == "465"
+
+    # 掩码视图: 敏感项不回明文, configured=False
+    masked = get_settings_masked(db)
+    assert masked["smtp_password"]["value"] == ""
+    assert masked["smtp_password"]["configured"] is False
+    assert masked["smtp_password"]["sensitive"] is True
+    assert masked["smtp_host"]["value"] == "smtp.qq.com"
+
+
+def test_app_settings_save_and_sensitive_blank_keeps(db):
+    from backend.services.app_settings import get_settings_dict, save_settings
+
+    save_settings(db, {"smtp_user": "a@qq.com", "smtp_password": "secret123"})
+    assert get_settings_dict(db)["smtp_password"] == "secret123"
+
+    # 敏感项留空 = 保持原值; 非敏感项可更新
+    save_settings(db, {"smtp_user": "b@qq.com", "smtp_password": ""})
+    values = get_settings_dict(db)
+    assert values["smtp_password"] == "secret123"
+    assert values["smtp_user"] == "b@qq.com"
+
+
+def test_app_settings_unknown_key_ignored(db):
+    from backend.services.app_settings import get_settings_dict, save_settings
+
+    save_settings(db, {"hacker_key": "x", "smtp_host": "smtp.163.com"})
+    values = get_settings_dict(db)
+    assert values["smtp_host"] == "smtp.163.com"
+    assert "hacker_key" not in values

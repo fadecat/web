@@ -230,29 +230,33 @@ def get_job_runs(db: Session) -> list[dict]:
         ).scalar_one_or_none()
 
         window = db.execute(
-            select(TaskRunLog.status).where(TaskRunLog.job_id == job_id).order_by(TaskRunLog.started_at.desc()).limit(_SUCCESS_RATE_WINDOW)
+            select(TaskRunLog.status).where(
+                TaskRunLog.job_id == job_id,
+                TaskRunLog.status.in_(["success", "partial", "failed"]),
+            ).order_by(TaskRunLog.started_at.desc()).limit(_SUCCESS_RATE_WINDOW)
         ).scalars().all()
         ok_count = sum(1 for s in window if s == "success")
         partial_count = sum(1 for s in window if s == "partial")
         success_rate = round(ok_count / len(window), 4) if window else None
 
         if latest is None:
-            result.append(
-                {
-                    "job_id": job_id,
-                    "name": meta["name"],
-                    "schedule": meta["schedule"],
-                    "status": "never",
-                    "started_at": None,
-                    "finished_at": None,
-                    "duration_sec": None,
-                    "summary": None,
-                    "error": None,
-                    "success_rate": success_rate,
-                    "run_count": len(window),
-                }
-            )
-            continue
+                result.append(
+                    {
+                        "job_id": job_id,
+                        "name": meta["name"],
+                        "schedule": meta["schedule"],
+                        "status": "never",
+                        "started_at": None,
+                        "finished_at": None,
+                        "duration_sec": None,
+                        "summary": None,
+                        "error": None,
+                        "success_rate": success_rate,
+                        "run_count": len(window),
+                        "next_run_at": None,
+                    }
+                )
+                continue
 
         result.append(
             {
@@ -267,16 +271,53 @@ def get_job_runs(db: Session) -> list[dict]:
                 "error": latest.error,
                 "success_rate": success_rate,
                 "run_count": len(window),
+                "next_run_at": None,
             }
         )
+
+    # 下次计划时间: 从 registry 的调度定义换算(单一事实源, 状态页不再手抄时刻)
+    next_map = _next_run_times(datetime.now())
+    for item in result:
+        item["next_run_at"] = next_map.get(item["job_id"])
     return result
 
 
+def _next_run_times(now: datetime) -> dict[str, str]:
+    """按 registry 调度时刻计算各任务下一次触发时间(本地 ISO)。
+
+    今天已过触发时刻或非交易日 → 顺延到下一交易日(与调度器 mon-fri 语义一致,
+    节假日误差可容忍: 至少不早于下一个工作日)。
+    """
+    from datetime import timedelta
+
+    from backend.tasks.registry import DAILY_JOBS
+
+    out: dict[str, str] = {}
+    for job_id, _func, _name, hour, minute in DAILY_JOBS:
+        day = now.date()
+        candidate = datetime.combine(day, datetime.min.time()).replace(
+            hour=hour, minute=minute
+        )
+        if candidate <= now or not is_trading_day(day):
+            candidate += timedelta(days=1)
+            while candidate <= now or not is_trading_day(candidate.date()):
+                candidate += timedelta(days=1)
+        out[job_id] = candidate.isoformat(timespec="seconds")
+    return out
+
+
 def build_data_status(db: Session) -> dict:
-    """状态页完整数据: 数据新鲜度 + 任务运行记录 + 生成时间。"""
+    """状态页完整数据: 数据新鲜度 + 任务运行记录 + 生成时间。
+
+    新鲜度按数据目录的来源规则(发布偏移/到期时刻)逐流判定;
+    目录未纳管的历史遗留实体单列 unmanaged_entities, 不参与组状态。
+    """
+    from backend.services.data_catalog import apply_catalog
+
+    datasets = apply_catalog(get_dataset_freshness(db), _freshness_state)
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "expected_date": _expected_date().isoformat(),
-        "datasets": get_dataset_freshness(db),
+        "datasets": datasets,
         "jobs": get_job_runs(db),
     }

@@ -40,6 +40,7 @@ def _run_pair(
     """对左右两只指数执行同一抓取函数并落库。"""
     db = SessionLocal()
     total_inserted = 0
+    success_count = fail_count = 0
 
     for code, name in [(LEFT_SYMBOL, LEFT_NAME), (RIGHT_SYMBOL, RIGHT_NAME)]:
         try:
@@ -47,11 +48,15 @@ def _run_pair(
             inserted = save_index_quotes(db, code, klines)
             logger.info(f"  [{code}] {name}: 拉取 {len(klines)} 条, 新写入 {inserted} 条")
             total_inserted += inserted
+            success_count += 1
         except Exception as exc:
+            db.rollback()
+            fail_count += 1
             logger.error(f"  [{code}] {name} 抓取失败: {exc}")
 
     db.close()
     logger.info(f"=== 风格轮动{label}完成: 新写入 {total_inserted} 条 ===")
+    return {"success_count": success_count, "fail_count": fail_count}
 
 
 def run_style_rotation_daily() -> None:
@@ -65,7 +70,7 @@ def run_style_rotation_daily() -> None:
         return
 
     logger.info(f"=== 风格轮动日频任务开始 ({today}) ===")
-    _run_pair(lambda code: fetch_index_kline(code), "日频任务")
+    return _run_pair(lambda code: fetch_index_kline(code), "日频任务")
 
 
 def run_style_rotation_backfill() -> None:

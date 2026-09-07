@@ -16,12 +16,16 @@ const FRESHNESS = {
   stale: { label: '滞后', cls: 'warn' },
   lagging: { label: '滞后多日', cls: 'bad' },
   no_data: { label: '暂无数据', cls: 'none' },
+  waiting: { label: '待更新', cls: 'run' },
 };
 
 const RUN_STATUS = {
   success: { label: '成功', cls: 'ok' },
   partial: { label: '部分成功', cls: 'warn' },
   failed: { label: '失败', cls: 'bad' },
+  running: { label: '运行中', cls: 'run' },
+  skipped: { label: '跳过', cls: 'none' },
+  interrupted: { label: '中断', cls: 'warn' },
   never: { label: '暂无记录', cls: 'none' },
 };
 
@@ -53,8 +57,8 @@ async function refresh() {
   let stillPending = false;
   for (const j of status.value?.jobs || []) {
     if (!pendingJobs[j.job_id]) continue;
-    const isNewRun = j.started_at && j.started_at !== prevStarted[j.job_id];
-    if (isNewRun && j.finished_at) {
+    // 后端现在持久化 running 状态, 直接以真实状态为准
+    if (j.status !== 'running') {
       delete pendingJobs[j.job_id];
     } else {
       stillPending = true;
@@ -145,9 +149,20 @@ onMounted(async () => {
               </span>
             </span>
           </div>
+          <div v-for="e in g.unmanaged_entities || []" :key="'legacy-' + e.label" class="row entity legacy">
+            <span class="col-name">{{ e.label }}<span class="legacy-tag">未纳管</span></span>
+            <span class="col-first">{{ e.first_date || '-' }}</span>
+            <span class="col-count">{{ e.count ?? '-' }}{{ e.unit }}</span>
+            <span class="col-date">{{ e.latest_date || '-' }}</span>
+            <span class="col-state">
+              <span class="badge sm none">历史遗留</span>
+            </span>
+          </div>
         </div>
         <p class="note">
-          周末与法定节假日数据源停更,预期日期已自动对齐交易日,不算滞后。转债类表条目按天数计。
+          每条数据流按自身来源规则判定:易方达估值/股息率按 T+1 交易日中午前到期,易方达/腾讯日线当晚到期,
+          集思录转债类收盘后半小时到期——未到到期时刻显示「待更新」而非滞后(规则为暂定观察值,持续校准中)。
+          周末与节假日数据源停更,不算滞后。「历史遗留」行是库中存在但当前未纳管的旧数据,不参与状态判断、未删除。
         </p>
       </div>
 
@@ -174,6 +189,7 @@ onMounted(async () => {
           </div>
           <div class="job-meta">
             <span>{{ j.schedule }}</span>
+            <span v-if="j.next_run_at">下次 {{ fmtTime(j.next_run_at) }}</span>
             <span>最近运行 {{ fmtTime(j.started_at) }}</span>
             <span>耗时 {{ fmtDuration(j.duration_sec) }}</span>
             <span>近{{ j.run_count || '-' }}次成功 {{ fmtRate(j.success_rate) }}</span>
@@ -186,8 +202,8 @@ onMounted(async () => {
         </div>
         <p class="note">
           徽标 = 该任务最近一次运行的记录结果(运行记录自 2026-09-07
-          上线起积累,之前的运行无记录)。任务每次运行自动记录,失败时可在服务器日志中查错误详情;交易日错过触发
-          1 小时内重启服务会自动补跑。
+          上线起积累,之前的运行无记录)。执行开始即记录「运行中」,刷新页面或换设备也能看到真实状态;
+          服务重启会把未完成的运行标记为「中断」,不会自动认定为成功。手动与定时触发共用执行锁,同一任务不会并发执行。
         </p>
       </div>
     </template>
@@ -353,6 +369,24 @@ onMounted(async () => {
 .badge.none {
   background: #f1efe8;
   color: #6b7280;
+}
+
+.badge.run {
+  background: #e6f1fb;
+  color: #185fa5;
+}
+
+.entity.legacy {
+  opacity: 0.55;
+}
+
+.legacy-tag {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: #f1efe8;
+  color: #9ca3af;
+  font-size: 10px;
 }
 
 .note {
