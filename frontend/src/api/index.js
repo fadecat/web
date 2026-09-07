@@ -53,8 +53,14 @@ export const getValuationSnapshot = (params = {}) =>
   api.get('/valuation/snapshot', { params, timeout: 60000 }).then((r) => r.data);
 
 // 股息率(当前值 + 1Y/3Y/5Y/10Y 分位 + 5Y 均值)
-export const getDividendYield = (indexCode) =>
-  api.get('/valuation/dividend-yield', { params: { index_code: indexCode } }).then((r) => r.data);
+// latest=true: 每只指数只回最新一条(列表页用); indexCode: 过滤单只(详情页全历史画折线)
+export const getDividendYield = (indexCode, { latest = false } = {}) =>
+  api
+    .get('/valuation/dividend-yield', {
+      params: { index_code: indexCode, latest: latest || undefined },
+      timeout: 30000,
+    })
+    .then((r) => r.data);
 
 // 国债收益率(2Y/5Y/10Y/30Y + 10Y-2Y 期限利差)
 export const getBondYield = () =>
@@ -68,5 +74,13 @@ export const getEquityBond = (indexCode) =>
       timeout: 60000,
     })
     .then((r) => r.data);
+
+// 数据状态: 各数据集新鲜度 + 定时任务最近运行/耗时/成功率
+export const getDataStatus = () =>
+  api.get('/data-status', { timeout: 30000 }).then((r) => r.data);
+
+// 手动触发指定定时任务(后台执行, 立即返回; 同任务并发触发返回 409)
+export const runJobManually = (jobId) =>
+  api.post(`/data-status/run/${jobId}`, null, { timeout: 10000 }).then((r) => r.data);
 
 export default api;

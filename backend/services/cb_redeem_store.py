@@ -53,6 +53,20 @@ def save_cb_redeem(
             trade_date=trade_date,
         ).first()
         if existing:
+            # 同日覆盖: 盘中手动跑写入的计数快照, 盘后任务用最新状态覆盖
+            existing.redeem_icon = str(cell.get("redeem_icon") or "").strip() or None
+            existing.redeem_flag = str(cell.get("redeem_flag") or "").strip() or None
+            existing.redeem_remain_days = _parse_int(cell.get("redeem_remain_days"))
+            existing.redeem_real_days = _parse_int(cell.get("redeem_real_days"))
+            existing.redeem_count_days = _parse_int(cell.get("redeem_count_days"))
+            existing.redeem_total_days = _parse_int(cell.get("redeem_total_days"))
+            existing.redeem_price = parse_float(cell.get("redeem_price"))
+            existing.force_redeem_price = parse_float(cell.get("force_redeem_price"))
+            existing.redeem_dt = str(cell.get("redeem_dt") or "").strip() or None
+            existing.recount_dt = str(cell.get("recount_dt") or "").strip() or None
+            existing.delist_dt = str(cell.get("delist_dt") or "").strip() or None
+            existing.force_redeem = str(cell.get("force_redeem") or "").strip() or None
+            existing.raw_json = json.dumps(cell, ensure_ascii=False)
             continue
 
         db.add(CbRedeemDaily(

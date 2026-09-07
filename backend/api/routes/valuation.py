@@ -136,16 +136,43 @@ def _snapshot_to_dict(r: IndexValuationSnapshot) -> dict[str, Any]:
 @router.get("/valuation/dividend-yield")
 def list_dividend_yield(
     index_code: str | None = Query(None, description="按指数代码过滤,如 930955"),
+    latest: bool = Query(
+        False,
+        description="true 时每只指数只返回最新一条(列表页用, 避免拉全量历史 3.7MB)",
+    ),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    """返回股息率全量列表(可按 index_code 过滤)。
+    """返回股息率列表(可按 index_code 过滤 / 可只取每只最新一条)。
 
-    每行含最新股息率 + 1Y/3Y/5Y/10Y 分位 + 5Y 均值。
+    每行含股息率 + 1Y/3Y/5Y/10Y 分位 + 5Y 均值。
+
+    latest=false(默认): 返回全量历史(画折线用, 8 指数约 2.6 万行/3.7MB)。
+    latest=true: 每只指数只返回 trade_date 最大的一条(列表页只展示当前值+分位,
+      8 行约 15KB; 与 snapshot 的 latest 同款方案)。
     """
-    stmt = select(IndexDividendYield).order_by(
-        IndexDividendYield.index_code,
-        IndexDividendYield.trade_date.desc(),
-    )
+    if latest:
+        latest_date = (
+            select(
+                IndexDividendYield.index_code,
+                func.max(IndexDividendYield.trade_date).label("max_date"),
+            )
+            .group_by(IndexDividendYield.index_code)
+            .subquery()
+        )
+        stmt = (
+            select(IndexDividendYield)
+            .join(
+                latest_date,
+                (IndexDividendYield.index_code == latest_date.c.index_code)
+                & (IndexDividendYield.trade_date == latest_date.c.max_date),
+            )
+            .order_by(IndexDividendYield.index_code)
+        )
+    else:
+        stmt = select(IndexDividendYield).order_by(
+            IndexDividendYield.index_code,
+            IndexDividendYield.trade_date.desc(),
+        )
     if index_code:
         stmt = stmt.where(IndexDividendYield.index_code == index_code)
 

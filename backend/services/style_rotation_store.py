@@ -37,6 +37,12 @@ def save_index_quotes(
             trade_date=trade_date,
         ).first()
         if existing:
+            # 同日覆盖: 盘中手动跑写入的盘中价, 盘后任务用收盘价覆盖
+            existing.open = row.get("open")
+            existing.close = row.get("close")
+            existing.high = row.get("high")
+            existing.low = row.get("low")
+            existing.volume = row.get("volume")
             continue
 
         db.add(IndexDailyQuote(

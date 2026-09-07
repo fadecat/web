@@ -41,6 +41,12 @@ const routes = [
         component: () => import('../pages/Rotation.vue'),
         meta: { title: '风格轮动', group: '市场' },
       },
+      {
+        path: 'status',
+        name: 'status',
+        component: () => import('../pages/DataStatus.vue'),
+        meta: { title: '数据状态', group: '系统' },
+      },
     ],
   },
 ];

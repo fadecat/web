@@ -35,6 +35,20 @@ def save_cb_index_records(
 
         existing = db.query(CbIndexDaily).filter_by(trade_date=trade_date).first()
         if existing:
+            # 同日覆盖: 盘中手动跑写入的盘中值, 盘后任务用收盘值覆盖
+            existing.index_value = parse_float(record.get("index_value"))
+            existing.median_price = parse_float(record.get("median_price"))
+            existing.avg_price = parse_float(record.get("avg_price"))
+            existing.avg_ytm = parse_float(record.get("avg_ytm"))
+            existing.median_convert_value = parse_float(record.get("median_convert_value"))
+            existing.avg_dblow = parse_float(record.get("avg_dblow"))
+            existing.avg_premium = parse_float(record.get("avg_premium"))
+            existing.median_premium = parse_float(record.get("median_premium"))
+            existing.turnover_rate = parse_float(record.get("turnover_rate"))
+            existing.count = parse_float(record.get("count"))
+            existing.temperature = parse_float(record.get("temperature"))
+            existing.idx_price = parse_float(record.get("idx_price"))
+            existing.idx_increase_rt = parse_float(record.get("idx_increase_rt"))
             continue
 
         db.add(CbIndexDaily(

@@ -28,6 +28,10 @@ def save_cb_snapshots(
         trade_date: 交易日
 
     返回: 新写入行数(已存在的跳过)。
+
+    幂等策略: 同日同债已存在时「覆盖」价格类字段而非跳过 ——
+    盘中手动运行会写入盘中价, 盘后定时任务再用收盘正式值覆盖,
+    保证当天行最终一定是收盘口径(2026-09-07 定版)。
     """
     inserted = 0
     for cell in records:
@@ -40,6 +44,22 @@ def save_cb_snapshots(
             trade_date=trade_date,
         ).first()
         if existing:
+            # 同日覆盖: 盘中手动跑写入的盘中价, 盘后任务用收盘值覆盖
+            existing.bond_nm = str(cell.get("bond_nm") or "").strip()
+            existing.price = parse_float(cell.get("price"))
+            existing.sprice = parse_float(cell.get("sprice"))
+            existing.increase_rt = parse_float(cell.get("increase_rt"))
+            existing.sincrease_rt = parse_float(cell.get("sincrease_rt"))
+            existing.convert_value = parse_float(cell.get("convert_value"))
+            existing.premium_rt = parse_float(cell.get("premium_rt"))
+            existing.dblow = parse_float(cell.get("dblow"))
+            existing.curr_iss_amt = parse_float(cell.get("curr_iss_amt"))
+            existing.ytm_rt = parse_float(cell.get("ytm_rt"))
+            existing.put_ytm_rt = parse_float(cell.get("put_ytm_rt"))
+            existing.turnover_rt = parse_float(cell.get("turnover_rt"))
+            existing.volume = parse_float(cell.get("volume"))
+            existing.svolume = parse_float(cell.get("svolume"))
+            existing.raw_json = json.dumps(cell, ensure_ascii=False)
             continue
 
         db.add(CbDailySnapshot(

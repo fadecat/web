@@ -23,10 +23,11 @@ async function loadData() {
   loading.value = true;
   errorMsg.value = '';
   try {
-    // 并行拉: latest=true 只取 8 只最新(4KB, 全量历史是 13MB) + 股息率 + 股债差
+    // 并行拉: latest 只取每只指数最新一行(列表页只展示当前值+分位,
+    // 不带 latest 股息率接口会回全量历史 3.7MB, 是首屏慢的主因)
     const [snap, dy, eb] = await Promise.all([
       getValuationSnapshot({ latest: true }),
-      getDividendYield(),
+      getDividendYield(undefined, { latest: true }),
       getEquityBond(),
     ]);
 

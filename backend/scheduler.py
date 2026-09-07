@@ -14,15 +14,10 @@ from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
 
 from backend.models.database import SessionLocal
-from backend.tasks.valuation_tasks import run_valuation_daily
+from backend.services.run_logger import logged_daily_job
 from backend.tasks.style_rotation_tasks import (
-    run_style_rotation_daily,
     run_style_rotation_backfill,
 )
-from backend.tasks.index_eod_tasks import run_index_eod_daily
-from backend.tasks.cb_index_tasks import run_cb_index_daily
-from backend.tasks.cb_list_tasks import run_cb_list_daily
-from backend.tasks.cb_redeem_tasks import run_cb_redeem_daily
 
 scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
@@ -129,18 +124,13 @@ def _register_daily_jobs() -> None:
     顺序依赖: cb_redeem(含到期赎回价/强赎计数)是 cb_screen 筛选链路的上游,
     排在 cb_list 之前, 保证 15:06 手动筛选时两张表同日对齐。
     转债等权指数集思录 15:04 即更新, 提前排; 风格轮动/估值数据源更新慢, 放 22 点档。
+    任务定义统一在 backend/tasks/registry.py(手动触发端点共用同一份)。
     """
-    jobs = [
-        ("cb_redeem_daily", run_cb_redeem_daily, "可转债强赎列表抓取", 15, 3),
-        ("cb_index_daily", run_cb_index_daily, "可转债等权指数日频抓取", 15, 4),
-        ("cb_list_daily", run_cb_list_daily, "可转债全量快照抓取", 15, 6),
-        ("style_rotation_daily", run_style_rotation_daily, "风格轮动日频抓取", 22, 3),
-        ("valuation_daily", run_valuation_daily, "估值板块日频抓取", 22, 6),
-        ("index_eod_daily", run_index_eod_daily, "指数日线收盘价(eod)抓取", 22, 9),
-    ]
-    for job_id, func, name, hour, minute in jobs:
+    from backend.tasks.registry import DAILY_JOBS
+
+    for job_id, func, name, hour, minute in DAILY_JOBS:
         scheduler.add_job(
-            func,
+            logged_daily_job(job_id, func),
             trigger=CronTrigger(
                 day_of_week="mon-fri",
                 hour=hour,

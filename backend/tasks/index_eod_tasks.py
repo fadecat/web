@@ -57,6 +57,8 @@ def run_index_eod_daily() -> None:
 
     db.close()
     logger.info(f"=== 指数 eod 日频任务完成: 成功 {success_count}, 失败 {fail_count} ===")
+    # 返回计数供 run_logger 判定 partial(部分标的失败)
+    return {"success_count": success_count, "fail_count": fail_count}
 
 
 if __name__ == "__main__":

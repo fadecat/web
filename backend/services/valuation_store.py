@@ -69,6 +69,19 @@ def save_valuation_snapshots(
             trade_date=trade_date,
         ).first()
         if existing:
+            # 同日覆盖: 盘中手动跑写入的盘中值, 盘后任务用收盘正式值覆盖。
+            # 历史行永远走新增分支, 不会被动到。
+            existing.index_name = index_name
+            for metric_name, fields in metrics.items():
+                prefix = _metric_prefix(metric_name)
+                if prefix is None:
+                    continue
+                setattr(existing, prefix, fields.get("current"))
+                percentiles: dict[str, float | None] = fields.get("percentiles", {})
+                for label, value in percentiles.items():
+                    col_suffix = _PERCENTILE_LABEL_TO_COL.get(label)
+                    if col_suffix:
+                        setattr(existing, f"{prefix}_percentile_{col_suffix}", value)
             continue
 
         row = IndexValuationSnapshot(
@@ -129,10 +142,21 @@ def save_dividend_yield(
         index_code=index_code,
         trade_date=trade_date,
     ).first()
-    if existing:
-        return None
-
     percentiles: dict[str, float | None] = data.get("index_dividend_yield_percentiles", {})
+    if existing:
+        # 同日覆盖(盘中手动跑的值被盘后正式值覆盖)
+        existing.dividend_yield = data.get("index_dividend_yield")
+        for key, col in (
+            ("1Y", "dividend_yield_percentile_1y"),
+            ("3Y", "dividend_yield_percentile_3y"),
+            ("5Y", "dividend_yield_percentile_5y"),
+            ("10Y", "dividend_yield_percentile_10y"),
+        ):
+            setattr(existing, col, percentiles.get(key))
+        existing.dividend_yield_average_5y = data.get("index_dividend_yield_average_5y")
+        db.commit()
+        db.refresh(existing)
+        return existing
 
     row = IndexDividendYield(
         index_code=index_code,
@@ -209,6 +233,12 @@ def save_bond_yields(
 
         existing = db.query(CnBondYield).filter_by(trade_date=trade_date).first()
         if existing:
+            # 同日覆盖(盘中手动跑的值被盘后正式值覆盖)
+            existing.yield_2y = record.get("cn_2y_bond_yield")
+            existing.yield_5y = record.get("cn_5y_bond_yield")
+            existing.yield_10y = record.get("cn_10y_bond_yield")
+            existing.yield_30y = record.get("cn_30y_bond_yield")
+            existing.spread_10y_2y = record.get("cn_10y_2y_spread")
             continue
 
         db.add(CnBondYield(

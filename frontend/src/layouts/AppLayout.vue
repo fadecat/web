@@ -24,6 +24,10 @@ const menus = [
       { path: '/style-rotation', title: '风格轮动', icon: '🔄' },
     ],
   },
+  {
+    group: '系统',
+    items: [{ path: '/status', title: '数据状态', icon: '🩺' }],
+  },
 ];
 
 const currentTitle = computed(() => route.meta.title || '');
