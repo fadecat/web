@@ -19,6 +19,12 @@ from sqlalchemy.orm import Session
 
 from backend.models.database import get_db
 from backend.models.valuation import CbDailySnapshot
+from backend.services.cb_blacklist_store import (
+    add_to_blacklist,
+    get_blacklist,
+    get_blacklist_ids,
+    remove_from_blacklist,
+)
 from backend.services.cb_factors import (
     FACTOR_CATALOG,
     get_active_template,
@@ -127,8 +133,9 @@ def screen_intraday(
     year_left_max: float | None = None,
     ytm_min: float | None = None,
     ratings: str | None = None,
+    db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """盘中选债: 实时拉集思录列表+强赎 → 纯条件过滤(不打分不排序)。
+    """盘中选债: 实时拉集思录列表+强赎 → 纯条件过滤(不打分不排序) → 剔除黑名单。
 
     字段对齐集思录筛选页: 转债价格区间/溢价率≤/剩余规模≤/剩余年限区间/
     到期收益率>(简化口径: (赎回价-现价)/现价/年限 年化) + 评级多选。
@@ -136,6 +143,8 @@ def screen_intraday(
     不读快照、不落库: 价格/双低/溢价率/强赎计数全部是当次请求的实时值。
     盘后调用返回当日收盘数据(比日频任务快照更新)。
     耗时约 1~2s(两次实时 HTTP), 前端超时需放宽。
+
+    黑名单联动: 查询时自动排除用户拉黑的转债, 返回 meta.blacklisted_count。
     """
     filters = {
         "price_min": price_min,
@@ -152,4 +161,50 @@ def screen_intraday(
         result = screen_bonds_intraday(filters)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"实时数据拉取失败: {exc}")
+
+    # 黑名单联动: 从结果中剔除被拉黑的转债
+    blacklist_ids = get_blacklist_ids(db)
+    if blacklist_ids:
+        original_count = len(result.get("rows", []))
+        result["rows"] = [
+            r for r in result["rows"] if str(r.get("code")) not in blacklist_ids
+        ]
+        result["total_filtered"] = len(result["rows"])
+        result["blacklisted_count"] = original_count - len(result["rows"])
+    else:
+        result["blacklisted_count"] = 0
+
     return result
+
+
+# ---------------------------------------------------------------------------
+# 黑名单管理
+# ---------------------------------------------------------------------------
+
+@router.get("/cb-list/blacklist")
+def list_blacklist(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    """返回全部黑名单列表(按拉黑时间倒序)。"""
+    return get_blacklist(db)
+
+
+@router.post("/cb-list/blacklist")
+def add_blacklist(body: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any]:
+    """拉黑一只转债(幂等: 已存在则更新 reason)。
+
+    body: {bond_id, bond_nm?, reason?}
+    """
+    bond_id = str(body.get("bond_id") or "").strip()
+    if not bond_id:
+        raise HTTPException(status_code=400, detail="bond_id 不能为空")
+    bond_nm = body.get("bond_nm")
+    reason = body.get("reason")
+    return add_to_blacklist(db, bond_id, bond_nm=bond_nm, reason=reason)
+
+
+@router.delete("/cb-list/blacklist/{bond_id}")
+def remove_blacklist(bond_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """取消拉黑。"""
+    removed = remove_from_blacklist(db, bond_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"黑名单中不存在 {bond_id}")
+    return {"ok": True, "bond_id": bond_id}

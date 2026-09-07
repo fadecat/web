@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue';
-import { ElMessage } from 'element-plus';
-import { screenBondsIntraday } from '../api';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { screenBondsIntraday, getBlacklist, addBlacklist, removeBlacklist } from '../api';
 
 const loading = ref(false);
 const result = ref(null); // 盘中筛选结果 { total_all, total_filtered, rows, intraday }
@@ -51,6 +51,8 @@ onMounted(() => {
   if (saved) {
     filters.value = { ...defaultFilters(), ...saved };
   }
+  // 拉一次黑名单数量(按钮上展示计数)
+  getBlacklist().then((rows) => { blacklistRows.value = rows; }).catch(() => {});
 });
 
 watch(filters, (f) => {
@@ -116,6 +118,70 @@ const sortedRows = computed(() => {
 const onSortChange = ({ prop, order }) => {
   sortState.value = { prop, order };
 };
+
+// ── 移动端判断 ──
+const isMobile = ref(window.innerWidth < 768);
+
+// ── 黑名单 ───────────────────────────────────────────
+// 拉黑: 弹框输入原因(可空) → POST → 该行从结果移除
+// 黑名单弹窗: 查看已拉黑列表 + 取消拉黑
+const blacklistVisible = ref(false);
+const blacklistRows = ref([]);
+const blacklistLoading = ref(false);
+
+async function openBlacklist() {
+  blacklistVisible.value = true;
+  await refreshBlacklist();
+}
+
+async function refreshBlacklist() {
+  blacklistLoading.value = true;
+  try {
+    blacklistRows.value = await getBlacklist();
+  } catch (e) {
+    ElMessage.error('加载黑名单失败');
+  } finally {
+    blacklistLoading.value = false;
+  }
+}
+
+async function onBlacklist(row) {
+  try {
+    const { value: reason } = await ElMessageBox.prompt(
+      `拉黑 ${row.name}（${row.code}）`,
+      '拉黑转债',
+      {
+        inputPlaceholder: '原因（可不填）',
+        inputType: 'text',
+        confirmButtonText: '拉黑',
+        cancelButtonText: '取消',
+        inputValidator: () => true, // 允许空值
+      },
+    );
+    await addBlacklist({ bond_id: row.code, bond_nm: row.name, reason: reason || undefined });
+    ElMessage.success(`${row.name} 已拉黑`);
+    // 从结果中移除该行
+    if (result.value?.rows) {
+      result.value.rows = result.value.rows.filter((r) => r.code !== row.code);
+      result.value.total_filtered = result.value.rows.length;
+      result.value.blacklisted_count = (result.value.blacklisted_count || 0) + 1;
+    }
+  } catch (e) {
+    if (e !== 'cancel' && e?.message !== 'cancel') {
+      ElMessage.error('拉黑失败');
+    }
+  }
+}
+
+async function onUnblacklist(bondId) {
+  try {
+    await removeBlacklist(bondId);
+    ElMessage.success('已取消拉黑');
+    await refreshBlacklist();
+  } catch (e) {
+    ElMessage.error('取消拉黑失败');
+  }
+}
 </script>
 
 <template>
@@ -209,6 +275,9 @@ const onSortChange = ({ prop, order }) => {
             查 询
           </el-button>
           <el-button @click="resetFilters">重置</el-button>
+          <el-button text @click="openBlacklist">
+            黑名单<template v-if="blacklistRows.length">({{ blacklistRows.length }})</template>
+          </el-button>
         </div>
       </div>
       <div class="form-tip">
@@ -225,7 +294,7 @@ const onSortChange = ({ prop, order }) => {
         </span>
       </div>
       <p class="result-summary">
-        实时 {{ result.total_all }} 只 → 符合条件 <b>{{ result.total_filtered }}</b> 只 · 默认按到期收益率降序（点表头可换序）
+        实时 {{ result.total_all }} 只 → 符合条件 <b>{{ result.total_filtered }}</b> 只 · 默认按到期收益率降序（点表头可换序）<template v-if="result.blacklisted_count"> · 已排除 {{ result.blacklisted_count }} 只黑名单</template>
       </p>
       <el-table
         ref="tableRef"
@@ -277,6 +346,16 @@ const onSortChange = ({ prop, order }) => {
         </el-table-column>
         <el-table-column prop="rating" label="评级" width="60" align="center" />
         <el-table-column prop="redeem" label="强赎" width="96" />
+        <el-table-column label="操作" width="70" align="center">
+          <template #default="{ row }">
+            <el-button
+              type="danger"
+              text
+              size="small"
+              @click="onBlacklist(row)"
+            >拉黑</el-button>
+          </template>
+        </el-table-column>
       </el-table>
     </el-card>
     <el-empty
@@ -284,6 +363,43 @@ const onSortChange = ({ prop, order }) => {
       description="设置条件后点击「查询」"
       :image-size="88"
     />
+
+    <!-- 黑名单弹窗 -->
+    <el-dialog
+      v-model="blacklistVisible"
+      title="黑名单"
+      width="600"
+      :fullscreen="isMobile"
+    >
+      <el-table
+        v-loading="blacklistLoading"
+        :data="blacklistRows"
+        size="small"
+        max-height="400"
+        empty-text="暂无拉黑转债"
+      >
+        <el-table-column prop="bond_nm" label="名称" min-width="100" />
+        <el-table-column prop="bond_id" label="代码" width="90" />
+        <el-table-column prop="reason" label="原因" min-width="120" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.reason || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="拉黑时间" width="155">
+          <template #default="{ row }">
+            {{ row.created_at ? row.created_at.slice(0, 19).replace('T', ' ') : '—' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="80" align="center">
+          <template #default="{ row }">
+            <el-button
+              type="warning"
+              text
+              size="small"
+              @click="onUnblacklist(row.bond_id)"
+            >恢复</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
   </div>
 </template>
 

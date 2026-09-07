@@ -33,6 +33,16 @@ export const screenBondsActive = () =>
 export const screenBondsIntraday = (filters = {}) =>
   api.get('/cb-list/screen/intraday', { params: filters, timeout: 30000 }).then((r) => r.data);
 
+// 转债黑名单
+export const getBlacklist = () =>
+  api.get('/cb-list/blacklist').then((r) => r.data);
+
+export const addBlacklist = (data) =>
+  api.post('/cb-list/blacklist', data).then((r) => r.data);
+
+export const removeBlacklist = (bondId) =>
+  api.delete(`/cb-list/blacklist/${bondId}`).then((r) => r.data);
+
 // 风格轮动主图
 export const getRotationAnalysis = (params = {}) =>
   api.get('/style-rotation/analysis', { params, timeout: 30000 }).then((r) => r.data);

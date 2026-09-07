@@ -325,3 +325,19 @@ class CbRedeemDaily(Base):
         Index("ix_cb_redeem_date", "trade_date"),
         Index("ix_cb_redeem_bond", "bond_id"),
     )
+
+
+class CbBlacklist(Base):
+    """可转债黑名单(用户手动拉黑, 筛选时自动排除)。
+
+    主键 bond_id: 一只债只有一条记录, 重复拉黑覆盖(更新 reason)。
+    拉黑时快照 bond_nm 便于黑名单列表展示, 债退市后名称不变。
+    reason 可空(用户选择不填原因)。
+    """
+
+    __tablename__ = "cb_blacklist"
+
+    bond_id: Mapped[str] = mapped_column(String(16), primary_key=True, comment="转债代码")
+    bond_nm: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="转债名称(拉黑时快照)")
+    reason: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="拉黑原因(可空)")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, comment="拉黑时间")
