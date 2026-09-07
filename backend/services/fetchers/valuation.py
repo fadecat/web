@@ -270,6 +270,9 @@ def parse_index_dividend_yield_rows(
     if avg_window:
         result["index_dividend_yield_average_5y"] = round(sum(avg_window) / len(avg_window), 4)
 
+    # 全历史序列(画股息率折线图用): [{date: ISO, yield: float}, ...] 升序
+    result["history"] = [{"date": r["date"].isoformat(), "yield": r["yield"]} for r in records]
+
     return result
 
 
@@ -458,7 +461,10 @@ def parse_cn_10y_bond_yield_response(payload: object) -> list[dict[str, Any]]:
 def fetch_cn_10y_bond_yield() -> list[dict[str, Any]]:
     """抓取中国国债收益率历史数据(东方财富数据中心)。
 
-    返回全部历史行(按日期升序),包含 2Y/5Y/10Y/30Y 及 10Y-2Y 期限利差。
+    东财接口单页上限实测被服务端截断(ps=5000 只回 ~473 行), 必须翻页拉全量:
+    首页读 result.count/pages, 之后按 pageNo 逐页取, 去重后按日期升序返回。
+
+    返回全部历史行(按日期升序, 2005 年起), 包含 2Y/5Y/10Y/30Y 及 10Y-2Y 期限利差。
     """
     params = {
         "type": "RPTA_WEB_TREASURYYIELD",
@@ -467,7 +473,7 @@ def fetch_cn_10y_bond_yield() -> list[dict[str, Any]]:
         "sr": "-1",
         "token": _EASTMONEY_BOND_TOKEN,
         "p": "1",
-        "ps": "5000",  # 拉全部历史
+        "ps": "500",  # 单页 500 行, 翻页拉全量
         "pageNo": "1",
         "pageNum": "1",
     }
@@ -475,8 +481,50 @@ def fetch_cn_10y_bond_yield() -> list[dict[str, Any]]:
         **DEFAULT_HEADERS,
         "Referer": "https://data.eastmoney.com/",
     }
-    resp = httpx.get(_EASTMONEY_BOND_URL, params=params, headers=headers, timeout=DEFAULT_TIMEOUT)
-    resp.raise_for_status()
-    payload = resp.json()
-    result = parse_cn_10y_bond_yield_response(payload)
-    return result
+
+    all_rows: list[dict[str, Any]] = []
+    seen_dates: set[str] = set()
+    total_pages = 1
+    page = 1
+    while page <= total_pages:
+        params["p"] = str(page)  # 东财实际翻页参数是 p(pageNo/pageNum 均被忽略)
+        resp = httpx.get(_EASTMONEY_BOND_URL, params=params, headers=headers, timeout=DEFAULT_TIMEOUT)
+        resp.raise_for_status()
+        payload = resp.json()
+        result_data = payload.get("result")
+        if not isinstance(result_data, dict):
+            break
+        rows = result_data.get("data")
+        if not isinstance(rows, list) or not rows:
+            break
+        pages = result_data.get("pages")
+        if isinstance(pages, int) and pages > 0:
+            total_pages = pages
+        for row in rows:
+            parsed = _parse_bond_yield_row(row)
+            if parsed is None:
+                continue
+            key = parsed["date"].isoformat()
+            if key in seen_dates:  # 翻页边界可能重叠, 按日期去重
+                continue
+            seen_dates.add(key)
+            all_rows.append(parsed)
+        page += 1
+
+    if not all_rows:
+        raise ValueError("国债收益率接口数据均为空(10Y 列全为 None)")
+
+    records = [
+        {
+            "trade_date": r["date"].isoformat(),
+            "cn_10y_bond_yield": r["yield_10y"],
+            "cn_2y_bond_yield": r["yield_2y"],
+            "cn_5y_bond_yield": r["yield_5y"],
+            "cn_30y_bond_yield": r["yield_30y"],
+            "cn_10y_2y_spread": round(r["yield_10y"] - r["yield_2y"], 4)
+                if r["yield_2y"] is not None else None,
+        }
+        for r in all_rows
+    ]
+    records.sort(key=lambda x: x["trade_date"])
+    return records

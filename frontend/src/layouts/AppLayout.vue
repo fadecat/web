@@ -20,13 +20,18 @@ const menus = [
   {
     group: '市场分析',
     items: [
-      { path: '/valuation', title: '市场估值', icon: '📊', disabled: true },
+      { path: '/valuation', title: '市场估值', icon: '📊' },
       { path: '/style-rotation', title: '风格轮动', icon: '🔄' },
     ],
   },
 ];
 
 const currentTitle = computed(() => route.meta.title || '');
+
+// 详情页(/valuation/930955)也要让父级菜单(/valuation)保持高亮,
+// 否则点进详情后侧栏选中态丢失, 看不出自己在哪个板块
+const isMenuActive = (item) =>
+  route.path === item.path || route.path.startsWith(`${item.path}/`);
 
 function onMenuClick(item) {
   if (item.disabled) return;
@@ -60,7 +65,7 @@ function onMenuClick(item) {
             :key="item.path"
             :to="item.disabled ? '' : item.path"
             class="menu-item"
-            :class="{ active: route.path === item.path, disabled: item.disabled }"
+            :class="{ active: isMenuActive(item), disabled: item.disabled }"
             @click="onMenuClick(item)"
           >
             <span class="menu-icon">{{ item.icon }}</span>

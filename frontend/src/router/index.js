@@ -23,6 +23,19 @@ const routes = [
         meta: { title: '选债因子', group: '转债' },
       },
       {
+        path: 'valuation',
+        name: 'valuation',
+        component: () => import('../pages/ValuationList.vue'),
+        meta: { title: '市场估值', group: '市场' },
+      },
+      // 估值详情: 列表页点击某只指数进入, code 为指数代码(如 930955)
+      {
+        path: 'valuation/:code',
+        name: 'valuation-detail',
+        component: () => import('../pages/ValuationDetail.vue'),
+        meta: { title: '估值详情', group: '市场' },
+      },
+      {
         path: 'style-rotation',
         name: 'style-rotation',
         component: () => import('../pages/Rotation.vue'),

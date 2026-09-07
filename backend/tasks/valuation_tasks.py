@@ -20,6 +20,7 @@ from backend.services.fetchers.valuation import (
 from backend.services.valuation_store import (
     save_bond_yields,
     save_dividend_yield,
+    save_dividend_yield_history,
     save_valuation_snapshots,
 )
 from backend.utils import is_trading_day, load_valuation_targets
@@ -81,11 +82,25 @@ def run_valuation_daily() -> None:
             if dividend_url:
                 try:
                     div_data = fetch_index_dividend_yield(code, url=dividend_url)
+                    # 数据源返回的 trdCode 是"真实指数代码", 可能和 config 的 code 不一致:
+                    # 例如 中证价值100 → config code=512040(ETF 代码), 数据源 trdCode=931052。
+                    # 落库统一用 config 的 code, 否则同一只指数在快照表用 512040、
+                    # 在股息率表用 931052, 前端按 code 关联股息率时查不到。
+                    div_data["index_code"] = code
                     div_row = save_dividend_yield(db, div_data)
+                    # 全历史序列批量入库(股息率折线图用), 幂等
+                    hist_inserted = save_dividend_yield_history(
+                        db, code, div_data.get("history", [])
+                    )
                     if div_row:
-                        logger.info(f"  [{code}] 股息率已写入: {div_row.dividend_yield}%")
+                        logger.info(
+                            f"  [{code}] 股息率已写入: {div_row.dividend_yield}%, "
+                            f"历史新写入 {hist_inserted} 条"
+                        )
                     else:
-                        logger.info(f"  [{code}] 股息率已存在,跳过")
+                        logger.info(
+                            f"  [{code}] 股息率最新值已存在, 历史新写入 {hist_inserted} 条"
+                        )
                 except Exception as exc:
                     logger.warning(f"  [{code}] 股息率获取失败,跳过: {exc}")
 

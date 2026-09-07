@@ -47,4 +47,26 @@ export const removeBlacklist = (bondId) =>
 export const getRotationAnalysis = (params = {}) =>
   api.get('/style-rotation/analysis', { params, timeout: 30000 }).then((r) => r.data);
 
+// 市场估值: 估值快照(PE/PB/PS 当前值 + 各 9 个周期分位)
+// latest=true 时每只指数只返回最新一条(列表页用: 4KB 而非 13MB 全量历史)
+export const getValuationSnapshot = (params = {}) =>
+  api.get('/valuation/snapshot', { params, timeout: 60000 }).then((r) => r.data);
+
+// 股息率(当前值 + 1Y/3Y/5Y/10Y 分位 + 5Y 均值)
+export const getDividendYield = (indexCode) =>
+  api.get('/valuation/dividend-yield', { params: { index_code: indexCode } }).then((r) => r.data);
+
+// 国债收益率(2Y/5Y/10Y/30Y + 10Y-2Y 期限利差)
+export const getBondYield = () =>
+  api.get('/valuation/bond-yield', { timeout: 30000 }).then((r) => r.data);
+
+// 股债收益差/比(EP-10Y 与 EP/10Y, 当前值 + 分位; 传 indexCode 附带全历史序列)
+export const getEquityBond = (indexCode) =>
+  api
+    .get('/valuation/equity-bond', {
+      params: { index_code: indexCode },
+      timeout: 60000,
+    })
+    .then((r) => r.data);
+
 export default api;
