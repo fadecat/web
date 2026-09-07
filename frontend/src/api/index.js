@@ -47,6 +47,10 @@ export const removeBlacklist = (bondId) =>
 export const getRotationAnalysis = (params = {}) =>
   api.get('/style-rotation/analysis', { params, timeout: 30000 }).then((r) => r.data);
 
+// 轮动对照组最新估值: 只读库, 不触发抓取; 返回两侧独立数据日期
+export const getRotationValuation = (params = {}) =>
+  api.get('/style-rotation/valuation', { params, timeout: 30000 }).then((r) => r.data);
+
 // 市场估值: 估值快照(PE/PB/PS 当前值 + 各 9 个周期分位)
 // latest=true 时每只指数只返回最新一条(列表页用: 4KB 而非 13MB 全量历史)
 export const getValuationSnapshot = (params = {}) =>
@@ -82,5 +86,15 @@ export const getDataStatus = () =>
 // 手动触发指定定时任务(后台执行, 立即返回; 同任务并发触发返回 409)
 export const runJobManually = (jobId) =>
   api.post(`/data-status/run/${jobId}`, null, { timeout: 10000 }).then((r) => r.data);
+
+// 系统配置(敏感项服务端脱敏, 只回 configured 布尔)
+export const getSettings = () =>
+  api.get('/settings', { timeout: 15000 }).then((r) => r.data);
+
+export const saveSettings = (values) =>
+  api.put('/settings', { values }, { timeout: 15000 }).then((r) => r.data);
+
+export const sendTestMail = () =>
+  api.post('/settings/test-mail', null, { timeout: 60000 }).then((r) => r.data);
 
 export default api;

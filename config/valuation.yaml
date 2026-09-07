@@ -42,6 +42,11 @@ targets:
     type: "valuation"
     index_detail_url: "https://www.etf.com.cn/api/etf-api-service/index/detail?indexCode=399326"
 
+  - name: "创成长"
+    code: "399296"
+    type: "valuation"
+    index_detail_url: "https://www.etf.com.cn/api/etf-api-service/index/detail?indexCode=399296"
+
   - name: "港股通央企红利"
     code: "931233"
     type: "valuation"

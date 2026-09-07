@@ -10,11 +10,11 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.models.database import get_db
-from backend.models.valuation import IndexDailyQuote
+from backend.models.valuation import IndexDailyQuote, IndexValuationSnapshot
 from backend.services.style_rotation_analysis import (
     InsufficientDataError,
     StyleRotationParams,
@@ -55,6 +55,62 @@ def list_index_quotes(
         }
         for r in rows
     ]
+
+
+@router.get("/style-rotation/valuation")
+def style_rotation_valuation(
+    left_symbol: str = Query(default="399376", description="左侧指数代码"),
+    right_symbol: str = Query(default="399373", description="右侧指数代码"),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """读取对照组两侧的最新估值快照。
+
+    该接口只读 IndexValuationSnapshot, 不触发抓取; 未纳入估值任务的指数返回
+    ``available=false``。估值日期独立于轮动图日期, 前端必须显式展示日期。
+    """
+    if left_symbol == right_symbol:
+        raise HTTPException(status_code=400, detail="left_symbol 与 right_symbol 必须不同")
+
+    latest_date = (
+        select(
+            IndexValuationSnapshot.index_code,
+            func.max(IndexValuationSnapshot.trade_date).label("max_date"),
+        )
+        .where(IndexValuationSnapshot.index_code.in_([left_symbol, right_symbol]))
+        .group_by(IndexValuationSnapshot.index_code)
+        .subquery()
+    )
+    stmt = (
+        select(IndexValuationSnapshot)
+        .join(
+            latest_date,
+            (IndexValuationSnapshot.index_code == latest_date.c.index_code)
+            & (IndexValuationSnapshot.trade_date == latest_date.c.max_date),
+        )
+        .order_by(IndexValuationSnapshot.index_code)
+    )
+    rows = {row.index_code: row for row in db.scalars(stmt).all()}
+
+    def to_item(code: str) -> dict[str, Any]:
+        row = rows.get(code)
+        if row is None:
+            return {"index_code": code, "available": False}
+        return {
+            "index_code": row.index_code,
+            "index_name": row.index_name,
+            "available": True,
+            "trade_date": row.trade_date.isoformat() if row.trade_date else None,
+            "pe": row.pe,
+            "pb": row.pb,
+            "ps": row.ps,
+            "pe_percentile_5y": row.pe_percentile_5y,
+            "pb_percentile_5y": row.pb_percentile_5y,
+        }
+
+    return {
+        "left": to_item(left_symbol),
+        "right": to_item(right_symbol),
+    }
 
 
 @router.get("/style-rotation/analysis")

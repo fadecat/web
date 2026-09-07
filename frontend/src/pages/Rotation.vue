@@ -1,6 +1,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue';
-import { getRotationAnalysis } from '../api';
+import { getRotationAnalysis, getRotationValuation } from '../api';
+import { fmtNum, fmtPct } from '../utils/valuation';
 import RotationChart from '../components/RotationChart.vue';
 
 // 预设对照组(用户定版: 不开放任意组合, 只有两档)
@@ -131,23 +132,26 @@ const toggleFilters = () => {
 };
 
 const data = ref(null);
+const valuation = ref(null);
 const loading = ref(false);
+const valuationLoading = ref(false);
 const errorMsg = ref('');
+const valuationError = ref('');
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
 async function fetchAnalysis() {
   loading.value = true;
   errorMsg.value = '';
+  const params = {
+    left_symbol: form.leftSymbol,
+    right_symbol: form.rightSymbol,
+    start_date: form.startDate || undefined,
+    end_date: form.endDate || undefined,
+    return_window: form.returnWindow,
+    ma_window: form.maWindow,
+  };
   try {
-    const params = {
-      left_symbol: form.leftSymbol,
-      right_symbol: form.rightSymbol,
-      start_date: form.startDate || undefined,
-      end_date: form.endDate || undefined,
-      return_window: form.returnWindow,
-      ma_window: form.maWindow,
-    };
     data.value = await getRotationAnalysis(params);
   } catch (e) {
     errorMsg.value =
@@ -155,6 +159,24 @@ async function fetchAnalysis() {
     data.value = null;
   } finally {
     loading.value = false;
+  }
+  await fetchValuation(params);
+}
+
+async function fetchValuation(params = {}) {
+  valuationLoading.value = true;
+  valuationError.value = '';
+  try {
+    valuation.value = await getRotationValuation({
+      left_symbol: params.left_symbol || form.leftSymbol,
+      right_symbol: params.right_symbol || form.rightSymbol,
+    });
+  } catch (e) {
+    valuationError.value =
+      e?.response?.data?.detail || e?.message || '估值读取失败';
+    valuation.value = null;
+  } finally {
+    valuationLoading.value = false;
   }
 }
 
@@ -342,6 +364,28 @@ watch(
     <el-card shadow="never" v-loading="loading">
       <RotationChart :data="data" />
     </el-card>
+
+    <el-card class="valuation-card" shadow="never" v-loading="valuationLoading">
+      <div class="valuation-head">
+        <strong>最新估值</strong>
+        <span>仅展示数据库最新快照，不随图表区间变化</span>
+      </div>
+      <el-alert v-if="valuationError" :title="valuationError" type="warning" :closable="false" />
+      <div v-else class="valuation-grid">
+        <div v-for="side in ['left', 'right']" :key="side" class="valuation-item">
+          <div class="valuation-name">{{ valuation?.[side]?.index_name || currentPair[side].name }}</div>
+          <template v-if="valuation?.[side]?.available">
+            <span class="valuation-date">数据日期 {{ valuation[side].trade_date }}</span>
+            <div class="valuation-values">
+              <span>PE {{ fmtNum(valuation[side].pe) }}</span>
+              <span>PB {{ fmtNum(valuation[side].pb) }}</span>
+              <span>PE五年分位 {{ fmtPct(valuation[side].pe_percentile_5y) }}</span>
+            </div>
+          </template>
+          <span v-else class="valuation-empty">暂无估值数据</span>
+        </div>
+      </div>
+    </el-card>
   </div>
 </template>
 
@@ -356,6 +400,65 @@ watch(
 }
 .summary-card {
   margin-bottom: 0;
+}
+
+.valuation-card {
+  margin-bottom: 0;
+}
+
+.valuation-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.valuation-head strong {
+  font-size: 15px;
+  color: #111827;
+}
+
+.valuation-head span,
+.valuation-date {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.valuation-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.valuation-item {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.valuation-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
+  margin-bottom: 4px;
+}
+
+.valuation-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 8px;
+  color: #374151;
+  font-size: 13px;
+}
+
+.valuation-empty {
+  display: block;
+  margin-top: 8px;
+  color: #9ca3af;
+  font-size: 13px;
 }
 
 /* ---------- 桌面端指标四列网格 ---------- */
@@ -389,6 +492,19 @@ watch(
 @media (max-width: 767px) {
   :deep(.el-card__body) {
     padding: 12px;
+  }
+
+  .valuation-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .valuation-head {
+    display: block;
+  }
+
+  .valuation-head span {
+    display: block;
+    margin-top: 4px;
   }
 }
 
