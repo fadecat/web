@@ -47,6 +47,12 @@ const routes = [
         component: () => import('../pages/DataStatus.vue'),
         meta: { title: '数据状态', group: '系统' },
       },
+      {
+        path: 'settings',
+        name: 'settings',
+        component: () => import('../pages/Settings.vue'),
+        meta: { title: '系统设置', group: '系统' },
+      },
     ],
   },
 ];

@@ -42,7 +42,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 def init_db() -> None:
     """创建所有表(骨架阶段;后续引入 Alembic 做迁移)。"""
     # 延迟导入,确保模型均已注册到 Base.metadata
-    from backend.models import data_status, valuation  # noqa: F401
+    from backend.models import app_setting, data_status, valuation  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
 
