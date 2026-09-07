@@ -16,18 +16,28 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.models.database import get_db
 from backend.models.valuation import (
     CnBondYield,
-    IndexDividendYield,
     IndexValuationSnapshot,
 )
 from backend.services.equity_bond import compute_equity_bond
+from backend.services.catalog_entities import to_storage
+from backend.services.queries import bond_yields, dividends, valuations
 
 router = APIRouter()
+
+
+def _normalize_index_code(index_code: str | None) -> str | None:
+    """查询入口代码归一化: canonical_id → 历史存储 key(缺省恒等)。
+
+    传真实指数代码(如 931052)与传历史存储 key(如 512040)均可命中;
+    未收录代码恒等返回, 不改变旧接口行为。
+    """
+    return to_storage(index_code) if index_code else None
 
 
 # ---------------------------------------------------------------------------
@@ -53,80 +63,8 @@ def list_valuation_snapshot(
       响应压到几 KB——否则手机端首屏要等十几兆 JSON。
     """
     if latest:
-        # 每只指数的最新交易日 → 与快照表自连接取该日的那一行
-        latest_date = (
-            select(
-                IndexValuationSnapshot.index_code,
-                func.max(IndexValuationSnapshot.trade_date).label("max_date"),
-            )
-            .group_by(IndexValuationSnapshot.index_code)
-            .subquery()
-        )
-        stmt = (
-            select(IndexValuationSnapshot)
-            .join(
-                latest_date,
-                (IndexValuationSnapshot.index_code == latest_date.c.index_code)
-                & (IndexValuationSnapshot.trade_date == latest_date.c.max_date),
-            )
-            .order_by(IndexValuationSnapshot.index_code)
-        )
-    else:
-        stmt = select(IndexValuationSnapshot).order_by(
-            IndexValuationSnapshot.index_code,
-            IndexValuationSnapshot.trade_date.desc(),
-        )
-
-    if index_code:
-        stmt = stmt.where(IndexValuationSnapshot.index_code == index_code)
-
-    rows = db.scalars(stmt).all()
-    return [_snapshot_to_dict(r) for r in rows]
-
-
-def _snapshot_to_dict(r: IndexValuationSnapshot) -> dict[str, Any]:
-    """ORM 行 -> API 响应 dict,全量输出所有字段。"""
-    return {
-        "index_code": r.index_code,
-        "index_name": r.index_name,
-        "trade_date": r.trade_date.isoformat() if r.trade_date else None,
-        "pe": r.pe,
-        "pb": r.pb,
-        "ps": r.ps,
-        "pe_percentile": {
-            "3m": r.pe_percentile_3m,
-            "6m": r.pe_percentile_6m,
-            "1y": r.pe_percentile_1y,
-            "2y": r.pe_percentile_2y,
-            "3y": r.pe_percentile_3y,
-            "5y": r.pe_percentile_5y,
-            "10y": r.pe_percentile_10y,
-            "ytd": r.pe_percentile_ytd,
-            "bgn": r.pe_percentile_bgn,
-        },
-        "pb_percentile": {
-            "3m": r.pb_percentile_3m,
-            "6m": r.pb_percentile_6m,
-            "1y": r.pb_percentile_1y,
-            "2y": r.pb_percentile_2y,
-            "3y": r.pb_percentile_3y,
-            "5y": r.pb_percentile_5y,
-            "10y": r.pb_percentile_10y,
-            "ytd": r.pb_percentile_ytd,
-            "bgn": r.pb_percentile_bgn,
-        },
-        "ps_percentile": {
-            "3m": r.ps_percentile_3m,
-            "6m": r.ps_percentile_6m,
-            "1y": r.ps_percentile_1y,
-            "2y": r.ps_percentile_2y,
-            "3y": r.ps_percentile_3y,
-            "5y": r.ps_percentile_5y,
-            "10y": r.ps_percentile_10y,
-            "ytd": r.ps_percentile_ytd,
-            "bgn": r.ps_percentile_bgn,
-        },
-    }
+        return valuations.get_latest(db, index_code)
+    return valuations.get_history(db, index_code)
 
 
 # ---------------------------------------------------------------------------
@@ -151,47 +89,8 @@ def list_dividend_yield(
       8 行约 15KB; 与 snapshot 的 latest 同款方案)。
     """
     if latest:
-        latest_date = (
-            select(
-                IndexDividendYield.index_code,
-                func.max(IndexDividendYield.trade_date).label("max_date"),
-            )
-            .group_by(IndexDividendYield.index_code)
-            .subquery()
-        )
-        stmt = (
-            select(IndexDividendYield)
-            .join(
-                latest_date,
-                (IndexDividendYield.index_code == latest_date.c.index_code)
-                & (IndexDividendYield.trade_date == latest_date.c.max_date),
-            )
-            .order_by(IndexDividendYield.index_code)
-        )
-    else:
-        stmt = select(IndexDividendYield).order_by(
-            IndexDividendYield.index_code,
-            IndexDividendYield.trade_date.desc(),
-        )
-    if index_code:
-        stmt = stmt.where(IndexDividendYield.index_code == index_code)
-
-    rows = db.scalars(stmt).all()
-    return [
-        {
-            "index_code": r.index_code,
-            "trade_date": r.trade_date.isoformat() if r.trade_date else None,
-            "dividend_yield": r.dividend_yield,
-            "percentile": {
-                "1y": r.dividend_yield_percentile_1y,
-                "3y": r.dividend_yield_percentile_3y,
-                "5y": r.dividend_yield_percentile_5y,
-                "10y": r.dividend_yield_percentile_10y,
-            },
-            "average_5y": r.dividend_yield_average_5y,
-        }
-        for r in rows
-    ]
+        return dividends.get_latest(db, index_code)
+    return dividends.get_history(db, index_code)
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +111,7 @@ def list_equity_bond(
     不传 index_code: 每只指数返回统计值(列表页)。
     传入 index_code: 额外附带 series 全历史序列(详情页画走势)。
     """
+    index_code = _normalize_index_code(index_code)
     pe_rows = db.execute(
         select(
             IndexValuationSnapshot.index_code,
@@ -261,16 +161,4 @@ def list_bond_yield(
     每行含 2Y/5Y/10Y/30Y 收益率及 10Y-2Y 期限利差。
     按 trade_date 降序排列(最新在前)。
     """
-    stmt = select(CnBondYield).order_by(CnBondYield.trade_date.desc())
-    rows = db.scalars(stmt).all()
-    return [
-        {
-            "trade_date": r.trade_date.isoformat() if r.trade_date else None,
-            "yield_2y": r.yield_2y,
-            "yield_5y": r.yield_5y,
-            "yield_10y": r.yield_10y,
-            "yield_30y": r.yield_30y,
-            "spread_10y_2y": r.spread_10y_2y,
-        }
-        for r in rows
-    ]
+    return bond_yields.get_history(db)

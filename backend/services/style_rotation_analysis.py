@@ -18,10 +18,9 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.models.valuation import IndexDailyQuote
+from backend.services.queries.prices import get_history
 
 
 class InsufficientDataError(ValueError):
@@ -39,27 +38,10 @@ class StyleRotationParams:
     quantile_window_min: int = 20  # 动态分位线最少累积天数
 
 
-def _load_price_frame(
-    db: Session,
-    index_code: str,
-    query_start: date | None,
-    query_end: date | None,
-) -> pd.DataFrame:
-    """加载单只指数的日线 close 列,转成 DataFrame。"""
-    stmt = select(
-        IndexDailyQuote.trade_date,
-        IndexDailyQuote.close,
-    ).where(IndexDailyQuote.index_code == index_code)
-    if query_start:
-        stmt = stmt.where(IndexDailyQuote.trade_date >= query_start)
-    if query_end:
-        stmt = stmt.where(IndexDailyQuote.trade_date <= query_end)
-    stmt = stmt.order_by(IndexDailyQuote.trade_date.asc())
-
-    rows = db.execute(stmt).all()
+def _rows_to_frame(rows) -> pd.DataFrame:
+    """查询层返回的 (trade_date, close) 行 → DataFrame(纯转换, 无 SQL)。"""
     if not rows:
         return pd.DataFrame(columns=["trade_date", "close"])
-
     return pd.DataFrame(rows, columns=["trade_date", "close"])
 
 
@@ -177,8 +159,8 @@ def build_style_rotation_response(
         )
     query_end = date.fromisoformat(params.end_date) if params.end_date else None
 
-    df_left = _load_price_frame(db, params.left_symbol, query_start, query_end)
-    df_right = _load_price_frame(db, params.right_symbol, query_start, query_end)
+    df_left = _rows_to_frame(get_history(db, params.left_symbol, query_start, query_end))
+    df_right = _rows_to_frame(get_history(db, params.right_symbol, query_start, query_end))
 
     if df_left.empty or df_right.empty:
         raise InsufficientDataError(
