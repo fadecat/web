@@ -22,7 +22,7 @@ const RUN_STATUS = {
   success: { label: '成功', cls: 'ok' },
   partial: { label: '部分成功', cls: 'warn' },
   failed: { label: '失败', cls: 'bad' },
-  never: { label: '未运行', cls: 'none' },
+  never: { label: '暂无记录', cls: 'none' },
 };
 
 function fmtDuration(sec) {
@@ -185,8 +185,9 @@ onMounted(async () => {
           <p v-if="j.error" class="bad-text job-error">{{ j.error }}</p>
         </div>
         <p class="note">
-          任务每次运行自动记录,失败时可在服务器日志中查错误详情;交易日错过触发 1
-          小时内重启服务会自动补跑。
+          徽标 = 该任务最近一次运行的记录结果(运行记录自 2026-09-07
+          上线起积累,之前的运行无记录)。任务每次运行自动记录,失败时可在服务器日志中查错误详情;交易日错过触发
+          1 小时内重启服务会自动补跑。
         </p>
       </div>
     </template>
