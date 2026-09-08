@@ -1,6 +1,7 @@
 <script setup>
 import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import { use, init } from 'echarts/core';
+import { emitHover, onHover, findClosestIndex } from '../utils/chartLink';
 import { CanvasRenderer } from 'echarts/renderers';
 import { LineChart } from 'echarts/charts';
 import {
@@ -34,6 +35,11 @@ const props = defineProps({
 
 const chartRef = ref(null);
 let chart = null;
+
+// 三图联动: 悬停时按时间戳在 spread 与 PE 图间同步十字轴(详见 utils/chartLink.js)
+let masterTimestamps = []; // 当前数据的横轴时间戳缓存(与 series 数据同序)
+let syncingPointer = false; // 防循环: 收到外部联动 dispatch 时不再反向上报
+let offHover = null; // 取消联动订阅
 
 const isMobile = () => window.innerWidth < 768;
 
@@ -129,6 +135,9 @@ function buildOption() {
   const leftLabel = nameMap[meta.left_symbol] || meta.left_symbol;
   const rightLabel = nameMap[meta.right_symbol] || meta.right_symbol;
   const masterDates = series.dates;
+  // x 轴用 time 类型: 悬停联动按时间戳对齐——spread 日线与 PE 估值的日期序列
+  // 长度/起点不同, category 轴按序号对齐会错位; time 轴任意日期精确同步
+  masterTimestamps = masterDates.map((d) => new Date(d + 'T00:00:00').getTime());
   const positiveArea = buildStrengthAreaData(series.spread, (v) => v > 0);
   const negativeArea = buildStrengthAreaData(series.spread, (v) => v < 0);
   const globalP90 = buildFlatReference(masterDates, summary.global_p90);
@@ -191,6 +200,7 @@ function buildOption() {
         'box-shadow: 0 18px 36px rgba(15, 23, 42, 0.16); border-radius: 14px; padding: 10px 12px;',
     },
     axisPointer: { link: [{ xAxisIndex: [0] }] },
+    grid: [{ top: mobile ? '26%' : '20%', height: mobile ? '58%' : '65%', left: gridLeft, right: gridRight }],
     dataZoom: [
       {
         type: 'slider',
@@ -219,12 +229,11 @@ function buildOption() {
         moveOnMouseMove: !mobile,
       },
     ],
-    grid: [{ top: mobile ? '26%' : '20%', height: mobile ? '58%' : '65%', left: gridLeft, right: gridRight }],
+    // time 轴刻度格式: 年初标年, 其他标月-日, 避免长区间下刻度稀疏难读
     xAxis: [
       {
-        type: 'category',
+        type: 'time',
         gridIndex: 0,
-        data: masterDates,
         boundaryGap: false,
         axisLabel: {
           color: '#667085',
@@ -233,6 +242,12 @@ function buildOption() {
           showMaxLabel: true,
           fontSize: mobile ? 9 : 11,
           margin: 10,
+          formatter: (val) => {
+            const d = new Date(val);
+            const m = d.getMonth() + 1;
+            if (m === 1) return `${d.getFullYear()}`;
+            return `${String(m).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+          },
         },
         axisTick: { show: false },
         axisLine: { lineStyle: { color: '#cbd5e1' } },
@@ -258,7 +273,7 @@ function buildOption() {
         type: 'line',
         xAxisIndex: 0,
         yAxisIndex: 0,
-        data: positiveArea,
+        data: positiveArea.map((v, i) => [masterTimestamps[i], v]),
         symbol: 'none',
         lineStyle: { opacity: 0 },
         areaStyle: { color: 'rgba(214, 67, 69, 0.22)' },
@@ -270,7 +285,7 @@ function buildOption() {
         type: 'line',
         xAxisIndex: 0,
         yAxisIndex: 0,
-        data: negativeArea,
+        data: negativeArea.map((v, i) => [masterTimestamps[i], v]),
         symbol: 'none',
         lineStyle: { opacity: 0 },
         areaStyle: { color: 'rgba(29, 141, 87, 0.22)' },
@@ -282,7 +297,7 @@ function buildOption() {
         type: 'line',
         xAxisIndex: 0,
         yAxisIndex: 0,
-        data: series.spread,
+        data: series.spread.map((v, i) => [masterTimestamps[i], v]),
         symbol: 'none',
         lineStyle: { width: 1.8, color: '#1f2937' },
         z: 4,
@@ -292,7 +307,7 @@ function buildOption() {
         type: 'line',
         xAxisIndex: 0,
         yAxisIndex: 0,
-        data: series.ma,
+        data: series.ma.map((v, i) => [masterTimestamps[i], v]),
         symbol: 'none',
         lineStyle: { width: 1.6, type: 'dashed', color: '#f59e0b' },
         z: 4,
@@ -302,7 +317,7 @@ function buildOption() {
         type: 'line',
         xAxisIndex: 0,
         yAxisIndex: 0,
-        data: globalP90,
+        data: globalP90.map((v, i) => [masterTimestamps[i], v]),
         symbol: 'none',
         lineStyle: { width: 1.2, type: 'dashed', color: '#dc2626' },
         z: 3,
@@ -312,7 +327,7 @@ function buildOption() {
         type: 'line',
         xAxisIndex: 0,
         yAxisIndex: 0,
-        data: globalP10,
+        data: globalP10.map((v, i) => [masterTimestamps[i], v]),
         symbol: 'none',
         lineStyle: { width: 1.2, type: 'dashed', color: '#16a34a' },
         z: 3,
@@ -331,6 +346,13 @@ const render = () => {
       const z = chart.getOption().dataZoom[0];
       if (z && z.start != null && z.end != null) syncSlidersFromChart(z.start, z.end);
     });
+    // 悬停上报当前横轴时间戳(联动给 PE 图); 鼠标移出上报 null
+    chart.on('updateAxisPointer', (e) => {
+      if (syncingPointer) return;
+      const axis = (e?.axesInfo || []).find((a) => a.axisDim === 'x');
+      if (axis && typeof axis.value === 'number') emitHover(axis.value);
+    });
+    chart.getZr().on('globalout', () => emitHover(null));
   }
   chart.setOption(buildOption(), true);
   // 重渲染后滑杆回归全区间(与 buildDefaultZoomRange 的 start:0/end:100 一致)
@@ -356,13 +378,31 @@ const onResize = () => {
 
 watch(() => props.data, () => nextTick(render), { deep: true });
 
+// 收到外部联动时间戳(来自 PE 图): 按时间戳定位本图最近 index, dispatch showTip 显示十字轴
+function applyExternalHover(ts) {
+  if (!chart) return;
+  syncingPointer = true;
+  try {
+    if (ts == null) {
+      chart.dispatchAction({ type: 'hideTip' });
+      return;
+    }
+    const idx = findClosestIndex(masterTimestamps, ts);
+    if (idx >= 0) chart.dispatchAction({ type: 'showTip', seriesIndex: 2, dataIndex: idx });
+  } finally {
+    syncingPointer = false;
+  }
+}
+
 onMounted(() => {
   nextTick(render);
+  offHover = onHover(applyExternalHover);
   window.addEventListener('resize', onResize);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize);
+  if (offHover) offHover();
   if (chart) {
     chart.dispose();
     chart = null;

@@ -1,8 +1,8 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue';
-import { getRotationAnalysis, getRotationValuation } from '../api';
-import { fmtNum, fmtPct } from '../utils/valuation';
+import { getRotationAnalysis, getRotationValuation, getValuationSnapshot } from '../api';
 import RotationChart from '../components/RotationChart.vue';
+import PeChart from '../components/PeChart.vue';
 
 // 预设对照组(用户定版: 不开放任意组合, 只有两档)
 // 惯例: 左=进攻侧(小盘/成长), 右=防守侧(大盘/红利) → spread>0 恒为进攻侧强
@@ -82,9 +82,9 @@ function markCustomRange() {
 }
 
 const form = reactive({
-  pairKey: 'size',   // 当前对照组
-  leftSymbol: '399376',
-  rightSymbol: '399373',
+  pairKey: 'dividend',   // 当前对照组(默认成长 vs 红利: 大小盘组无 PE 数据, 默认展示有 PE 图的红利组)
+  leftSymbol: '399296',
+  rightSymbol: '930955',
   startDate: '',
   endDate: '',
   returnWindow: 250, // 收益率计算窗口(交易日)
@@ -133,6 +133,7 @@ const toggleFilters = () => {
 
 const data = ref(null);
 const valuation = ref(null);
+const peHistory = ref({ left: [], right: [] });
 const loading = ref(false);
 const valuationLoading = ref(false);
 const errorMsg = ref('');
@@ -166,15 +167,21 @@ async function fetchAnalysis() {
 async function fetchValuation(params = {}) {
   valuationLoading.value = true;
   valuationError.value = '';
+  const left = params.left_symbol || form.leftSymbol;
+  const right = params.right_symbol || form.rightSymbol;
   try {
-    valuation.value = await getRotationValuation({
-      left_symbol: params.left_symbol || form.leftSymbol,
-      right_symbol: params.right_symbol || form.rightSymbol,
-    });
+    const [latest, leftHist, rightHist] = await Promise.all([
+      getRotationValuation({ left_symbol: left, right_symbol: right }),
+      getValuationSnapshot({ index_code: left }),
+      getValuationSnapshot({ index_code: right }),
+    ]);
+    valuation.value = latest;
+    peHistory.value = { left: leftHist || [], right: rightHist || [] };
   } catch (e) {
     valuationError.value =
       e?.response?.data?.detail || e?.message || '估值读取失败';
     valuation.value = null;
+    peHistory.value = { left: [], right: [] };
   } finally {
     valuationLoading.value = false;
   }
@@ -367,24 +374,18 @@ watch(
 
     <el-card class="valuation-card" shadow="never" v-loading="valuationLoading">
       <div class="valuation-head">
-        <strong>最新估值</strong>
-        <span>仅展示数据库最新快照，不随图表区间变化</span>
+        <strong>指数 PE 走势</strong>
+        <span>横轴跟随上方日期范围</span>
       </div>
       <el-alert v-if="valuationError" :title="valuationError" type="warning" :closable="false" />
-      <div v-else class="valuation-grid">
-        <div v-for="side in ['left', 'right']" :key="side" class="valuation-item">
-          <div class="valuation-name">{{ valuation?.[side]?.index_name || currentPair[side].name }}</div>
-          <template v-if="valuation?.[side]?.available">
-            <span class="valuation-date">数据日期 {{ valuation[side].trade_date }}</span>
-            <div class="valuation-values">
-              <span>PE {{ fmtNum(valuation[side].pe) }}</span>
-              <span>PB {{ fmtNum(valuation[side].pb) }}</span>
-              <span>PE五年分位 {{ fmtPct(valuation[side].pe_percentile_5y) }}</span>
-            </div>
-          </template>
-          <span v-else class="valuation-empty">暂无估值数据</span>
-        </div>
-      </div>
+      <PeChart
+        v-else
+        :history="peHistory"
+        :start-date="form.startDate"
+        :end-date="form.endDate"
+        :left-name="currentPair.left.name"
+        :right-name="currentPair.right.name"
+      />
     </el-card>
   </div>
 </template>
@@ -418,47 +419,9 @@ watch(
   color: #111827;
 }
 
-.valuation-head span,
-.valuation-date {
+.valuation-head span {
   color: #6b7280;
   font-size: 12px;
-}
-
-.valuation-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.valuation-item {
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 8px;
-  background: #fafafa;
-}
-
-.valuation-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: #1f2937;
-  margin-bottom: 4px;
-}
-
-.valuation-values {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
-  margin-top: 8px;
-  color: #374151;
-  font-size: 13px;
-}
-
-.valuation-empty {
-  display: block;
-  margin-top: 8px;
-  color: #9ca3af;
-  font-size: 13px;
 }
 
 /* ---------- 桌面端指标四列网格 ---------- */
@@ -492,10 +455,6 @@ watch(
 @media (max-width: 767px) {
   :deep(.el-card__body) {
     padding: 12px;
-  }
-
-  .valuation-grid {
-    grid-template-columns: 1fr;
   }
 
   .valuation-head {
