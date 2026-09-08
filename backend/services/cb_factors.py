@@ -71,6 +71,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "excluded_redeem_icons": ["R", "O", "B"],
             "redeem_safe_days": 2,
             "excluded_bond_codes": [],
+            "ratings": ["AAA", "AA+", "AA", "AA-", "A+", "A", "A-"],
             "min_listing_days": 0,
         }
     ],
@@ -144,6 +145,20 @@ def _normalize_templates(data: dict) -> dict:
             seen.add(entry["code"])
             deduped.append(entry)
         tmpl["excluded_bond_codes"] = deduped
+        # 评级筛选(白名单): 统一大写, 白名单七档; 空 = 不限
+        _VALID_RATINGS = {"AAA", "AA+", "AA", "AA-", "A+", "A", "A-"}
+        raw_ratings = tmpl.get("ratings")
+        if raw_ratings is None:
+            # 兼容旧配置(此前为排除语义的 excluded_ratings): 反转为保留语义
+            legacy = tmpl.get("excluded_ratings") or []
+            tmpl["ratings"] = sorted(
+                _VALID_RATINGS - {str(x).strip().upper() for x in legacy}
+            )
+        else:
+            tmpl["ratings"] = [
+                r for r in (str(x).strip().upper() for x in raw_ratings)
+                if r in _VALID_RATINGS
+            ]
     return normalized
 
 

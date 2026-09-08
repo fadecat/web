@@ -32,7 +32,7 @@ from backend.services.cb_factors import (
     write_config,
 )
 from backend.services.cb_intraday import screen_bonds_intraday
-from backend.services.cb_screen import screen_bonds
+from backend.services.cb_screen import screen_bonds, screen_bonds_live
 
 router = APIRouter()
 
@@ -96,13 +96,30 @@ def screen(body: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any
     """按传入模板配置筛选打分。
 
     模板结构对齐 v2_cb_rotation(见 cb_factors.py DEFAULT_CONFIG)。
+    body 可含 "source": "db"(默认, 读最新交易日快照) 或 "live"(实时拉集思录, 不落库)。
     """
+    source = str(body.get("source") or "db").strip().lower()
+
+    if source == "live":
+        # 实时: 拉集思录 → 同一套打分引擎(不落库)
+        try:
+            from backend.services.queries.live import fetch_live_snapshot
+
+            records, redeem_cells = fetch_live_snapshot()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"实时数据拉取失败: {exc}")
+        result = screen_bonds_live(records, body, redeem_cells=redeem_cells)
+        result["source"] = "live"
+        return result
+
     rows = _load_rows(db)
     if not rows:
-        return {"total_all": 0, "total_filtered": 0, "top_n": 0, "keep_n": 0, "rows": []}
+        return {"total_all": 0, "total_filtered": 0, "total_excluded": 0, "top_n": 0, "keep_n": 0, "rows": [], "excluded_rows": [], "source": "db"}
 
     redeem_map = _load_redeem_map(db)
-    return screen_bonds(rows, body, redeem_map=redeem_map)
+    result = screen_bonds(rows, body, redeem_map=redeem_map)
+    result["source"] = "db"
+    return result
 
 
 @router.get("/cb-list/screen/active")

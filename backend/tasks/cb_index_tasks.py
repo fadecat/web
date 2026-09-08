@@ -32,6 +32,10 @@ def run_cb_index_daily() -> None:
 
     try:
         records = fetch_cb_index_history()
+        # 等权指数是全历史序列, 空返回=页面结构变更/未登录, 必须判失败;
+        # 非空但新增 0 条(当日已写过)仍算成功。
+        if not records:
+            raise ValueError("可转债等权指数接口返回空数据")
         logger.info(f"抓取成功: {len(records)} 条记录")
     except Exception as exc:
         logger.error(f"数据获取失败: {exc}")

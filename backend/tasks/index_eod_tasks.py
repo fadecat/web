@@ -16,32 +16,38 @@ from loguru import logger
 
 from backend.models.database import SessionLocal
 from backend.services.fetchers.index_eod import fetch_index_eod_price
+from backend.services.index_universe import datasets_for_job
 from backend.services.style_rotation_store import save_index_quotes
-from backend.utils import load_index_eod_targets
 
 
 def run_index_eod_daily() -> None:
-    """遍历 index_eod.yaml 标的 → 易方达 eod 全历史 → 幂等写入 IndexDailyQuote。
+    """遍历统一名单中易方达收盘价标的 → 全历史 → 幂等写入 IndexDailyQuote。
 
     单标的失败不中止整体(跳过该标的继续下一个)。
     """
     today = date.today()
 
     logger.info(f"=== 指数 eod 日频任务开始 ({today}) ===")
-    targets = load_index_eod_targets()
+    targets = datasets_for_job("index_eod_daily")
     logger.info(f"标的数量: {len(targets)}")
 
     db = SessionLocal()
     success_count = 0
     fail_count = 0
 
-    for target in targets:
-        code = target.get("code", "")
-        name = target.get("name", code)
+    for index, ds in targets:
+        symbol = ds.get("symbol") or index.get("code", "")
+        storage = ds.get("storage_code") or index.get("code", "")
+        code = index.get("code", "")
+        name = index.get("name", code)
 
         try:
-            records = fetch_index_eod_price(code)
-            inserted = save_index_quotes(db, code, records)
+            records = fetch_index_eod_price(symbol)
+            # 易方达 eod 单文件即全历史, 空返回只可能是源故障/URL 失效,
+            # 必须判失败; 非空但新增 0 条(当日无新交易日)仍算成功。
+            if not records:
+                raise ValueError(f"易方达 eod 接口返回空数据: {code}")
+            inserted = save_index_quotes(db, storage, records)
             latest_date = records[-1]["date"] if records else "?"
             logger.info(
                 f"  [{code}] {name}: 源 {len(records)} 条, 新写入 {inserted} 条, 最新={latest_date}"

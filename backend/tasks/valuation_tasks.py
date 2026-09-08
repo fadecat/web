@@ -17,13 +17,13 @@ from backend.services.fetchers.valuation import (
     fetch_index_dividend_yield,
     fetch_index_valuation_percentile,
 )
+from backend.services.index_universe import datasets_for_job
 from backend.services.valuation_store import (
     save_bond_yields,
     save_dividend_yield,
     save_dividend_yield_history,
     save_valuation_snapshots,
 )
-from backend.utils import load_valuation_targets
 
 
 def run_valuation_daily() -> None:
@@ -45,33 +45,39 @@ def run_valuation_daily() -> None:
     today = date.today()
 
     logger.info(f"=== 估值板块日频任务开始 ({today}) ===")
-    targets = load_valuation_targets()
+    targets = datasets_for_job("valuation_daily")
     logger.info(f"标的数量: {len(targets)}")
 
     db = SessionLocal()
     success_count = 0
     fail_count = 0
 
-    # 2) 遍历标的
-    for target in targets:
-        code = target.get("code", "")
-        name = target.get("name", code)
-        detail_url = target.get("index_detail_url", "")
-        dividend_url = target.get("index_dividend_yield_url", "")
+    # 2) 遍历统一名单中启用估值的指数
+    for index, ds in targets:
+        # 抓取用真实指数代码(symbol), 落库用历史存储键(storage_code), 二者可不同
+        # (如 中证价值100 → symbol=931052, storage=512040)。
+        symbol = ds.get("symbol") or index.get("code", "")
+        storage = ds.get("storage_code") or index.get("code", "")
+        code = index.get("code", "")
+        name = index.get("name", code)
 
         try:
-            # a. 指数详情(拿名称 + URL)
-            detail = fetch_index_detail(code, url=detail_url)
+            # a. 指数详情(拿名称 + 估值分位/股息率 URL)
+            detail = fetch_index_detail(symbol)
             index_name = detail.get("index_name") or name
-            if not dividend_url:
-                dividend_url = detail.get("index_dividend_yield_url", "")
+            dividend_url = detail.get("index_dividend_yield_url", "")
 
             # b. 估值分位(全部历史)
             val_percentile_url = detail.get("index_valuation_percentile_url", "")
-            val_records = fetch_index_valuation_percentile(code, url=val_percentile_url)
+            val_records = fetch_index_valuation_percentile(symbol, url=val_percentile_url)
+            # 估值分位是「基日至今全历史」序列, 空返回只可能是源故障/URL 失效,
+            # 不能静默记成功(否则该标的永远不会触发失败通知)。
+            # 注意: 非空但新增 0 条是正常的(当日无新交易日), 仍算成功。
+            if not val_records:
+                raise ValueError(f"估值分位接口返回空数据: {code}")
 
-            # c. 批量落库快照
-            inserted = save_valuation_snapshots(db, code, index_name, val_records)
+            # c. 批量落库快照(落库用 storage_code, 保持历史主键不变)
+            inserted = save_valuation_snapshots(db, storage, index_name, val_records)
             latest_date = val_records[-1]["trade_date"] if val_records else "?"
             logger.info(f"  [{code}] {index_name}: {len(val_records)} 条历史, 新写入 {inserted} 条, 最新={latest_date}")
 
@@ -81,16 +87,20 @@ def run_valuation_daily() -> None:
             # d. 股息率(并非所有标的都有独立股息率 JSON)
             if dividend_url:
                 try:
-                    div_data = fetch_index_dividend_yield(code, url=dividend_url)
+                    div_data = fetch_index_dividend_yield(symbol, url=dividend_url)
+                    # 股息率历史同样是全历史序列(折线图数据源), 空序列属于异常空,
+                    # 判失败但不牵连本标的已提交的估值快照与其他成功子流。
+                    if not div_data.get("history"):
+                        raise ValueError(f"股息率接口未返回历史序列: {code}")
                     # 数据源返回的 trdCode 是"真实指数代码", 可能和 config 的 code 不一致:
-                    # 例如 中证价值100 → config code=512040(ETF 代码), 数据源 trdCode=931052。
-                    # 落库统一用 config 的 code, 否则同一只指数在快照表用 512040、
+                    # 例如 中证价值100 → symbol=931052, 存储键=512040(ETF 代码)。
+                    # 落库统一用 storage_code, 否则同一只指数在快照表用 512040、
                     # 在股息率表用 931052, 前端按 code 关联股息率时查不到。
-                    div_data["index_code"] = code
+                    div_data["index_code"] = storage
                     div_row = save_dividend_yield(db, div_data)
                     # 全历史序列批量入库(股息率折线图用), 幂等
                     hist_inserted = save_dividend_yield_history(
-                        db, code, div_data.get("history", [])
+                        db, storage, div_data.get("history", [])
                     )
                     if div_row:
                         logger.info(
@@ -117,6 +127,9 @@ def run_valuation_daily() -> None:
     # 3) 国债收益率(全部历史)
     try:
         bond_records = fetch_cn_10y_bond_yield()
+        # 国债收益率同为全历史序列, 空返回属于异常空
+        if not bond_records:
+            raise ValueError("国债收益率接口返回空数据")
         bond_inserted = save_bond_yields(db, bond_records)
         latest_bond = bond_records[-1]["trade_date"] if bond_records else "?"
         logger.info(f"  国债收益率: {len(bond_records)} 条历史, 新写入 {bond_inserted} 条, 最新={latest_bond}")

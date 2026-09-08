@@ -32,9 +32,9 @@ JOBS: dict[str, dict[str, str]] = {
     "cb_redeem_daily": {"name": "强赎列表", "schedule": "交易日 15:03"},
     "cb_index_daily": {"name": "转债等权指数", "schedule": "交易日 15:04"},
     "cb_list_daily": {"name": "转债全量快照", "schedule": "交易日 15:06"},
-    "style_rotation_daily": {"name": "风格轮动日线", "schedule": "交易日 22:03"},
+    "style_rotation_daily": {"name": "指数日线（腾讯）", "schedule": "交易日 22:03"},
     "valuation_daily": {"name": "估值截面(易方达分位/股息率 + 东财国债)", "schedule": "每天 22:06"},
-    "index_eod_daily": {"name": "指数日线(易方达·轮动K线)", "schedule": "每天 22:09"},
+    "index_eod_daily": {"name": "指数收盘价（易方达）", "schedule": "每天 22:09"},
 }
 
 # 成功率统计窗口(最近 N 次运行)

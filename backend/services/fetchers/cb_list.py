@@ -78,4 +78,8 @@ def fetch_cb_list() -> list[dict[str, Any]]:
         if cell:
             records.append(cell)
 
+    # rows 数量够但一条 cell 都取不到 = 接口结构变更, 不能返回空列表让调用方误判成功
+    if not records:
+        raise ValueError("转债列表返回的行均无 cell 字段,接口结构可能已变更")
+
     return records

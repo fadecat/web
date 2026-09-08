@@ -83,6 +83,11 @@ def parse_cb_index_page(html: str) -> list[dict[str, Any]]:
     for key, values in pairs:
         series[key] = [v.strip() for v in values.split(",") if v.strip()]
 
+    # 一个已知字段都映射不上 = 数据源字段变更, 否则会产出「只有日期、指标全 None」
+    # 的记录被静默落库并记成功
+    if not any(key in series for key in JISILU_FIELD_MAP):
+        raise ValueError("可转债等权指数页面字段全部无法映射,数据源字段可能已变更")
+
     records: list[dict[str, Any]] = []
     for idx, date in enumerate(dates):
         record: dict[str, Any] = {"date": date}

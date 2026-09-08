@@ -47,7 +47,12 @@ def fetch_redeem_list() -> list[dict[str, Any]]:
     )
     resp.raise_for_status()
     data = resp.json()
-    rows = data.get("rows", [])
+    # 强赎列表可以合法为空(当日无强赎相关转债), 所以不能用「空」判失败;
+    # 改为校验响应结构: 缺少 rows 列表说明未登录/接口变更(解析失败), 必须抛错,
+    # 这样调用方才能把「结构正常的空」和「解析失败」区分开。
+    if not isinstance(data, dict) or not isinstance(data.get("rows"), list):
+        raise ValueError("强赎列表接口返回格式异常(缺少 rows 列表),可能未登录或会话已失效")
+    rows = data["rows"]
 
     records: list[dict[str, Any]] = []
     for row in rows:

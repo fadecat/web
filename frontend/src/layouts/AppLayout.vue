@@ -27,7 +27,7 @@ const menus = [
   {
     group: '系统',
     items: [
-      { path: '/status', title: '数据状态', icon: '🩺' },
+      { path: '/status', title: '数据管理', icon: '🩺' },
       { path: '/settings', title: '系统设置', icon: '⚙️' },
     ],
   },

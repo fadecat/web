@@ -1,343 +1,737 @@
 <script setup>
-import { ref, onMounted, onUnmounted, reactive } from 'vue';
-import { getDataStatus, runJobManually } from '../api';
+import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue';
+import { runJobManually } from '../api';
+import {
+  getDataManagement,
+  getRuns,
+  probeIndex,
+  addIndex,
+  syncIndex,
+  setIndexEnabled,
+} from '../api/dataManagement';
+import { createRequestGuard } from '../utils/requestGuard.js';
+import {
+  indexNeedsAttention,
+  filterIndexes,
+  capabilitySelectable,
+  capabilityStatusLabel,
+  STATE_CLASS,
+  STATE_LABEL,
+  RUN_CLASS,
+  RUN_LABEL,
+} from '../utils/dataManagementView.js';
 
-const loading = ref(true);
-const error = ref('');
-const status = ref(null);
-
-// 手动运行状态: jobId -> 触发前的最近一次 started_at(用于检测新一轮运行完成)
-const pendingJobs = reactive({});
-const prevStarted = {};
-let pollTimer = null;
-
-const FRESHNESS = {
-  fresh: { label: '已更新', cls: 'ok' },
-  stale: { label: '滞后', cls: 'warn' },
-  lagging: { label: '滞后多日', cls: 'bad' },
-  no_data: { label: '暂无数据', cls: 'none' },
-  waiting: { label: '待更新', cls: 'run' },
-};
-
-const RUN_STATUS = {
-  success: { label: '成功', cls: 'ok' },
-  partial: { label: '部分成功', cls: 'warn' },
-  failed: { label: '失败', cls: 'bad' },
-  running: { label: '运行中', cls: 'run' },
-  skipped: { label: '跳过', cls: 'none' },
-  interrupted: { label: '中断', cls: 'warn' },
-  never: { label: '暂无记录', cls: 'none' },
-};
-
+// ---- 通用格式化(沿用原页) ----
 function fmtDuration(sec) {
   if (sec == null) return '-';
   if (sec < 60) return `${sec.toFixed(1)}s`;
   const m = Math.floor(sec / 60);
   return `${m}m ${Math.round(sec % 60)}s`;
 }
-
 function fmtTime(iso) {
   if (!iso) return '-';
   return iso.replace('T', ' ').slice(5, 16); // MM-DD HH:mm
 }
-
 function fmtRate(rate) {
   if (rate == null) return '-';
   return `${Math.round(rate * 100)}%`;
 }
+function badgeClass(state) {
+  return STATE_CLASS[state] || 'none';
+}
+function stateLabel(state) {
+  return STATE_LABEL[state] || state || '-';
+}
+function runClass(status) {
+  return RUN_CLASS[status] || 'none';
+}
+function runLabel(status) {
+  return RUN_LABEL[status] || status || '-';
+}
 
-async function refresh() {
+// ---- tab 与全局状态 ----
+const TABS = [
+  { key: 'mine', label: '我的数据' },
+  { key: 'runs', label: '抓取记录' },
+  { key: 'sources', label: '数据源' },
+];
+const activeTab = ref('mine');
+
+const listGuard = createRequestGuard();
+const runsGuard = createRequestGuard();
+const probeGuard = createRequestGuard();
+
+const dm = ref(null); // GET /data-management 响应
+const listLoading = ref(true);
+const listError = ref('');
+const notice = ref(''); // 顶部提示(保存/同步结果)
+
+const runs = ref([]);
+const runsLoading = ref(false);
+const runsError = ref('');
+const pendingRuns = reactive({}); // job_id -> true(轮询中)
+const runMsg = ref('');
+
+let listTimer = null;
+let runsTimer = null;
+let syncTimer = null;
+const syncingCodes = reactive({}); // code -> true(同步中)
+const pendingSyncCode = ref(null); // 保存后需稍后重试同步的指数
+
+// ---- 我的数据: 搜索 / 只看问题 / 展开 ----
+const searchText = ref('');
+const onlyProblems = ref(false);
+const expanded = reactive({}); // code -> true
+
+const visibleIndexes = computed(() =>
+  filterIndexes(dm.value?.indexes || [], {
+    search: searchText.value,
+    onlyProblems: onlyProblems.value,
+  })
+);
+const nonIndexGroups = computed(() => dm.value?.non_index_groups || []);
+const sources = computed(() => dm.value?.sources || []);
+
+async function loadList() {
+  const v = listGuard.next();
+  listLoading.value = true;
+  listError.value = '';
   try {
-    status.value = await getDataStatus();
-    error.value = '';
+    const res = await getDataManagement();
+    if (!listGuard.isLatest(v)) return;
+    dm.value = res;
   } catch (e) {
-    error.value = e?.message || '加载失败';
-  }
-  // 完成检测: 某任务出现了新的运行记录且已结束 → 清除运行中标记
-  let stillPending = false;
-  for (const j of status.value?.jobs || []) {
-    if (!pendingJobs[j.job_id]) continue;
-    // 后端现在持久化 running 状态, 直接以真实状态为准
-    if (j.status !== 'running') {
-      delete pendingJobs[j.job_id];
-    } else {
-      stillPending = true;
-    }
-  }
-  if (!stillPending && pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
+    if (!listGuard.isLatest(v)) return;
+    listError.value = e?.response?.data?.detail || e?.message || '加载失败';
+  } finally {
+    if (listGuard.isLatest(v)) listLoading.value = false;
   }
 }
 
-async function triggerJob(j) {
-  if (pendingJobs[j.job_id]) return;
+async function loadRuns() {
+  const v = runsGuard.next();
+  runsLoading.value = true;
+  runsError.value = '';
   try {
-    await runJobManually(j.job_id);
+    const res = await getRuns(50);
+    if (!runsGuard.isLatest(v)) return;
+    runs.value = (res && res.runs) || [];
+  } catch (e) {
+    if (!runsGuard.isLatest(v)) return;
+    runsError.value = e?.response?.data?.detail || e?.message || '加载失败';
+  } finally {
+    if (runsGuard.isLatest(v)) runsLoading.value = false;
+  }
+}
+
+// 任务卡片列表来自 /data-management 的 jobs(含 name/schedule/success_rate/next_run_at)
+const jobs = computed(() => dm.value?.jobs || []);
+
+// ---- 启停(暂停/恢复) ----
+async function toggleEnabled(index) {
+  const next = !index.enabled;
+  const prev = index.enabled;
+  index.enabled = next; // 乐观更新
+  try {
+    await setIndexEnabled(index.code, next);
+  } catch (e) {
+    index.enabled = prev; // 回滚
+    notice.value = e?.response?.data?.detail || '启停失败';
+  }
+}
+
+// ---- 同步(初始补抓 / 稍后重试) ----
+async function syncOne(code) {
+  if (syncingCodes[code]) return;
+  syncingCodes[code] = true;
+  try {
+    await syncIndex(code);
+    await loadList();
+  } catch (e) {
+    notice.value = e?.response?.data?.detail || '同步触发失败';
+  } finally {
+    syncingCodes[code] = false;
+  }
+}
+
+function startSyncPoll(code) {
+  stopSyncPoll();
+  pendingSyncCode.value = code;
+  syncTimer = setInterval(async () => {
+    try {
+      const res = await syncIndex(code);
+      const st = res && res.sync_status;
+      if (st !== 'started' && st !== 'busy') {
+        await loadList();
+        stopSyncPoll();
+      }
+    } catch {
+      stopSyncPoll();
+    }
+  }, 3000);
+}
+function stopSyncPoll() {
+  if (syncTimer) clearInterval(syncTimer);
+  syncTimer = null;
+  pendingSyncCode.value = null;
+}
+
+// ---- 抓取记录: 手动运行(复用现有 /data-status/run) ----
+async function triggerRun(jobId) {
+  if (pendingRuns[jobId]) return;
+  try {
+    await runJobManually(jobId);
   } catch (e) {
     const detail = e?.response?.data?.detail;
-    error.value = detail || '触发失败';
-    return;
+    runMsg.value = detail || '触发失败';
+    if (e?.response?.status === 409) return; // 运行中, 仍进入轮询
   }
-  prevStarted[j.job_id] = j.started_at;
-  pendingJobs[j.job_id] = true;
-  await refresh();
-  if (!pollTimer) pollTimer = setInterval(refresh, 3000);
+  pendingRuns[jobId] = true;
+  if (!runsLoading.value) await loadRuns();
+  startRunsPoll();
+}
+function startRunsPoll() {
+  if (runsTimer) return;
+  runsTimer = setInterval(async () => {
+    await loadRuns();
+    let anyPending = false;
+    for (const j of jobs.value) {
+      if (pendingRuns[j.job_id] && j.status === 'running') {
+        anyPending = true;
+      } else if (pendingRuns[j.job_id]) {
+        delete pendingRuns[j.job_id];
+      }
+    }
+    if (!anyPending) stopRunsPoll();
+  }, 3000);
+}
+function stopRunsPoll() {
+  if (runsTimer) clearInterval(runsTimer);
+  runsTimer = null;
 }
 
-onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer);
+function onTabChange(tab) {
+  if (tab === 'runs' && !runs.value.length && !runsLoading.value) loadRuns();
+}
+
+// ---- 添加指数弹窗 ----
+const addVisible = ref(false);
+const form = reactive({
+  code: '',
+  source: 'efunds',
+  name: '',
+  probeToken: null,
+  caps: [],
+  selected: [],
+  probing: false,
+  probeError: '',
+  saving: false,
+  saveMsg: '',
 });
 
-onMounted(async () => {
-  try {
-    status.value = await getDataStatus();
-  } catch (e) {
-    error.value = e?.message || '加载失败';
-  } finally {
-    loading.value = false;
+function openAdd() {
+  form.code = '';
+  form.source = 'efunds';
+  form.name = '';
+  form.probeToken = null;
+  form.caps = [];
+  form.selected = [];
+  form.probing = false;
+  form.probeError = '';
+  form.saving = false;
+  form.saveMsg = '';
+  addVisible.value = true;
+}
+
+// 改代码/来源: 立即清空探测结果与选择, 并使在途探测失效(防迟到响应覆盖)
+function onCodeOrSourceChange() {
+  probeGuard.invalidate();
+  form.probeToken = null;
+  form.caps = [];
+  form.selected = [];
+  form.probeError = '';
+  form.saveMsg = '';
+}
+
+async function doProbe() {
+  const code = (form.code || '').trim();
+  if (!/^\d{6}$/.test(code)) {
+    form.probeError = '请输入 6 位指数代码';
+    return;
   }
+  const v = probeGuard.next();
+  form.probing = true;
+  form.probeError = '';
+  form.caps = [];
+  form.selected = [];
+  form.probeToken = null;
+  form.name = '';
+  try {
+    const res = await probeIndex(code, form.source);
+    if (!probeGuard.isLatest(v)) return; // 迟到响应丢弃
+    form.probeToken = res.probe_token || null;
+    form.caps = res.capabilities || [];
+    // 默认全选所有「支持」项, 不支持的(error/unavailable)不勾
+    form.selected = (res.capabilities || [])
+      .filter((c) => capabilitySelectable(c))
+      .map((c) => c.key);
+    if (res.name) form.name = res.name;
+  } catch (e) {
+    if (!probeGuard.isLatest(v)) return;
+    form.probeError = e?.response?.data?.detail || '探测失败, 可重试';
+  } finally {
+    if (probeGuard.isLatest(v)) form.probing = false;
+  }
+}
+
+// quote 标签随来源变化: tencent->日K, efunds->收盘价
+function capLabel(cap) {
+  if (cap.key === 'quote') return form.source === 'tencent' ? '日K' : '收盘价';
+  if (cap.key === 'valuation') return 'PE / PB / 股息率';
+  if (cap.key === 'dividend') return '股息率';
+  return cap.label || cap.key;
+}
+function isChecked(key) {
+  return form.selected.includes(key);
+}
+function toggleCap(key) {
+  const cap = form.caps.find((c) => c.key === key);
+  if (!capabilitySelectable(cap)) return; // 仅 available 可勾选
+  const i = form.selected.indexOf(key);
+  if (i >= 0) form.selected.splice(i, 1);
+  else form.selected.push(key);
+}
+
+async function saveIndex() {
+  if (!/^\d{6}$/.test((form.code || '').trim())) {
+    form.saveMsg = '请输入 6 位指数代码';
+    return;
+  }
+  if (!form.probeToken) {
+    form.saveMsg = '请先完成探测';
+    return;
+  }
+  const datasets = form.selected.filter((k) => {
+    const cap = form.caps.find((c) => c.key === k);
+    return capabilitySelectable(cap);
+  });
+  if (!datasets.length) {
+    form.saveMsg = '请至少勾选一项可用数据';
+    return;
+  }
+  form.saving = true;
+  form.saveMsg = '';
+  try {
+    const res = await addIndex({
+      code: form.code.trim(),
+      name: form.name || form.code.trim(),
+      source: form.source,
+      datasets,
+      probe_token: form.probeToken,
+    });
+    // res: { code, status:'saved', sync_status:'started'|'busy'|'failed', message }
+    if (res.status === 'saved') {
+      await loadList();
+      const sync = res.sync_status;
+      if (sync === 'busy' || sync === 'failed') {
+        // 名单已保存但抓取未完成: 明确说明, 不显示全部成功
+        form.saveMsg =
+          (res.message || '指数已加入名单') + '，但数据抓取尚未完成，可在列表稍后点「同步」重试。';
+        pendingSyncCode.value = res.code;
+      } else {
+        form.saveMsg = '已保存，正在初始抓取…';
+        addVisible.value = false;
+        startSyncPoll(res.code);
+      }
+    } else {
+      form.saveMsg = res.message || '保存未确认';
+    }
+  } catch (e) {
+    form.saveMsg = e?.response?.data?.detail || '保存失败';
+  } finally {
+    form.saving = false;
+  }
+}
+
+// ---- 生命周期 ----
+onMounted(() => {
+  loadList();
+});
+onBeforeUnmount(() => {
+  listGuard.invalidate();
+  runsGuard.invalidate();
+  probeGuard.invalidate();
+  stopSyncPoll();
+  stopRunsPoll();
+  if (listTimer) clearInterval(listTimer);
 });
 </script>
 
 <template>
   <div class="page">
     <div class="page-head">
-      <h2>数据状态</h2>
-      <span v-if="status" class="meta">
-        预期数据日期 {{ status.expected_date }} · 生成于 {{ fmtTime(status.generated_at) }}
-      </span>
+      <h2>数据管理</h2>
+      <el-tabs v-model="activeTab" class="tabs" @tab-change="onTabChange">
+        <el-tab-pane v-for="t in TABS" :key="t.key" :name="t.key" :label="t.label" />
+      </el-tabs>
     </div>
 
-    <p v-if="loading" class="hint">加载中...</p>
-    <p v-else-if="error" class="hint bad-text">{{ error }}</p>
+    <p v-if="notice" class="notice-bar">{{ notice }}</p>
 
-    <template v-else>
-      <!-- 数据新鲜度: 分组展开到逐指数明细 -->
-      <div class="card">
-        <div class="card-title">数据新鲜度</div>
-        <div class="row row-head">
-          <span class="col-name">数据集 / 指数</span>
-          <span class="col-first">起始</span>
-          <span class="col-count">条目</span>
-          <span class="col-date">最新</span>
-          <span class="col-state">状态</span>
-        </div>
-        <div v-for="g in status.datasets" :key="g.name" class="group">
-          <div class="group-head">
-            <span class="col-name">{{ g.name }}</span>
-            <span class="col-first"></span>
-            <span class="col-count"></span>
-            <span class="col-date"></span>
-            <span class="col-state">
-              <span class="badge" :class="FRESHNESS[g.state]?.cls">
-                {{ FRESHNESS[g.state]?.label || g.state }}
-              </span>
-            </span>
-          </div>
-          <div v-if="!g.entities.length" class="row empty">
-            <span class="col-name empty-text">暂无数据</span>
-          </div>
-          <div v-for="e in g.entities" :key="e.label" class="row entity">
-            <span class="col-name">{{ e.label }}</span>
-            <span class="col-first">{{ e.first_date || '-' }}</span>
-            <span class="col-count">{{ e.count ?? '-' }}{{ e.unit }}</span>
-            <span class="col-date">{{ e.latest_date || '-' }}</span>
-            <span class="col-state">
-              <span class="badge sm" :class="FRESHNESS[e.state]?.cls">
-                {{ FRESHNESS[e.state]?.label || e.state }}
-              </span>
-            </span>
-          </div>
-          <div v-for="e in g.unmanaged_entities || []" :key="'legacy-' + e.label" class="row entity legacy">
-            <span class="col-name">{{ e.label }}<span class="legacy-tag">未纳管</span></span>
-            <span class="col-first">{{ e.first_date || '-' }}</span>
-            <span class="col-count">{{ e.count ?? '-' }}{{ e.unit }}</span>
-            <span class="col-date">{{ e.latest_date || '-' }}</span>
-            <span class="col-state">
-              <span class="badge sm none">历史遗留</span>
-            </span>
-          </div>
-        </div>
-        <p class="note">
-          每条数据流按自身来源规则判定:易方达估值/股息率按 T+1 交易日中午前到期,易方达/腾讯日线当晚到期,
-          集思录转债类收盘后半小时到期——未到到期时刻显示「待更新」而非滞后(规则为暂定观察值,持续校准中)。
-          周末与节假日数据源停更,不算滞后。「历史遗留」行是库中存在但当前未纳管的旧数据,不参与状态判断、未删除。
-        </p>
+    <!-- ============ 我的数据 ============ -->
+    <template v-if="activeTab === 'mine'">
+      <div class="toolbar">
+        <el-input
+          v-model="searchText"
+          placeholder="搜索代码 / 名称"
+          clearable
+          class="search"
+          size="small"
+        />
+        <label class="chk">
+          <input type="checkbox" v-model="onlyProblems" /> 只看问题
+        </label>
+        <el-button type="primary" size="small" class="add-btn" @click="openAdd">
+          + 添加指数
+        </el-button>
       </div>
 
-      <!-- 定时任务 -->
-      <div class="card">
-        <div class="card-title">定时任务</div>
-        <div v-for="j in status.jobs" :key="j.job_id" class="job">
-          <div class="job-line">
-            <span class="job-name">{{ j.name }}</span>
-            <span class="badge" :class="RUN_STATUS[j.status]?.cls">
-              {{ RUN_STATUS[j.status]?.label || j.status }}
-            </span>
-            <button
-              class="run-btn"
-              :class="{ running: pendingJobs[j.job_id] }"
-              :disabled="pendingJobs[j.job_id]"
-              @click="triggerJob(j)"
-            >
-              {{ pendingJobs[j.job_id] ? '运行中...' : '手动运行' }}
-            </button>
+      <p v-if="listLoading" class="hint">加载中…</p>
+      <p v-else-if="listError" class="hint bad-text">{{ listError }}</p>
+
+      <template v-else>
+        <!-- 指数卡片: 一指数一次 -->
+        <div v-for="idx in visibleIndexes" :key="idx.code" class="card idx-card">
+          <div class="idx-head">
+            <div class="idx-title" @click="expanded[idx.code] = !expanded[idx.code]">
+              <span class="caret">{{ expanded[idx.code] ? '▾' : '▸' }}</span>
+              <span class="name">{{ idx.name || idx.code }}</span>
+              <span class="code">{{ idx.code }}</span>
+            </div>
+            <div class="idx-actions">
+              <el-button
+                size="small"
+                text
+                :loading="syncingCodes[idx.code]"
+                @click="syncOne(idx.code)"
+              >
+                同步
+              </el-button>
+              <label class="switch">
+                <input type="checkbox" :checked="idx.enabled !== false" @change="toggleEnabled(idx)" />
+                启用
+              </label>
+            </div>
           </div>
-          <div v-if="pendingJobs[j.job_id]" class="job-meta running-hint">
-            后台执行中, 完成后此处自动刷新
+
+          <div class="ds-list">
+            <div v-for="d in idx.datasets" :key="d.key" class="ds-row">
+              <span class="ds-name">{{ d.label || d.key }}</span>
+              <span class="ds-src">{{ d.source || '-' }}</span>
+              <span class="ds-date">{{ d.latest_date || '暂无' }}</span>
+              <span class="badge sm" :class="badgeClass(d.state)">{{ stateLabel(d.state) }}</span>
+            </div>
+            <div v-if="!idx.datasets || !idx.datasets.length" class="ds-empty">暂无数据集</div>
+          </div>
+
+          <div v-if="expanded[idx.code]" class="ds-detail">
+            <div v-for="d in idx.datasets" :key="'e' + d.key" class="ds-row sub">
+              <span class="ds-name">{{ d.label || d.key }}</span>
+              <span class="ds-src">起始 {{ d.first_date || '-' }}</span>
+              <span class="ds-src">条目 {{ d.count ?? '-' }}</span>
+            </div>
+          </div>
+        </div>
+
+        <p v-if="!visibleIndexes.length" class="hint">无匹配指数</p>
+
+        <!-- 非指数分组(转债/国债等) -->
+        <template v-if="nonIndexGroups.length">
+          <div class="group-title">其他数据</div>
+          <div class="card">
+            <div v-for="g in nonIndexGroups" :key="g.label" class="ds-row">
+              <span class="ds-name">{{ g.label }}</span>
+              <span class="ds-date">{{ g.latest_date || '暂无' }}</span>
+              <span class="badge sm" :class="badgeClass(g.state)">{{ stateLabel(g.state) }}</span>
+            </div>
+          </div>
+        </template>
+      </template>
+    </template>
+
+    <!-- ============ 抓取记录 ============ -->
+    <template v-else-if="activeTab === 'runs'">
+      <p class="hint sub">每任务最近一次运行结果(非完整历史)</p>
+      <p v-if="runsLoading" class="hint">加载中…</p>
+      <p v-else-if="runsError" class="hint bad-text">{{ runsError }}</p>
+      <template v-else>
+        <div v-for="j in jobs" :key="j.job_id" class="card job">
+          <div class="job-line">
+            <span class="job-name">{{ j.name || j.job_id }}</span>
+            <span class="badge" :class="runClass(j.status)">{{ runLabel(j.status) }}</span>
+            <el-button size="small" text :disabled="!!pendingRuns[j.job_id]" @click="triggerRun(j.job_id)">
+              {{ pendingRuns[j.job_id] ? '运行中…' : '手动运行' }}
+            </el-button>
           </div>
           <div class="job-meta">
-            <span>{{ j.schedule }}</span>
-            <span v-if="j.next_run_at">下次 {{ fmtTime(j.next_run_at) }}</span>
-            <span>最近运行 {{ fmtTime(j.started_at) }}</span>
+            <span v-if="j.schedule">计划 {{ j.schedule }}</span>
+            <span>最近 {{ fmtTime(j.started_at) }}</span>
             <span>耗时 {{ fmtDuration(j.duration_sec) }}</span>
-            <span>近{{ j.run_count || '-' }}次成功 {{ fmtRate(j.success_rate) }}</span>
+            <span v-if="j.success_rate != null">成功率 {{ fmtRate(j.success_rate) }}</span>
           </div>
-          <details v-if="j.summary" class="detail">
-            <summary>运行摘要</summary>
-            <pre>{{ j.summary }}</pre>
-          </details>
-          <p v-if="j.error" class="bad-text job-error">{{ j.error }}</p>
+          <p v-if="j.error" class="bad-text job-error">
+            关联任务失败: {{ j.error }}
+          </p>
         </div>
-        <p class="note">
-          徽标 = 该任务最近一次运行的记录结果(运行记录自 2026-09-07
-          上线起积累,之前的运行无记录)。执行开始即记录「运行中」,刷新页面或换设备也能看到真实状态;
-          服务重启会把未完成的运行标记为「中断」,不会自动认定为成功。手动与定时触发共用执行锁,同一任务不会并发执行。
+
+        <div class="group-title">最近 50 条日志</div>
+        <div class="card">
+          <div v-for="(r, i) in runs" :key="i" class="log-row">
+            <span class="log-job">{{ r.job_id }}</span>
+            <span class="badge sm" :class="runClass(r.status)">{{ runLabel(r.status) }}</span>
+            <span class="log-time">{{ fmtTime(r.started_at) }}</span>
+            <span class="log-dur">{{ fmtDuration(r.duration_sec) }}</span>
+          </div>
+          <p v-if="!runs.length" class="hint">暂无记录</p>
+        </div>
+        <p v-if="runMsg" class="hint bad-text">{{ runMsg }}</p>
+      </template>
+    </template>
+
+    <!-- ============ 数据源 ============ -->
+    <template v-else-if="activeTab === 'sources'">
+      <p class="hint sub">各数据源能力 / 关联任务 / 接入指数数(只读)</p>
+      <div v-for="s in sources" :key="s.id" class="card src-card">
+        <div class="idx-head">
+          <div class="idx-title">
+            <span class="name">{{ s.name || s.id }}</span>
+            <span class="code">{{ s.id }}</span>
+          </div>
+          <span class="src-count">接入 {{ s.index_count ?? '-' }} 只</span>
+        </div>
+        <div class="ds-list">
+          <div v-for="c in s.capabilities || []" :key="c.key" class="ds-row">
+            <span class="ds-name">{{ c.label || c.key }}</span>
+            <span class="ds-src">关联任务 {{ (s.job_ids || []).join(', ') || '-' }}</span>
+            <span v-if="s.next_run_at" class="ds-date">下次 {{ fmtTime(s.next_run_at) }}</span>
+          </div>
+          <div v-if="!s.capabilities || !s.capabilities.length" class="ds-empty">无能力信息</div>
+        </div>
+      </div>
+      <p v-if="!sources.length" class="hint">暂无数据源</p>
+    </template>
+
+    <!-- ============ 添加指数弹窗 ============ -->
+    <el-dialog v-model="addVisible" title="添加指数" width="420px" align-center>
+      <div class="dlg">
+        <div class="dlg-row">
+          <label>代码</label>
+          <el-input v-model="form.code" maxlength="6" placeholder="6 位指数代码" size="small" @input="onCodeOrSourceChange" />
+        </div>
+        <div class="dlg-row">
+          <label>来源</label>
+          <el-select v-model="form.source" size="small" @change="onCodeOrSourceChange">
+            <el-option label="易方达(eFunds)" value="efunds" />
+            <el-option label="腾讯(Tencent)" value="tencent" />
+          </el-select>
+        </div>
+        <el-button size="small" :loading="form.probing" @click="doProbe">检查</el-button>
+
+        <p v-if="form.probeError" class="bad-text dlg-msg">{{ form.probeError }}</p>
+
+        <div v-if="form.caps.length" class="caps">
+          <div v-for="c in form.caps" :key="c.key" class="cap-row">
+            <label :class="{ disabled: !capabilitySelectable(c) }">
+              <input
+                type="checkbox"
+                :checked="isChecked(c.key)"
+                :disabled="!capabilitySelectable(c)"
+                @change="toggleCap(c.key)"
+              />
+              {{ capLabel(c) }}
+            </label>
+            <span class="cap-st" :class="{ err: c.status === 'error', off: c.status === 'unavailable' }">
+              {{ capabilityStatusLabel(c.status) }}
+              <span v-if="c.message && c.status !== 'available'">：{{ c.message }}</span>
+            </span>
+          </div>
+          <div v-for="c in form.caps" v-show="c.overview && c.status === 'available'" :key="c.key + '-ov'" class="cap-ov">
+            {{ capLabel(c) }}：{{ c.overview.first_date.slice(0, 4) }} 年起 · 最新 {{ c.overview.latest_date.slice(5) }} · 共 {{ c.overview.count }} 条
+          </div>
+          <p class="hint dlg-tip">error 表示检查失败(可重试), 不代表来源不支持; 仅「支持」项可勾选。</p>
+        </div>
+
+        <div v-if="form.probeToken" class="dlg-row">
+          <label>名称</label>
+          <el-input v-model="form.name" placeholder="指数名称(可改)" size="small" />
+        </div>
+
+        <p v-if="form.saveMsg" class="dlg-msg" :class="{ warn: form.saveMsg.includes('尚未完成') }">
+          {{ form.saveMsg }}
         </p>
       </div>
-    </template>
+      <template #footer>
+        <el-button size="small" @click="addVisible = false">关闭</el-button>
+        <el-button type="primary" size="small" :loading="form.saving" :disabled="!form.probeToken" @click="saveIndex">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
 .page {
-  max-width: 760px;
+  max-width: 820px;
   margin: 0 auto;
   padding: 4px 0 24px;
 }
-
 .page-head {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
+  align-items: center;
+  gap: 16px;
   flex-wrap: wrap;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
-
 .page-head h2 {
   margin: 0;
   font-size: 18px;
 }
-
-.meta {
-  font-size: 12px;
-  color: #9ca3af;
+.tabs {
+  flex: 1;
+  min-width: 240px;
 }
-
+.notice-bar {
+  background: #eaf3de;
+  border: 1px solid rgba(59, 109, 17, 0.3);
+  color: #3b6d11;
+  font-size: 12px;
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin: 0 0 10px;
+}
 .hint {
   color: #9ca3af;
   font-size: 13px;
 }
-
+.hint.sub {
+  margin: 0 0 10px;
+}
+.bad-text {
+  color: #a32d2d;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.search {
+  width: 200px;
+}
+.chk {
+  font-size: 12px;
+  color: #4b5563;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.add-btn {
+  margin-left: auto;
+}
 .card {
   background: #fff;
   border: 1px solid rgba(148, 163, 184, 0.25);
   border-radius: 10px;
-  padding: 14px 16px;
-  margin-bottom: 14px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
 }
-
-.card-title {
-  font-size: 14px;
-  font-weight: 500;
-  margin-bottom: 10px;
-}
-
-.row {
+.idx-card .idx-head {
   display: flex;
   align-items: center;
-  padding: 6px 0;
-  border-top: 1px dashed rgba(148, 163, 184, 0.25);
-  font-size: 13px;
+  justify-content: space-between;
+  gap: 8px;
 }
-
-.row-head {
-  border-top: none;
-  font-size: 11px;
+.idx-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+  min-width: 0;
+}
+.caret {
   color: #9ca3af;
-  padding-bottom: 2px;
+  font-size: 12px;
 }
-
-.group {
-  border-top: 1px solid rgba(148, 163, 184, 0.3);
+.name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
 }
-
-.group:first-of-type {
-  border-top: none;
+.code {
+  font-size: 12px;
+  color: #9ca3af;
 }
-
-.group-head {
+.idx-actions {
   display: flex;
   align-items: center;
-  padding: 8px 0 4px;
-  font-size: 13px;
-  font-weight: 500;
+  gap: 10px;
+  flex-shrink: 0;
 }
-
-.group-head + .row {
-  border-top: none;
+.switch {
+  font-size: 12px;
+  color: #4b5563;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
-
-.row.entity {
-  padding-left: 12px;
+.ds-list {
+  margin-top: 8px;
+}
+.ds-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  border-top: 1px dashed rgba(148, 163, 184, 0.22);
   font-size: 12px;
   color: #4b5563;
 }
-
-.row.empty {
-  padding-left: 12px;
-  padding-bottom: 8px;
-}
-
-.empty-text {
-  font-size: 12px;
+.ds-row.sub {
   color: #9ca3af;
+  font-size: 11px;
 }
-
-.col-name {
+.ds-name {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-.col-first {
-  width: 92px;
-  font-variant-numeric: tabular-nums;
+.ds-src {
+  width: 110px;
   color: #6b7280;
 }
-
-.col-count {
-  width: 72px;
+.ds-date {
+  width: 96px;
   text-align: right;
   font-variant-numeric: tabular-nums;
-  color: #6b7280;
 }
-
-.col-date {
-  width: 92px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  color: #4b5563;
+.ds-empty {
+  font-size: 12px;
+  color: #9ca3af;
+  padding: 4px 0;
 }
-
-.col-state {
-  width: 84px;
-  text-align: right;
+.ds-detail {
+  margin-top: 4px;
 }
-
+.group-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+  margin: 14px 0 8px;
+}
 .badge {
   display: inline-block;
   padding: 2px 8px;
@@ -345,108 +739,40 @@ onMounted(async () => {
   font-size: 11px;
   white-space: nowrap;
 }
-
 .badge.sm {
   padding: 1px 7px;
   font-size: 10px;
 }
-
 .badge.ok {
   background: #eaf3de;
   color: #3b6d11;
 }
-
 .badge.warn {
   background: #faeeda;
   color: #854f0b;
 }
-
 .badge.bad {
   background: #fcebeb;
   color: #a32d2d;
 }
-
 .badge.none {
   background: #f1efe8;
   color: #6b7280;
 }
-
 .badge.run {
   background: #e6f1fb;
   color: #185fa5;
 }
-
-.entity.legacy {
-  opacity: 0.55;
-}
-
-.legacy-tag {
-  margin-left: 6px;
-  padding: 0 5px;
-  border-radius: 4px;
-  background: #f1efe8;
-  color: #9ca3af;
-  font-size: 10px;
-}
-
-.note {
-  margin: 10px 0 0;
-  font-size: 11px;
-  color: #9ca3af;
-  line-height: 1.6;
-}
-
-.job {
-  padding: 10px 0;
-  border-top: 1px dashed rgba(148, 163, 184, 0.25);
-}
-
-.job:first-of-type {
-  border-top: none;
-}
-
 .job-line {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
-
 .job-name {
   font-size: 13px;
   font-weight: 500;
 }
-
-.run-btn {
-  padding: 3px 12px;
-  border: 1px solid rgba(59, 109, 17, 0.4);
-  border-radius: 6px;
-  background: #eaf3de;
-  color: #3b6d11;
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.run-btn:hover:not(:disabled) {
-  background: #d8ebc4;
-}
-
-.run-btn:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.run-btn.running {
-  background: #faeeda;
-  border-color: rgba(133, 79, 11, 0.35);
-  color: #854f0b;
-}
-
-.running-hint {
-  color: #854f0b !important;
-}
-
 .job-meta {
   display: flex;
   flex-wrap: wrap;
@@ -455,56 +781,125 @@ onMounted(async () => {
   font-size: 11px;
   color: #6b7280;
 }
-
-.detail {
-  margin-top: 6px;
-}
-
-.detail summary {
-  font-size: 11px;
-  color: #9ca3af;
-  cursor: pointer;
-}
-
-.detail pre {
-  margin: 6px 0 0;
-  padding: 8px 10px;
-  background: #f8f9fb;
-  border-radius: 6px;
-  font-size: 11px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-all;
-  color: #4b5563;
-}
-
-.bad-text {
-  color: #a32d2d;
-}
-
 .job-error {
   margin: 6px 0 0;
   font-size: 11px;
 }
+.log-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  border-top: 1px dashed rgba(148, 163, 184, 0.22);
+  font-size: 12px;
+  color: #4b5563;
+}
+.log-job {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.log-time {
+  width: 96px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: #6b7280;
+}
+.log-dur {
+  width: 70px;
+  text-align: right;
+  color: #6b7280;
+}
+.src-card .src-count {
+  font-size: 12px;
+  color: #6b7280;
+}
+.dlg {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.dlg-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.dlg-row label {
+  width: 44px;
+  font-size: 13px;
+  color: #4b5563;
+  flex-shrink: 0;
+}
+.dlg-row :deep(.el-input),
+.dlg-row :deep(.el-select) {
+  flex: 1;
+}
+.caps {
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.cap-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.cap-row label.disabled {
+  color: #9ca3af;
+}
+.cap-st {
+  font-size: 11px;
+  color: #3b6d11;
+}
+.cap-st.err {
+  color: #a32d2d;
+}
+.cap-st.off {
+  color: #9ca3af;
+}
+.cap-ov {
+  font-size: 11px;
+  color: #6b7280;
+  padding: 0 0 4px 24px;
+}
+.dlg-tip {
+  font-size: 11px;
+  margin: 4px 0 0;
+}
+.dlg-msg {
+  font-size: 12px;
+  color: #3b6d11;
+  background: #eaf3de;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.dlg-msg.warn {
+  color: #854f0b;
+  background: #faeeda;
+}
 
-/* 移动端: 收窄列宽, 隐藏起始日期列 */
+/* 移动端: 工具栏换行, 列宽收窄 */
 @media (max-width: 767px) {
-  .col-first {
-    display: none;
+  .toolbar {
+    gap: 8px;
   }
-
-  .col-count {
-    width: 58px;
+  .search {
+    width: 100%;
+  }
+  .add-btn {
+    margin-left: 0;
+  }
+  .ds-src {
+    width: 88px;
     font-size: 11px;
   }
-
-  .col-date {
+  .ds-date {
     width: 82px;
-    font-size: 11px;
-  }
-
-  .col-state {
-    width: 72px;
   }
 }
 </style>

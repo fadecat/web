@@ -17,11 +17,8 @@ from backend.models.database import SessionLocal
 from backend.services.fetchers.style_rotation import (
     fetch_index_kline,
     fetch_index_kline_auto,
-    LEFT_SYMBOL,
-    LEFT_NAME,
-    RIGHT_SYMBOL,
-    RIGHT_NAME,
 )
+from backend.services.index_universe import datasets_for_job
 from backend.services.style_rotation_store import (
     get_index_data_summary,
     save_index_quotes,
@@ -37,15 +34,23 @@ def _run_pair(
     fetcher,
     label: str,
 ) -> None:
-    """对左右两只指数执行同一抓取函数并落库。"""
+    """对统一名单中启用腾讯日线的指数执行同一抓取函数并落库。"""
     db = SessionLocal()
     total_inserted = 0
     success_count = fail_count = 0
 
-    for code, name in [(LEFT_SYMBOL, LEFT_NAME), (RIGHT_SYMBOL, RIGHT_NAME)]:
+    for index, ds in datasets_for_job("style_rotation_daily"):
+        symbol = ds.get("symbol") or index.get("code", "")
+        storage = ds.get("storage_code") or index.get("code", "")
+        code = index.get("code", "")
+        name = index.get("name", code)
         try:
-            klines = fetcher(code)
-            inserted = save_index_quotes(db, code, klines)
+            klines = fetcher(symbol)
+            # 空返回属于异常空(源故障/代码失效): 判该指数失败,
+            # 另一只指数已成功的计数不受影响。
+            if not klines:
+                raise ValueError(f"指数日线接口返回空数据: {code}")
+            inserted = save_index_quotes(db, storage, klines)
             logger.info(f"  [{code}] {name}: 拉取 {len(klines)} 条, 新写入 {inserted} 条")
             total_inserted += inserted
             success_count += 1
@@ -91,12 +96,15 @@ def _log_gap_report() -> None:
     """回补后跑空洞扫描,输出各指数数据概况与可疑缺口。"""
     db = SessionLocal()
     try:
-        for code, name in [(LEFT_SYMBOL, LEFT_NAME), (RIGHT_SYMBOL, RIGHT_NAME)]:
-            summary = get_index_data_summary(db, code)
+        for index, ds in datasets_for_job("style_rotation_daily"):
+            storage = ds.get("storage_code") or index.get("code", "")
+            code = index.get("code", "")
+            name = index.get("name", code)
+            summary = get_index_data_summary(db, storage)
             if not summary:
                 logger.warning(f"  [空洞扫描] [{code}] {name}: 无数据!")
                 continue
-            gaps = scan_date_gaps(db, code)
+            gaps = scan_date_gaps(db, storage)
             logger.info(
                 f"  [空洞扫描] [{code}] {name}: {summary['count']} 条, "
                 f"{summary['first']} ~ {summary['last']}, 可疑缺口 {len(gaps)} 处"

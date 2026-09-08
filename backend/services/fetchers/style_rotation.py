@@ -115,6 +115,10 @@ def fetch_index_kline(
             "volume": parse_float(row[5]) if len(row) > 5 else None,
         })
 
+    # klines 非空但逐行过滤后全为空 = 行格式变更, 不能返回空列表让调用方误判成功
+    if not records:
+        raise ValueError(f"腾讯K线接口返回行格式异常(无有效K线): {code}")
+
     records.sort(key=lambda r: r["date"])
     return records
 

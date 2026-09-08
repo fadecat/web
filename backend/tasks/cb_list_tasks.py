@@ -32,6 +32,9 @@ def run_cb_list_daily() -> None:
 
     try:
         records = fetch_cb_list()
+        # 全市场在市转债不可能为空, 空返回=会话失效/接口变更, 必须判失败
+        if not records:
+            raise ValueError("转债全量快照接口返回空数据")
         logger.info(f"抓取成功: {len(records)} 只转债")
     except Exception as exc:
         logger.error(f"数据获取失败: {exc}")

@@ -53,13 +53,18 @@ def _patch_valuation_run(monkeypatch, engine, *, dividend_fetch_raises=True,
     # Batch B 后 valuation 任务已无 is_trading_day 门控(易方达历史同步每天跑)
     monkeypatch.setattr(
         valuation_tasks,
-        "load_valuation_targets",
-        lambda: [{
+        "datasets_for_job",
+        lambda _job: [({
             "code": "399296",
             "name": "创成长",
-            "index_detail_url": "detail",
-            "index_dividend_yield_url": "dividend",
-        }],
+            "enabled": True,
+            "datasets": {},
+        }, {
+            "source": "efunds",
+            "storage_code": "399296",
+            "symbol": "399296",
+            "enabled": True,
+        })],
     )
     monkeypatch.setattr(
         valuation_tasks,
@@ -84,7 +89,12 @@ def _patch_valuation_run(monkeypatch, engine, *, dividend_fetch_raises=True,
     )
     monkeypatch.setattr(valuation_tasks, "save_dividend_yield_history",
                         lambda *_a, **_k: 0)
-    monkeypatch.setattr(valuation_tasks, "fetch_cn_10y_bond_yield", lambda: [])
+    # 国债子流走「正常非空历史 + 新增 0 条」路径: 按契约必须算成功
+    monkeypatch.setattr(
+        valuation_tasks,
+        "fetch_cn_10y_bond_yield",
+        lambda: [{"trade_date": "2026-09-07", "cn_10y_bond_yield": 1.8}],
+    )
     monkeypatch.setattr(valuation_tasks, "save_bond_yields", lambda *_a, **_k: 0)
 
     if dividend_save_uncommitted_raise:
@@ -106,6 +116,9 @@ def _patch_valuation_run(monkeypatch, engine, *, dividend_fetch_raises=True,
                 "index_code": "399296",
                 "index_dividend_yield_date": "2026-09-07",
                 "index_dividend_yield": 1.5,
+                # history 非空: 保证走到 save_dividend_yield 的未提交抛错路径,
+                # 而不是被「股息历史为空」的前置校验提前拦掉
+                "history": [{"date": "2026-09-07", "yield": 1.5}],
             },
         )
     elif dividend_fetch_raises:
@@ -171,13 +184,18 @@ def test_bond_failure_marks_partial_without_losing_valuation_targets(monkeypatch
     # Batch B 后 valuation 任务已无 is_trading_day 门控(易方达历史同步每天跑)
     monkeypatch.setattr(
         valuation_tasks,
-        "load_valuation_targets",
-        lambda: [{
+        "datasets_for_job",
+        lambda _job: [({
             "code": "399296",
             "name": "创成长",
-            "index_detail_url": "detail",
-            "index_dividend_yield_url": None,  # 无独立股息率, 跳过该子流
-        }],
+            "enabled": True,
+            "datasets": {},
+        }, {
+            "source": "efunds",
+            "storage_code": "399296",
+            "symbol": "399296",
+            "enabled": True,
+        })],
     )
     monkeypatch.setattr(
         valuation_tasks,

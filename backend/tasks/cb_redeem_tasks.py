@@ -32,7 +32,13 @@ def run_cb_redeem_daily() -> None:
 
     try:
         records = fetch_redeem_list()
-        logger.info(f"抓取成功: {len(records)} 条强赎数据")
+        # 强赎列表允许合法为空(当日无强赎相关转债), 不能一刀切判失败。
+        # 「结构正常的空」与「解析失败/会话失效」由 fetch_redeem_list 的
+        # rows 结构校验区分: 后者抛错走下面的 except。
+        if not records:
+            logger.info("强赎列表为空(结构正常), 当日无强赎相关转债")
+        else:
+            logger.info(f"抓取成功: {len(records)} 条强赎数据")
     except Exception as exc:
         logger.error(f"数据获取失败: {exc}")
         return {"success_count": 0, "fail_count": 1}

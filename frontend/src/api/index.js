@@ -22,9 +22,9 @@ export const getFactors = () =>
 export const saveFactors = (data) =>
   api.post('/cb-list/factors', data).then((r) => r.data);
 
-// 筛选打分
-export const screenBonds = (template) =>
-  api.post('/cb-list/screen', template, { timeout: 30000 }).then((r) => r.data);
+// 筛选打分(可选 source: 'db' 读快照 / 'live' 实时拉集思录)
+export const screenBonds = (template, source = 'db') =>
+  api.post('/cb-list/screen', { ...template, source }, { timeout: 30000 }).then((r) => r.data);
 
 export const screenBondsActive = () =>
   api.get('/cb-list/screen/active', { timeout: 30000 }).then((r) => r.data);

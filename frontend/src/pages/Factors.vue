@@ -14,6 +14,11 @@ const saving = ref(false);
 const previewing = ref(false);
 const previewResult = ref(null);
 const excludedBondInput = ref('');
+const showExcluded = ref(false);
+// 数据源: 'db' = 本地数据库快照 / 'live' = 实时请求集思录
+const screenSource = ref('db');
+// 折叠面板: 默认全部收起(标题上带启用计数, 需要时再展开)
+const openSections = ref([]);
 
 const currentTmpl = computed(() => templates.value.find((t) => t.id === editingId.value));
 
@@ -56,6 +61,7 @@ const handleNewTemplate = () => {
     excluded_redeem_icons: JSON.parse(JSON.stringify(base.excluded_redeem_icons ?? ['R', 'O', 'B'])),
     redeem_safe_days: base.redeem_safe_days ?? 2,
     excluded_bond_codes: JSON.parse(JSON.stringify(base.excluded_bond_codes ?? [])),
+    ratings: JSON.parse(JSON.stringify(base.ratings ?? ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-'])),
     min_listing_days: base.min_listing_days ?? 0,
   });
   editingId.value = templates.value[templates.value.length - 1].id;
@@ -114,8 +120,9 @@ const handlePreview = async () => {
   if (!currentTmpl.value) return;
   previewing.value = true;
   previewResult.value = null;
+  showExcluded.value = false;
   try {
-    previewResult.value = await screenBonds(currentTmpl.value);
+    previewResult.value = await screenBonds(currentTmpl.value, screenSource.value);
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '筛选失败');
   } finally {
@@ -218,6 +225,14 @@ const onScoreFieldChange = (factor) => {
 
 // 因子元数据（用于显示单位）
 const factorMeta = (field) => catalog.value.find((f) => f.field === field) || {};
+
+// 折叠标题上的启用计数
+const activeExclusionCount = computed(
+  () => (currentTmpl.value?.exclusion_rules ?? []).filter((r) => r.enabled).length
+);
+const activeScoreCount = computed(
+  () => (currentTmpl.value?.strategy_factors ?? []).filter((f) => f.enabled).length
+);
 </script>
 
 <template>
@@ -238,120 +253,139 @@ const factorMeta = (field) => catalog.value.find((f) => f.field === field) || {}
     </div>
 
     <template v-if="currentTmpl">
-      <!-- 全局过滤条件 -->
-      <el-card shadow="never" class="block">
-        <template #header><b>全局过滤条件</b></template>
+      <!-- 全局过滤条件(可折叠, 独占一行) -->
+      <el-collapse v-model="openSections" class="config-collapse">
+        <el-collapse-item name="filters">
+          <template #title><b class="sec-title">全局过滤条件</b></template>
 
-        <div class="filter-row">
-          <span class="filter-label">排除强赎状态：</span>
-          <el-checkbox-group v-model="currentTmpl.excluded_redeem_icons">
-            <el-checkbox value="R">已公告强赎</el-checkbox>
-            <el-checkbox value="O">公告要强赎</el-checkbox>
-            <el-checkbox value="B">已满足强赎条件</el-checkbox>
-            <el-checkbox value="G">公告不强赎</el-checkbox>
-          </el-checkbox-group>
-        </div>
+          <div class="filter-row">
+            <span class="filter-label">排除强赎状态：</span>
+            <el-checkbox-group v-model="currentTmpl.excluded_redeem_icons">
+              <el-checkbox value="R">已公告强赎</el-checkbox>
+              <el-checkbox value="O">公告要强赎</el-checkbox>
+              <el-checkbox value="B">已满足强赎条件</el-checkbox>
+              <el-checkbox value="G">公告不强赎</el-checkbox>
+            </el-checkbox-group>
+          </div>
 
-        <div class="filter-row">
-          <span class="filter-label">距强赎触发安全天数：</span>
-          <el-input-number v-model="currentTmpl.redeem_safe_days" :min="-1" :max="30" size="small" @change="dirty = true" />
-          <span class="unit">天（-1 = 不限制）</span>
-        </div>
+          <div class="filter-row">
+            <span class="filter-label">距强赎触发安全天数：</span>
+            <el-input-number v-model="currentTmpl.redeem_safe_days" :min="-1" :max="30" size="small" @change="dirty = true" />
+            <span class="unit">天（-1 = 不限制）</span>
+          </div>
 
-        <div class="filter-row">
-          <span class="filter-label">上市最少天数：</span>
-          <el-input-number v-model="currentTmpl.min_listing_days" :min="0" :max="60" size="small" @change="dirty = true" />
-          <span class="unit">天（0 = 不限制）</span>
-        </div>
+          <div class="filter-row">
+            <span class="filter-label">上市最少天数：</span>
+            <el-input-number v-model="currentTmpl.min_listing_days" :min="0" :max="60" size="small" @change="dirty = true" />
+            <span class="unit">天（0 = 不限制）</span>
+          </div>
 
-        <div class="filter-row">
-          <span class="filter-label">全局排除代码：</span>
-          <div class="excluded-codes">
-            <div class="excluded-input">
-              <el-input
-                v-model="excludedBondInput"
-                placeholder="例如 110081 或 110081.SH"
-                size="small"
-                style="width: 220px"
-                @keyup.enter="handleAddExcludedCode"
-              />
-              <el-button size="small" @click="handleAddExcludedCode">添加</el-button>
-            </div>
-            <div class="excluded-tags">
-              <span v-if="!currentTmpl.excluded_bond_codes?.length" class="empty-tip">未设置排除代码</span>
-              <el-tag
-                v-for="item in currentTmpl.excluded_bond_codes"
-                :key="typeof item === 'string' ? item : item.code"
-                closable
-                type="danger"
-                @close="handleRemoveExcludedCode(typeof item === 'string' ? item : item.code)"
-              >
-                {{ typeof item === 'string' ? item : (item.name ? `${item.code} ${item.name}` : item.code) }}
-              </el-tag>
+          <div class="filter-row">
+            <span class="filter-label">评级：</span>
+            <el-select
+              :model-value="currentTmpl.ratings"
+              multiple
+              collapse-tags
+              clearable
+              placeholder="全不选 = 不限"
+              style="width: 320px"
+              size="small"
+              @update:model-value="(v) => updateTmpl({ ratings: v || [] })"
+            >
+              <el-option v-for="r in ['AAA','AA+','AA','AA-','A+','A','A-']" :key="r" :label="r" :value="r" />
+            </el-select>
+            <span class="unit">勾选的评级保留, 未勾选的排除; 清空 = 不限</span>
+          </div>
+
+          <div class="filter-row">
+            <span class="filter-label">全局排除代码：</span>
+            <div class="excluded-codes">
+              <div class="excluded-input">
+                <el-input
+                  v-model="excludedBondInput"
+                  placeholder="例如 110081 或 110081.SH"
+                  size="small"
+                  style="width: 220px"
+                  @keyup.enter="handleAddExcludedCode"
+                />
+                <el-button size="small" @click="handleAddExcludedCode">添加</el-button>
+              </div>
+              <div class="excluded-tags">
+                <span v-if="!currentTmpl.excluded_bond_codes?.length" class="empty-tip">未设置排除代码</span>
+                <el-tag
+                  v-for="item in currentTmpl.excluded_bond_codes"
+                  :key="typeof item === 'string' ? item : item.code"
+                  closable
+                  type="danger"
+                  @close="handleRemoveExcludedCode(typeof item === 'string' ? item : item.code)"
+                >
+                  {{ typeof item === 'string' ? item : (item.name ? `${item.code} ${item.name}` : item.code) }}
+                </el-tag>
+              </div>
             </div>
           </div>
-        </div>
-      </el-card>
+        </el-collapse-item>
+      </el-collapse>
 
-      <!-- 两列因子编辑 -->
+      <!-- 排除因子 + 打分因子(左右并排, 各自独立折叠) -->
       <div class="two-col">
-        <!-- 排除因子 -->
-        <el-card shadow="never">
-          <template #header>
-            <div class="card-header">
-              <b>排除因子</b>
-              <el-button size="small" text @click="addExclusionRule">＋ 添加</el-button>
+        <el-collapse v-model="openSections" class="config-collapse">
+          <el-collapse-item name="exclusion">
+            <template #title>
+              <b class="sec-title">排除因子</b>
+              <span class="sec-count">{{ activeExclusionCount }} 条启用</span>
+            </template>
+            <div v-if="!currentTmpl.exclusion_rules?.length" class="empty-tip">暂无排除规则</div>
+            <div v-for="(rule, i) in currentTmpl.exclusion_rules" :key="i" class="rule-row">
+              <el-switch v-model="rule.enabled" size="small" @change="dirty = true" />
+              <el-select
+                v-model="rule.field"
+                style="width: 120px"
+                size="small"
+                @change="onExclusionFieldChange(rule)"
+              >
+                <el-option v-for="f in catalog" :key="f.field" :label="f.label" :value="f.field" />
+              </el-select>
+              <el-select v-model="rule.op" style="width: 100px" size="small" @change="dirty = true">
+                <el-option label="小于 <" value="lt" />
+                <el-option label="大于 >" value="gt" />
+              </el-select>
+              <el-input-number v-model="rule.threshold" :controls="false" style="width: 90px" size="small" @change="dirty = true" />
+              <span class="unit">{{ factorMeta(rule.field).unit }}</span>
+              <el-button text type="danger" size="small" @click="removeExclusionRule(i)">删除</el-button>
             </div>
-          </template>
-          <div v-if="!currentTmpl.exclusion_rules?.length" class="empty-tip">暂无排除规则</div>
-          <div v-for="(rule, i) in currentTmpl.exclusion_rules" :key="i" class="rule-row">
-            <el-switch v-model="rule.enabled" size="small" @change="dirty = true" />
-            <el-select
-              v-model="rule.field"
-              style="width: 120px"
-              size="small"
-              @change="onExclusionFieldChange(rule)"
-            >
-              <el-option v-for="f in catalog" :key="f.field" :label="f.label" :value="f.field" />
-            </el-select>
-            <el-select v-model="rule.op" style="width: 100px" size="small" @change="dirty = true">
-              <el-option label="小于 <" value="lt" />
-              <el-option label="大于 >" value="gt" />
-            </el-select>
-            <el-input-number v-model="rule.threshold" :controls="false" style="width: 90px" size="small" @change="dirty = true" />
-            <span class="unit">{{ factorMeta(rule.field).unit }}</span>
-            <el-button text type="danger" size="small" @click="removeExclusionRule(i)">删除</el-button>
-          </div>
-        </el-card>
+            <el-button size="small" text type="primary" @click="addExclusionRule">＋ 添加排除规则</el-button>
+          </el-collapse-item>
+        </el-collapse>
 
-        <!-- 打分因子 -->
-        <el-card shadow="never">
-          <template #header>
-            <div class="card-header">
-              <b>打分因子</b>
-              <el-button size="small" text @click="addScoreFactor">＋ 添加</el-button>
+        <el-collapse v-model="openSections" class="config-collapse">
+          <el-collapse-item name="scoring">
+            <template #title>
+              <b class="sec-title">打分因子</b>
+              <span class="sec-count">{{ activeScoreCount }} 条启用</span>
+            </template>
+            <div v-if="!currentTmpl.strategy_factors?.length" class="empty-tip">暂无打分因子</div>
+            <div v-for="(factor, i) in currentTmpl.strategy_factors" :key="i" class="rule-row">
+              <el-switch v-model="factor.enabled" size="small" @change="dirty = true" />
+              <el-select
+                v-model="factor.field"
+                style="width: 120px"
+                size="small"
+                @change="onScoreFieldChange(factor)"
+              >
+                <el-option v-for="f in catalog" :key="f.field" :label="f.label" :value="f.field" />
+              </el-select>
+              <el-select v-model="factor.ascending" style="width: 100px" size="small" @change="dirty = true">
+                <el-option label="越小越好" :value="true" />
+                <el-option label="越大越好" :value="false" />
+              </el-select>
+              <span class="unit">权重</span>
+              <el-input-number v-model="factor.weight" :step="0.5" :min="0.1" style="width: 80px" size="small" @change="dirty = true" />
+              <el-button text type="danger" size="small" @click="removeScoreFactor(i)">删除</el-button>
             </div>
-          </template>
-          <div v-if="!currentTmpl.strategy_factors?.length" class="empty-tip">暂无打分因子</div>
-          <div v-for="(factor, i) in currentTmpl.strategy_factors" :key="i" class="rule-row">
-            <el-switch v-model="factor.enabled" size="small" @change="dirty = true" />
-            <el-select
-              v-model="factor.field"
-              style="width: 120px"
-              size="small"
-              @change="onScoreFieldChange(factor)"
-            >
-              <el-option v-for="f in catalog" :key="f.field" :label="f.label" :value="f.field" />
-            </el-select>
-            <el-select v-model="factor.ascending" style="width: 100px" size="small" @change="dirty = true">
-              <el-option label="越小越好" :value="true" />
-              <el-option label="越大越好" :value="false" />
-            </el-select>
-            <span class="unit">权重</span>
-            <el-input-number v-model="factor.weight" :step="0.5" :min="0.1" style="width: 80px" size="small" @change="dirty = true" />
-            <el-button text type="danger" size="small" @click="removeScoreFactor(i)">删除</el-button>
-          </div>
-        </el-card>
+            <el-button size="small" text type="primary" @click="addScoreFactor">＋ 添加打分因子</el-button>
+          </el-collapse-item>
+        </el-collapse>
       </div>
 
       <!-- 底部工具栏 -->
@@ -365,6 +399,10 @@ const factorMeta = (field) => catalog.value.find((f) => f.field === field) || {}
             <span class="unit">名（0=严格按目标，5=跌出 target+5 才卖）</span>
           </div>
           <div class="right">
+            <el-radio-group v-model="screenSource" size="small" class="src-switch">
+              <el-radio-button value="db">数据库快照</el-radio-button>
+              <el-radio-button value="live">实时集思录</el-radio-button>
+            </el-radio-group>
             <el-button size="small" @click="handleDuplicate">复制</el-button>
             <el-button size="small" type="danger" text @click="handleDelete(editingId)">删除</el-button>
             <el-button
@@ -394,11 +432,14 @@ const factorMeta = (field) => catalog.value.find((f) => f.field === field) || {}
       <el-card v-if="previewing || previewResult" shadow="never" class="block">
         <template #header>
           <b v-if="previewResult">
-            筛选结果 — <span class="success-text">{{ previewResult.top_n }}</span> 只入选
+            筛选结果
+            <el-tag v-if="previewResult.source === 'live'" type="warning" size="small" style="margin-left:6px">实时集思录</el-tag>
+            <el-tag v-else type="info" size="small" style="margin-left:6px">数据库快照</el-tag>
+            — <span class="success-text">{{ previewResult.top_n }}</span> 只入选
             <span v-if="previewResult.keep_n > previewResult.top_n" class="info-text">
               / {{ previewResult.keep_n - previewResult.top_n }} 只在容差范围
             </span>
-            / {{ previewResult.total_filtered }} 只通过排除 / {{ previewResult.total_all }} 只全量
+            / {{ previewResult.total_filtered }} 只通过排除 / {{ previewResult.total_excluded ?? 0 }} 只被排除 / {{ previewResult.total_all }} 只全量
           </b>
           <b v-else>正在筛选...</b>
         </template>
@@ -408,12 +449,13 @@ const factorMeta = (field) => catalog.value.find((f) => f.field === field) || {}
           :data="previewResult.rows"
           stripe
           size="small"
-          max-height="50vh"
+          max-height="2050"
           :row-class-name="({ row }) => (row.selected ? 'bond-row-selected' : '')"
         >
           <el-table-column prop="rank" label="排名" width="60" align="center" />
           <el-table-column prop="code" label="代码" width="100" />
           <el-table-column prop="name" label="名称" width="110" />
+          <el-table-column prop="rating" label="评级" width="70" align="center" />
           <el-table-column prop="price" label="价格" width="80" align="right" />
           <el-table-column prop="dblow" label="双低" width="70" align="right" />
           <el-table-column prop="premium_rt" label="溢价率" width="85" align="right" />
@@ -427,9 +469,37 @@ const factorMeta = (field) => catalog.value.find((f) => f.field === field) || {}
             <template #default="{ row }">
               <el-tag v-if="row.selected" type="success" size="small">✓ 入选</el-tag>
               <el-tag v-else-if="row.holdable" type="info" size="small">容差保留</el-tag>
+              <el-tag v-else type="warning" size="small">其余</el-tag>
             </template>
           </el-table-column>
         </el-table>
+
+        <!-- 被排除明细(可展开) -->
+        <template v-if="previewResult.excluded_rows?.length">
+          <div class="excluded-toggle">
+            <el-button size="small" text type="info" @click="showExcluded = !showExcluded">
+              {{ showExcluded ? '收起被排除明细' : `展开被排除明细 (${previewResult.excluded_rows.length})` }}
+            </el-button>
+          </div>
+          <el-table
+            v-if="showExcluded"
+            :data="previewResult.excluded_rows"
+            stripe
+            size="small"
+            max-height="40vh"
+          >
+            <el-table-column prop="code" label="代码" width="100" />
+            <el-table-column prop="name" label="名称" width="110" />
+            <el-table-column prop="rating" label="评级" width="70" align="center" />
+            <el-table-column prop="price" label="价格" width="80" align="right" />
+            <el-table-column prop="dblow" label="双低" width="70" align="right" />
+            <el-table-column label="排除原因" min-width="240">
+              <template #default="{ row }">
+                <span class="exclude-reasons">{{ (row.exclude_reasons || []).join('；') }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </template>
       </el-card>
     </template>
   </div>
@@ -486,6 +556,26 @@ const factorMeta = (field) => catalog.value.find((f) => f.field === field) || {}
   align-items: center;
 }
 
+.config-collapse {
+  margin-bottom: 16px;
+}
+
+/* 关闭折叠过渡动画: 展开/收起瞬间完成, 避免含大量表单控件时逐帧高度动画导致的卡顿 */
+.config-collapse :deep(.el-collapse-item__wrap),
+.config-collapse :deep(.el-collapse-item__content) {
+  transition: none !important;
+}
+
+.sec-title {
+  font-size: 14px;
+}
+
+.sec-count {
+  margin-left: 8px;
+  font-size: 12px;
+  color: #909399;
+}
+
 .filter-row {
   display: flex;
   align-items: center;
@@ -539,12 +629,25 @@ const factorMeta = (field) => catalog.value.find((f) => f.field === field) || {}
   font-size: 13px;
 }
 
+.excluded-toggle {
+  margin-top: 8px;
+}
+
+.exclude-reasons {
+  color: #909399;
+  font-size: 12px;
+}
+
 .bottom-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.src-switch {
+  margin-right: 4px;
 }
 
 .bottom-toolbar .left,
