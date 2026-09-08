@@ -1,6 +1,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue';
-import { getRotationAnalysis, getRotationValuation, getValuationSnapshot } from '../api';
+import { getRotationAnalysis, getValuationSnapshot } from '../api';
+import { createRequestGuard } from '../utils/requestGuard.js';
 import RotationChart from '../components/RotationChart.vue';
 import PeChart from '../components/PeChart.vue';
 
@@ -13,12 +14,14 @@ const PAIR_PRESETS = [
     label: '大小盘轮动',
     left: { code: '399376', name: '国证小盘成长' },
     right: { code: '399373', name: '国证大盘价值' },
+    showValuation: false,
   },
   {
     key: 'dividend',
     label: '成长 vs 红利',
     left: { code: '399296', name: '创成长' },
     right: { code: '930955', name: '红利低波100' },
+    showValuation: true,
   },
 ];
 
@@ -132,16 +135,21 @@ const toggleFilters = () => {
 };
 
 const data = ref(null);
-const valuation = ref(null);
 const peHistory = ref({ left: [], right: [] });
 const loading = ref(false);
 const valuationLoading = ref(false);
 const errorMsg = ref('');
 const valuationError = ref('');
 
+// 请求版本: 用户快速切换条件时, 仅最新一轮请求允许更新 UI。
+// 旧响应即使更晚返回也被丢弃, 防止 A 慢/B 快后页面又跳回 A。
+// 逻辑抽到 utils/requestGuard.js, 由 requestGuard.test.mjs 覆盖单测。
+const requestGuard = createRequestGuard();
+
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
 async function fetchAnalysis() {
+  const version = requestGuard.next();
   loading.value = true;
   errorMsg.value = '';
   const params = {
@@ -153,37 +161,49 @@ async function fetchAnalysis() {
     ma_window: form.maWindow,
   };
   try {
-    data.value = await getRotationAnalysis(params);
+    const response = await getRotationAnalysis(params);
+    if (!requestGuard.isLatest(version)) return;
+    data.value = response;
   } catch (e) {
+    if (!requestGuard.isLatest(version)) return;
     errorMsg.value =
       e?.response?.data?.detail || e?.message || '拉取失败,请检查后端日志';
     data.value = null;
   } finally {
-    loading.value = false;
+    if (requestGuard.isLatest(version)) loading.value = false;
   }
-  await fetchValuation(params);
+  await fetchValuation(params, version);
 }
 
-async function fetchValuation(params = {}) {
+async function fetchValuation(params, version) {
+  // 腾讯大小盘组未启用估值能力: 不发请求, 也不制造“缺数据”告警。
+  if (!currentPair.value.showValuation) {
+    if (requestGuard.isLatest(version)) {
+      peHistory.value = { left: [], right: [] };
+      valuationError.value = '';
+      valuationLoading.value = false;
+    }
+    return;
+  }
+
   valuationLoading.value = true;
   valuationError.value = '';
-  const left = params.left_symbol || form.leftSymbol;
-  const right = params.right_symbol || form.rightSymbol;
+  const left = params.left_symbol;
+  const right = params.right_symbol;
   try {
-    const [latest, leftHist, rightHist] = await Promise.all([
-      getRotationValuation({ left_symbol: left, right_symbol: right }),
+    const [leftHist, rightHist] = await Promise.all([
       getValuationSnapshot({ index_code: left }),
       getValuationSnapshot({ index_code: right }),
     ]);
-    valuation.value = latest;
+    if (!requestGuard.isLatest(version)) return;
     peHistory.value = { left: leftHist || [], right: rightHist || [] };
   } catch (e) {
+    if (!requestGuard.isLatest(version)) return;
     valuationError.value =
       e?.response?.data?.detail || e?.message || '估值读取失败';
-    valuation.value = null;
     peHistory.value = { left: [], right: [] };
   } finally {
-    valuationLoading.value = false;
+    if (requestGuard.isLatest(version)) valuationLoading.value = false;
   }
 }
 
@@ -198,6 +218,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   mq?.removeEventListener('change', updateIsMobile);
+  // 使在途请求失效: 卸载后迟到的响应不再写已销毁组件的 ref
+  requestGuard.invalidate();
 });
 
 watch(
@@ -372,7 +394,7 @@ watch(
       <RotationChart :data="data" />
     </el-card>
 
-    <el-card class="valuation-card" shadow="never" v-loading="valuationLoading">
+    <el-card v-if="currentPair.showValuation" class="valuation-card" shadow="never" v-loading="valuationLoading">
       <div class="valuation-head">
         <strong>指数 PE 走势</strong>
         <span>横轴跟随上方日期范围</span>

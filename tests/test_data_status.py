@@ -244,7 +244,7 @@ def test_partial_still_works(log_db):
     )
     row = log_db.query(TaskRunLog).one()
     assert row.status == "partial"
-    assert "1 个标的失败" in row.error
+    assert "1 个数据子项失败" in row.error
 
 
 def test_run_with_logging_failed(log_db):
@@ -281,7 +281,7 @@ def test_failed_run_triggers_notification(log_db, monkeypatch):
         "style_rotation_daily", lambda: {"success_count": 0, "fail_count": 2}
     )
 
-    assert calls == [("style_rotation_daily", "failed", "2 个标的失败,详见日志")]
+    assert calls == [("style_rotation_daily", "failed", "2 个数据子项失败,详见日志")]
 
 
 def test_success_run_does_not_notify(log_db, monkeypatch):
@@ -297,6 +297,19 @@ def test_success_run_does_not_notify(log_db, monkeypatch):
     run_logger.run_with_logging("valuation_daily", lambda: None)
 
     assert calls == []
+
+
+def test_everyday_jobs_next_run_on_weekend():
+    """周六已过触发时刻：易方达历史同步顺延周日，市场快照顺延周一。"""
+    from datetime import datetime
+
+    from backend.services.data_status import _next_run_times
+
+    times = _next_run_times(datetime(2026, 9, 12, 23, 0))  # 周六
+    assert times["valuation_daily"].startswith("2026-09-13T22:06")
+    assert times["index_eod_daily"].startswith("2026-09-13T22:09")
+    assert times["style_rotation_daily"].startswith("2026-09-14T22:03")
+    assert times["cb_list_daily"].startswith("2026-09-14T15:06")
 
 
 def test_success_rate_window(db, log_db):

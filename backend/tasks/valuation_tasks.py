@@ -23,7 +23,7 @@ from backend.services.valuation_store import (
     save_dividend_yield_history,
     save_valuation_snapshots,
 )
-from backend.utils import is_trading_day, load_valuation_targets
+from backend.utils import load_valuation_targets
 
 
 def run_valuation_daily() -> None:
@@ -43,9 +43,6 @@ def run_valuation_daily() -> None:
     单标的失败不中止整体(跳过该标的继续下一个)。
     """
     today = date.today()
-    if not is_trading_day(today):
-        logger.info(f"非交易日({today}),跳过估值板块日频任务")
-        return
 
     logger.info(f"=== 估值板块日频任务开始 ({today}) ===")
     targets = load_valuation_targets()
@@ -78,6 +75,9 @@ def run_valuation_daily() -> None:
             latest_date = val_records[-1]["trade_date"] if val_records else "?"
             logger.info(f"  [{code}] {index_name}: {len(val_records)} 条历史, 新写入 {inserted} 条, 最新={latest_date}")
 
+            # 估值(PE/PB/PS)主数据流成功
+            success_count += 1
+
             # d. 股息率(并非所有标的都有独立股息率 JSON)
             if dividend_url:
                 try:
@@ -101,12 +101,15 @@ def run_valuation_daily() -> None:
                         logger.info(
                             f"  [{code}] 股息率最新值已存在, 历史新写入 {hist_inserted} 条"
                         )
+                    # 股息率是独立数据流，成功/失败均独立计数
+                    success_count += 1
                 except Exception as exc:
+                    db.rollback()
+                    fail_count += 1
                     logger.warning(f"  [{code}] 股息率获取失败,跳过: {exc}")
 
-            success_count += 1
-
         except Exception as exc:
+            db.rollback()
             logger.error(f"  [{code}] {name} 抓取失败: {exc}")
             fail_count += 1
             continue
@@ -117,7 +120,9 @@ def run_valuation_daily() -> None:
         bond_inserted = save_bond_yields(db, bond_records)
         latest_bond = bond_records[-1]["trade_date"] if bond_records else "?"
         logger.info(f"  国债收益率: {len(bond_records)} 条历史, 新写入 {bond_inserted} 条, 最新={latest_bond}")
+        success_count += 1
     except Exception as exc:
+        db.rollback()
         logger.error(f"  国债收益率获取失败: {exc}")
         fail_count += 1
 

@@ -13,6 +13,10 @@ from backend.tasks.index_eod_tasks import run_index_eod_daily
 from backend.tasks.style_rotation_tasks import run_style_rotation_daily
 from backend.tasks.valuation_tasks import run_valuation_daily
 
+# 历史全量同步任务每天检查：来源可能在周末发布最近交易日数据，且接口本身可幂等回补。
+# 其余任务是“当日市场快照”，仍只在周一至周五触发并由任务内交易日判断兜底。
+EVERYDAY_JOB_IDS = frozenset({"valuation_daily", "index_eod_daily"})
+
 # (job_id, 函数, 展示名, hour, minute) —— 与 scheduler 注册一致
 DAILY_JOBS: list[tuple[str, object, str, int, int]] = [
     ("cb_redeem_daily", run_cb_redeem_daily, "可转债强赎列表抓取", 15, 3),

@@ -33,8 +33,8 @@ JOBS: dict[str, dict[str, str]] = {
     "cb_index_daily": {"name": "转债等权指数", "schedule": "交易日 15:04"},
     "cb_list_daily": {"name": "转债全量快照", "schedule": "交易日 15:06"},
     "style_rotation_daily": {"name": "风格轮动日线", "schedule": "交易日 22:03"},
-    "valuation_daily": {"name": "估值截面(易方达分位/股息率 + 东财国债)", "schedule": "交易日 22:06"},
-    "index_eod_daily": {"name": "指数日线(易方达·轮动K线)", "schedule": "交易日 22:09"},
+    "valuation_daily": {"name": "估值截面(易方达分位/股息率 + 东财国债)", "schedule": "每天 22:06"},
+    "index_eod_daily": {"name": "指数日线(易方达·轮动K线)", "schedule": "每天 22:09"},
 }
 
 # 成功率统计窗口(最近 N 次运行)
@@ -285,12 +285,12 @@ def get_job_runs(db: Session) -> list[dict]:
 def _next_run_times(now: datetime) -> dict[str, str]:
     """按 registry 调度时刻计算各任务下一次触发时间(本地 ISO)。
 
-    今天已过触发时刻或非交易日 → 顺延到下一交易日(与调度器 mon-fri 语义一致,
-    节假日误差可容忍: 至少不早于下一个工作日)。
+    易方达历史全量同步任务每天检查；其余当日快照任务仅在下一交易日运行。
+    这里表达的是程序计划执行时间(next_run_at)，不与数据目录的应就绪期限混用。
     """
     from datetime import timedelta
 
-    from backend.tasks.registry import DAILY_JOBS
+    from backend.tasks.registry import DAILY_JOBS, EVERYDAY_JOB_IDS
 
     out: dict[str, str] = {}
     for job_id, _func, _name, hour, minute in DAILY_JOBS:
@@ -298,9 +298,17 @@ def _next_run_times(now: datetime) -> dict[str, str]:
         candidate = datetime.combine(day, datetime.min.time()).replace(
             hour=hour, minute=minute
         )
-        if candidate <= now or not is_trading_day(day):
+        if candidate <= now or (
+            job_id not in EVERYDAY_JOB_IDS and not is_trading_day(day)
+        ):
             candidate += timedelta(days=1)
-            while candidate <= now or not is_trading_day(candidate.date()):
+            while (
+                candidate <= now
+                or (
+                    job_id not in EVERYDAY_JOB_IDS
+                    and not is_trading_day(candidate.date())
+                )
+            ):
                 candidate += timedelta(days=1)
         out[job_id] = candidate.isoformat(timespec="seconds")
     return out

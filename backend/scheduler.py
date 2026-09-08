@@ -31,22 +31,50 @@ def _maybe_backfill_style_rotation() -> None:
     from backend.services.style_rotation_store import get_index_data_summary
 
     def _check():
+        from backend.services.run_logger import release_job, reserve_job, run_with_logging
+        from backend.services.style_rotation_store import get_index_data_summary
+        from backend.services.fetchers.style_rotation import LEFT_SYMBOL, RIGHT_SYMBOL
+
+        # 先占用与定时/手动任务相同的资源锁，再检查数据并决定是否回补，
+        # 避免“锁外判空 → 另一任务写入 → 仍重复回补”的 check-then-act 竞态。
+        if not reserve_job("style_rotation_daily"):
+            logger.info("风格轮动任务已在运行,启动回补检查不重复执行")
+            return
+        handed_to_runner = False
         try:
             db = SessionLocal()
             try:
-                summary = get_index_data_summary(db, "399376")
+                summaries = {
+                    code: get_index_data_summary(db, code)
+                    for code in (LEFT_SYMBOL, RIGHT_SYMBOL)
+                }
             finally:
                 db.close()
-            if summary is None:
-                logger.info("检测到风格轮动指数表为空,自动执行全量历史回补...")
-                run_style_rotation_backfill()
-            else:
+
+            missing = [code for code, summary in summaries.items() if summary is None]
+            if missing:
                 logger.info(
-                    f"风格轮动数据检查: 已有 {summary['count']} 条 "
-                    f"({summary['first']} ~ {summary['last']}),跳过回补"
+                    f"检测到风格轮动指数缺数据({', '.join(missing)}),自动执行全量历史回补..."
                 )
+                handed_to_runner = True
+                # reserved=True: 锁已由启动检查持有，runner 负责 finally 释放并写运行记录。
+                run_with_logging(
+                    "style_rotation_daily",
+                    run_style_rotation_backfill,
+                    reserved=True,
+                    trigger="startup_backfill",
+                )
+            else:
+                detail = "; ".join(
+                    f"{code}: {summary['count']} 条({summary['first']} ~ {summary['last']})"
+                    for code, summary in summaries.items()
+                )
+                logger.info(f"风格轮动数据检查: {detail},跳过回补")
         except Exception as exc:
             logger.error(f"风格轮动启动检查失败(不影响服务): {exc}")
+        finally:
+            if not handed_to_runner:
+                release_job("style_rotation_daily")
 
     # 首次启动也注册为立即执行的后台任务,交给调度器线程池
     scheduler.add_job(
@@ -126,13 +154,13 @@ def _register_daily_jobs() -> None:
     转债等权指数集思录 15:04 即更新, 提前排; 风格轮动/估值数据源更新慢, 放 22 点档。
     任务定义统一在 backend/tasks/registry.py(手动触发端点共用同一份)。
     """
-    from backend.tasks.registry import DAILY_JOBS
+    from backend.tasks.registry import DAILY_JOBS, EVERYDAY_JOB_IDS
 
     for job_id, func, name, hour, minute in DAILY_JOBS:
         scheduler.add_job(
             logged_daily_job(job_id, func),
             trigger=CronTrigger(
-                day_of_week="mon-fri",
+                day_of_week="*" if job_id in EVERYDAY_JOB_IDS else "mon-fri",
                 hour=hour,
                 minute=minute,
                 timezone="Asia/Shanghai",

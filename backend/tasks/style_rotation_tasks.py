@@ -67,7 +67,7 @@ def run_style_rotation_daily() -> None:
     today = date.today()
     if not is_trading_day(today):
         logger.info(f"非交易日({today}),跳过风格轮动日频任务")
-        return
+        return {"status": "skipped", "success_count": 0, "fail_count": 0}
 
     logger.info(f"=== 风格轮动日频任务开始 ({today}) ===")
     return _run_pair(lambda code: fetch_index_kline(code), "日频任务")
@@ -79,11 +79,12 @@ def run_style_rotation_backfill() -> None:
     适用场景: 新环境首次部署、数据缺口修复。重复执行无害(已存在的日期跳过)。
     """
     logger.info(f"=== 风格轮动全量回补开始 (起点 {BACKFILL_START}) ===")
-    _run_pair(
+    result = _run_pair(
         lambda code: fetch_index_kline_auto(code, start_date=BACKFILL_START),
         "全量回补",
     )
     _log_gap_report()
+    return result
 
 
 def _log_gap_report() -> None:

@@ -26,7 +26,7 @@ def run_cb_index_daily() -> None:
     today = date.today()
     if not is_trading_day(today):
         logger.info(f"非交易日({today}),跳过可转债等权指数日频任务")
-        return
+        return {"status": "skipped", "success_count": 0, "fail_count": 0}
 
     logger.info(f"=== 可转债等权指数日频任务开始 ({today}) ===")
 
@@ -35,7 +35,7 @@ def run_cb_index_daily() -> None:
         logger.info(f"抓取成功: {len(records)} 条记录")
     except Exception as exc:
         logger.error(f"数据获取失败: {exc}")
-        return
+        return {"success_count": 0, "fail_count": 1}
 
     db = SessionLocal()
     try:
@@ -43,11 +43,14 @@ def run_cb_index_daily() -> None:
         latest_date = records[-1]["date"] if records else "?"
         logger.info(f"落库完成: {inserted} 条新写入, 最新日期={latest_date}")
     except Exception as exc:
+        db.rollback()
         logger.error(f"落库失败: {exc}")
+        return {"success_count": 0, "fail_count": 1}
     finally:
         db.close()
 
     logger.info("=== 可转债等权指数日频任务完成 ===")
+    return {"success_count": 1, "fail_count": 0}
 
 
 if __name__ == "__main__":

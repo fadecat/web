@@ -17,7 +17,7 @@ from loguru import logger
 from backend.models.database import SessionLocal
 from backend.services.fetchers.index_eod import fetch_index_eod_price
 from backend.services.style_rotation_store import save_index_quotes
-from backend.utils import is_trading_day, load_index_eod_targets
+from backend.utils import load_index_eod_targets
 
 
 def run_index_eod_daily() -> None:
@@ -26,9 +26,6 @@ def run_index_eod_daily() -> None:
     单标的失败不中止整体(跳过该标的继续下一个)。
     """
     today = date.today()
-    if not is_trading_day(today):
-        logger.info(f"非交易日({today}),跳过指数 eod 日频任务")
-        return
 
     logger.info(f"=== 指数 eod 日频任务开始 ({today}) ===")
     targets = load_index_eod_targets()
@@ -51,6 +48,7 @@ def run_index_eod_daily() -> None:
             )
             success_count += 1
         except Exception as exc:
+            db.rollback()
             logger.error(f"  [{code}] {name} 抓取失败: {exc}")
             fail_count += 1
             continue

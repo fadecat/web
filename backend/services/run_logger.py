@@ -75,7 +75,7 @@ def run_with_logging(job_id: str, func, *, reserved=False, trigger="scheduled"):
                     status = "skipped"
                 elif failures:
                     status = "partial" if result.get("success_count", 0) else "failed"
-                    error = f"{failures} 个标的失败,详见日志"
+                    error = f"{failures} 个数据子项失败,详见日志"
         except Exception as exc:
             status, error = "failed", f"{type(exc).__name__}: {exc}"
         finished = now_local()
