@@ -130,6 +130,9 @@ function buildOption() {
   }
 
   const { meta, series, summary } = data;
+  // 日期轴范围固定为所选起止(与 PE 图共用同一日期选择器), 保证三图首尾刻度一致
+  const axisMin = meta.start_date || undefined;
+  const axisMax = meta.end_date || undefined;
   // 图例标签: 带指数名称的优先(后端 meta 若有 code_name 映射), 否则回退纯代码
   const nameMap = meta.symbol_names || {};
   const leftLabel = nameMap[meta.left_symbol] || meta.left_symbol;
@@ -235,6 +238,8 @@ function buildOption() {
         type: 'time',
         gridIndex: 0,
         boundaryGap: false,
+        min: axisMin,
+        max: axisMax,
         axisLabel: {
           color: '#667085',
           hideOverlap: true,
@@ -243,10 +248,12 @@ function buildOption() {
           fontSize: mobile ? 9 : 11,
           margin: 10,
           formatter: (val) => {
+            // 桌面统一 YYYY-MM-DD(对齐参考站, 无跨年突兀), 手机保持 MM-DD 防挤压
             const d = new Date(val);
-            const m = d.getMonth() + 1;
-            if (m === 1) return `${d.getFullYear()}`;
-            return `${String(m).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            if (!mobile) return `${d.getFullYear()}-${m}-${day}`;
+            return `${m}-${day}`;
           },
         },
         axisTick: { show: false },
@@ -385,6 +392,7 @@ function applyExternalHover(ts) {
   try {
     if (ts == null) {
       chart.dispatchAction({ type: 'hideTip' });
+      chart.dispatchAction({ type: 'updateAxisPointer', currTrigger: 'leave' });
       return;
     }
     const idx = findClosestIndex(masterTimestamps, ts);

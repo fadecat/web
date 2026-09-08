@@ -3,14 +3,16 @@ import { ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { use, init } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { LineChart } from 'echarts/charts';
-import { GridComponent, MarkLineComponent, TooltipComponent } from 'echarts/components';
+import { GridComponent, LegendComponent, MarkLineComponent, TooltipComponent } from 'echarts/components';
 import { emitHover, onHover, findClosestIndex } from '../utils/chartLink';
 
-use([CanvasRenderer, LineChart, GridComponent, MarkLineComponent, TooltipComponent]);
+use([CanvasRenderer, LineChart, GridComponent, LegendComponent, MarkLineComponent, TooltipComponent]);
 
 const props = defineProps({
   // 两侧 PE 历史(全量, 组件内按日期范围裁剪): { left: [...], right: [...] }
   history: { type: Object, default: () => ({ left: [], right: [] }) },
+  // 两侧指数日线收盘价: { left: [...], right: [...] }, 行结构 { trade_date, close }
+  quotes: { type: Object, default: () => ({ left: [], right: [] }) },
   startDate: { type: String, default: '' },
   endDate: { type: String, default: '' },
   leftName: { type: String, default: '' },
@@ -43,7 +45,16 @@ function crop(rows, start, end) {
     .sort((a, b) => (a.trade_date < b.trade_date ? -1 : 1));
 }
 
-function buildOption(rows, color, name, { showX }) {
+// PE 行与收盘价行按 trade_date 对齐: 以 PE 日期为准(估值与行情同源交易日, 缺则置 null 断线)
+function alignClose(quoteRows, peRows) {
+  const closeMap = new Map((quoteRows || []).map((r) => [r.trade_date, r.close]));
+  return peRows.map((r) => ({
+    date: r.trade_date,
+    close: closeMap.get(r.trade_date) ?? null,
+  }));
+}
+
+function buildOption(rows, closeRows, name, { showX }) {
   if (!rows.length) {
     return {
       title: { text: `${name}（无数据）`, left: '8%', top: 'middle', textStyle: { color: '#9ca3af', fontSize: 13 } },
@@ -53,25 +64,51 @@ function buildOption(rows, color, name, { showX }) {
     };
   }
 
+  // 配色简化(用户定版): 两图统一 指数=蓝 / PE=橘黄, 不再用红绿区分左右
+  const closeColor = '#185fa5';
+  const peColor = '#ea580c';
   const mobile = window.innerWidth < 768;
   const last = rows[rows.length - 1];
-  const titleText = `${name}  最新 ${last.trade_date} · PE ${fmt(last.pe)} · 5年分位 ${pct5y(last)}`;
+  const lastClose = closeRows.find((c) => c.date === last.trade_date)?.close;
+  const titleText = `${name}  最新 ${last.trade_date} · PE ${fmt(last.pe)} · 收盘 ${fmt(lastClose)} · 5年分位 ${pct5y(last)}`;
   const axisMin = props.startDate || undefined;
   const axisMax = props.endDate || undefined;
+  // 刻度格式对齐参考站: 桌面统一 YYYY-MM-DD(信息完整无跨年突兀), 手机保持 MM-DD 防挤压
+  const fullDate = !mobile;
   const timeLabel = (val) => {
     const d = new Date(val);
-    const m = d.getMonth() + 1;
-    if (m === 1) return `${d.getFullYear()}`;
-    return `${String(m).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    if (fullDate) return `${d.getFullYear()}-${m}-${day}`;
+    return `${m}-${day}`;
   };
+
+  const peData = rows.map((r) => ({
+    value: [new Date(r.trade_date + 'T00:00:00').getTime(), r.pe],
+    pct5y: pct5y(r),
+    date: r.trade_date,
+  }));
+  const closeData = closeRows.map((c) => [
+    new Date(c.date + 'T00:00:00').getTime(),
+    c.close,
+  ]);
 
   return {
     animation: false,
-    grid: { left: '8%', right: '5%', top: mobile ? '16%' : '15%', height: mobile ? '74%' : '76%' },
+    grid: { left: '8%', right: '8%', top: mobile ? '20%' : '18%', height: mobile ? '70%' : '72%' },
+    legend: {
+      top: mobile ? '4%' : '2%',
+      left: '8%',
+      itemWidth: 14,
+      itemHeight: 2,
+      icon: 'rect',
+      textStyle: { fontSize: mobile ? 10 : 11, color: '#475467' },
+      // 两图各持 legend, 互不影响
+    },
     title: {
       text: titleText,
       left: '8%',
-      top: '2%',
+      top: '10%',
       textStyle: { fontSize: mobile ? 11 : 12, fontWeight: 600, color: '#475467' },
     },
     tooltip: {
@@ -80,9 +117,12 @@ function buildOption(rows, color, name, { showX }) {
       borderColor: 'rgba(148, 163, 184, 0.35)',
       textStyle: { color: '#111827', fontSize: 11 },
       formatter(params) {
-        const p = Array.isArray(params) ? params[0] : params;
-        const d = p?.data;
-        return `${d?.date || ''}<br/>PE ${fmt(d?.value?.[1] ?? d?.value)}<br/>5年分位 ${d?.pct5y || '—'}`;
+        const list = Array.isArray(params) ? params : [params];
+        const date = list[0]?.data?.date || list[0]?.axisValueLabel || '';
+        const peVal = list.find((p) => p.seriesName === 'PE')?.data?.value?.[1];
+        const closeVal = list.find((p) => p.seriesName === '指数')?.data?.value?.[1];
+        const pct = list.find((p) => p.seriesName === 'PE')?.data?.pct5y;
+        return `${date}<br/>收盘 ${fmt(closeVal)}<br/>PE ${fmt(peVal)}<br/>5年分位 ${pct ?? '—'}`;
       },
     },
     xAxis: {
@@ -91,27 +131,45 @@ function buildOption(rows, color, name, { showX }) {
       min: axisMin,
       max: axisMax,
       show: showX, // 上图隐藏 x 轴(与下图共享时间范围), 下图显示
-      axisLabel: { fontSize: 10, color: '#6b7280', hideOverlap: true, formatter: timeLabel },
+      axisLabel: { fontSize: 10, color: '#6b7280', hideOverlap: true, showMinLabel: true, showMaxLabel: true, formatter: timeLabel },
     },
-    yAxis: {
-      type: 'value',
-      name: 'PE',
-      nameTextStyle: { fontSize: 10, color: '#6b7280' },
-      scale: true,
-      axisLabel: { fontSize: 10 },
-    },
+    yAxis: [
+      {
+        // 左轴: 指数点位(主参照), 用户定版; 轴名省略(legend 已标注系列名, 避免左上角重叠)
+        type: 'value',
+        scale: true,
+        axisLabel: { fontSize: 10, color: closeColor },
+        splitLine: { show: false },
+      },
+      {
+        // 右轴: PE(估值辅助)
+        type: 'value',
+        name: 'PE',
+        nameTextStyle: { fontSize: 10, color: '#6b7280' },
+        scale: true,
+        axisLabel: { fontSize: 10, color: peColor },
+        splitLine: { show: true, lineStyle: { color: 'rgba(148, 163, 184, 0.2)' } },
+      },
+    ],
     series: [
       {
+        name: '指数',
         type: 'line',
+        yAxisIndex: 0,
         showSymbol: false,
-        lineStyle: { width: 1.5, color },
-        itemStyle: { color },
-        // [时间戳, PE] 数据对: time 轴按时间对齐, 联动不因序列长度不同而错位
-        data: rows.map((r) => ({
-          value: [new Date(r.trade_date + 'T00:00:00').getTime(), r.pe],
-          pct5y: pct5y(r),
-          date: r.trade_date,
-        })),
+        lineStyle: { width: 1.5, color: closeColor },
+        itemStyle: { color: closeColor },
+        // [时间戳, close] 数据对: time 轴按时间对齐, 联动不因序列长度不同而错位
+        data: closeData,
+      },
+      {
+        name: 'PE',
+        type: 'line',
+        yAxisIndex: 1,
+        showSymbol: false,
+        lineStyle: { width: 1.5, color: peColor },
+        itemStyle: { color: peColor },
+        data: peData,
       },
     ],
   };
@@ -140,11 +198,19 @@ function render() {
 
   const left = crop(props.history.left, props.startDate, props.endDate);
   const right = crop(props.history.right, props.startDate, props.endDate);
+  const leftQuotes = alignClose(crop(props.quotes.left, props.startDate, props.endDate), left);
+  const rightQuotes = alignClose(crop(props.quotes.right, props.startDate, props.endDate), right);
   topTs = left.map((r) => new Date(r.trade_date + 'T00:00:00').getTime());
   bottomTs = right.map((r) => new Date(r.trade_date + 'T00:00:00').getTime());
 
-  topChart.setOption(buildOption(left, '#dc2626', props.leftName, { showX: false }), true);
-  bottomChart.setOption(buildOption(right, '#16a34a', props.rightName, { showX: true }), true);
+  topChart.setOption(
+    buildOption(left, leftQuotes, props.leftName, { showX: false }),
+    true,
+  );
+  bottomChart.setOption(
+    buildOption(right, rightQuotes, props.rightName, { showX: true }),
+    true,
+  );
 }
 
 // 收到外部联动时间戳(来自 spread 图或另一张 PE 图): 各自定位最近 index 弹 tooltip
@@ -158,6 +224,7 @@ function applyExternalHover(ts) {
     try {
       if (ts == null) {
         chart.dispatchAction({ type: 'hideTip' });
+        chart.dispatchAction({ type: 'updateAxisPointer', currTrigger: 'leave' });
         continue;
       }
       const idx = findClosestIndex(tsArr, ts);
@@ -190,7 +257,7 @@ onBeforeUnmount(() => {
 });
 
 watch(
-  () => [props.history, props.startDate, props.endDate, props.leftName, props.rightName],
+  () => [props.history, props.quotes, props.startDate, props.endDate, props.leftName, props.rightName],
   () => render(),
   { deep: true },
 );
@@ -206,11 +273,11 @@ watch(
 <style scoped>
 .pe-half {
   width: 100%;
-  height: 220px;
+  height: 250px;
 }
 @media (max-width: 767px) {
   .pe-half {
-    height: 180px;
+    height: 200px;
   }
 }
 </style>

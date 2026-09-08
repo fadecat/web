@@ -1,6 +1,6 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue';
-import { getRotationAnalysis, getValuationSnapshot } from '../api';
+import { getRotationAnalysis, getValuationSnapshot, getIndexQuotes } from '../api';
 import { createRequestGuard } from '../utils/requestGuard.js';
 import RotationChart from '../components/RotationChart.vue';
 import PeChart from '../components/PeChart.vue';
@@ -136,6 +136,8 @@ const toggleFilters = () => {
 
 const data = ref(null);
 const peHistory = ref({ left: [], right: [] });
+// 双轴图右叠加的指数收盘价: { left: [{trade_date, close}], right: [...] }
+const quoteHistory = ref({ left: [], right: [] });
 const loading = ref(false);
 const valuationLoading = ref(false);
 const errorMsg = ref('');
@@ -180,6 +182,7 @@ async function fetchValuation(params, version) {
   if (!currentPair.value.showValuation) {
     if (requestGuard.isLatest(version)) {
       peHistory.value = { left: [], right: [] };
+      quoteHistory.value = { left: [], right: [] };
       valuationError.value = '';
       valuationLoading.value = false;
     }
@@ -191,17 +194,25 @@ async function fetchValuation(params, version) {
   const left = params.left_symbol;
   const right = params.right_symbol;
   try {
-    const [leftHist, rightHist] = await Promise.all([
+    // quotes 接口全量拉单只指数; 两次调用并行, 与 PE 快照一起构成双轴图数据
+    const [leftHist, rightHist, leftQuotes, rightQuotes] = await Promise.all([
       getValuationSnapshot({ index_code: left }),
       getValuationSnapshot({ index_code: right }),
+      getIndexQuotes({ index_code: left }),
+      getIndexQuotes({ index_code: right }),
     ]);
     if (!requestGuard.isLatest(version)) return;
     peHistory.value = { left: leftHist || [], right: rightHist || [] };
+    quoteHistory.value = {
+      left: (leftQuotes || []).map((r) => ({ trade_date: r.trade_date, close: r.close })),
+      right: (rightQuotes || []).map((r) => ({ trade_date: r.trade_date, close: r.close })),
+    };
   } catch (e) {
     if (!requestGuard.isLatest(version)) return;
     valuationError.value =
       e?.response?.data?.detail || e?.message || '估值读取失败';
     peHistory.value = { left: [], right: [] };
+    quoteHistory.value = { left: [], right: [] };
   } finally {
     if (requestGuard.isLatest(version)) valuationLoading.value = false;
   }
@@ -396,13 +407,14 @@ watch(
 
     <el-card v-if="currentPair.showValuation" class="valuation-card" shadow="never" v-loading="valuationLoading">
       <div class="valuation-head">
-        <strong>指数 PE 走势</strong>
-        <span>横轴跟随上方日期范围</span>
+        <strong>指数收盘价 与 PE 走势</strong>
+        <span>左轴=收盘价 · 右轴=PE · 横轴跟随上方日期范围</span>
       </div>
       <el-alert v-if="valuationError" :title="valuationError" type="warning" :closable="false" />
       <PeChart
         v-else
         :history="peHistory"
+        :quotes="quoteHistory"
         :start-date="form.startDate"
         :end-date="form.endDate"
         :left-name="currentPair.left.name"

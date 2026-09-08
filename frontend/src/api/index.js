@@ -43,6 +43,10 @@ export const addBlacklist = (data) =>
 export const removeBlacklist = (bondId) =>
   api.delete(`/cb-list/blacklist/${bondId}`).then((r) => r.data);
 
+// 指数日线 OHLCV(可按 index_code 过滤), PE 双轴图叠加指数收盘价用
+export const getIndexQuotes = (params = {}) =>
+  api.get('/style-rotation/quotes', { params, timeout: 30000 }).then((r) => r.data);
+
 // 风格轮动主图
 export const getRotationAnalysis = (params = {}) =>
   api.get('/style-rotation/analysis', { params, timeout: 30000 }).then((r) => r.data);
