@@ -35,9 +35,11 @@ const ratingOptions = ref(FALLBACK_RATINGS.map((v) => ({
   value: v, label: v === 'NONE' ? '无评级' : v,
 })));
 
-// 默认预置(对齐集思录截图): 价格≤120 / 溢价率≤30 / 评级全选
+// 默认预置(对齐集思录截图): 价格≤120 / 溢价率≤30 / 评级不限
 // 数值条件用字符串存(普通输入框所见即所得, 无 .00 强制格式化), 查询时才转数字
 // premium_rt 为转股溢价率(现价/转换价值-1, 集思录字段实测吻合), 表单标签写全称防歧义
+// 评级默认 [](不限, R3-03): 固定"全选"不等于不限——上游新增评级(如 BB+)会被
+// 旧全选列表静默排除; 空数组才是真不限, 兜底目录只提供可选项不充当默认值
 const defaultFilters = () => ({
   price_min: '',
   price_max: '120',
@@ -46,7 +48,7 @@ const defaultFilters = () => ({
   ytm_min: '',
   year_left_min: '',
   year_left_max: '',
-  ratings: [...FALLBACK_RATINGS],
+  ratings: [],
 });
 const filters = ref(defaultFilters());
 
