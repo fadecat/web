@@ -12,48 +12,26 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
 
 import pytest
-from fastapi.testclient import TestClient
-
-from backend.main import app
 
 BASE = "/api/cb-list"
 
 
 @pytest.fixture()
-def client(db):
-    """TestClient + 线程安全内存库(TestClient 在独立线程发请求)。"""
-    from sqlalchemy import create_engine
+def thread_db(contract_client, thread_safe_engine):
+    """与 contract_client 同一内存库的独立会话(供测试写数据)。"""
     from sqlalchemy.orm import sessionmaker
-    from sqlalchemy.pool import StaticPool
 
-    from backend.models.database import Base, get_db
-    from backend.models import app_setting, data_status, valuation  # noqa: F401
+    from backend.models.database import Base
 
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(bind=engine)
-    TestSession = sessionmaker(bind=engine)
-    # override 必须是函数: FastAPI 0.141 把类当依赖分析会生成 local_kw 必填参数
-    app.dependency_overrides[get_db] = lambda: TestSession()
-    with TestClient(app, raise_server_exceptions=False) as c:
-        yield c
-    app.dependency_overrides.clear()
-
-
-@pytest.fixture()
-def thread_db(client):
-    """与 client 同一内存库的会话(供测试写数据)。"""
-    from backend.models.database import get_db
-
-    session = app.dependency_overrides[get_db]()
-    yield session
-    session.close()
+    Base.metadata.create_all(bind=thread_safe_engine)
+    TestSession = sessionmaker(bind=thread_safe_engine)
+    session = TestSession()
+    try:
+        yield session
+    finally:
+        session.close()
 
 
 @pytest.fixture()
@@ -90,43 +68,110 @@ def _tmpl(**overrides):
 
 
 class TestSaveFactorsContract:
-    def test_string_rating_not_split_to_chars(self, client, tmp_factors):
+    def test_string_rating_not_split_to_chars(self, contract_client, tmp_factors):
         """P2-R02 核心反例: ratings:"AAA" 必须 422, 不能被按字符迭代存成 ["A"]。"""
-        r = client.post(f"{BASE}/factors", json={
+        r = contract_client.post(f"{BASE}/factors", json={
             "active_id": "t1", "templates": [_tmpl(ratings="AAA")],
         })
         assert r.status_code == 422
 
-    def test_object_rating_rejected(self, client, tmp_factors):
-        r = client.post(f"{BASE}/factors", json={
+    def test_object_rating_rejected(self, contract_client, tmp_factors):
+        r = contract_client.post(f"{BASE}/factors", json={
             "active_id": "t1", "templates": [_tmpl(ratings={"AAA": True})],
         })
         assert r.status_code == 422
 
-    def test_empty_string_rating_rejected(self, client, tmp_factors):
-        r = client.post(f"{BASE}/factors", json={
+    def test_empty_string_rating_rejected(self, contract_client, tmp_factors):
+        r = contract_client.post(f"{BASE}/factors", json={
             "active_id": "t1", "templates": [_tmpl(ratings=["AA", "  "])],
         })
         assert r.status_code == 422
 
-    def test_valid_ratings_saved(self, client, tmp_factors):
-        r = client.post(f"{BASE}/factors", json={
+    def test_valid_ratings_saved(self, contract_client, tmp_factors):
+        r = contract_client.post(f"{BASE}/factors", json={
             "active_id": "t1", "templates": [_tmpl(ratings=["aa+", "NONE"])],
         })
         assert r.status_code == 200
         saved = r.json()["data"]["templates"][0]["ratings"]
         assert saved == ["AA+", "NONE"]  # 大写规范化; 写盘前由 _normalize_templates 排序
 
-    def test_empty_ratings_means_unrestricted(self, client, tmp_factors):
-        r = client.post(f"{BASE}/factors", json={
+    def test_empty_ratings_means_unrestricted(self, contract_client, tmp_factors):
+        r = contract_client.post(f"{BASE}/factors", json={
             "active_id": "t1", "templates": [_tmpl(ratings=[])],
         })
         assert r.status_code == 200
         assert r.json()["data"]["templates"][0]["ratings"] == []
 
-    def test_missing_templates_rejected(self, client, tmp_factors):
-        r = client.post(f"{BASE}/factors", json={"active_id": "t1"})
+    def test_missing_templates_rejected(self, contract_client, tmp_factors):
+        r = contract_client.post(f"{BASE}/factors", json={"active_id": "t1"})
         assert r.status_code == 422
+
+
+class TestR3Contracts:
+    """R3-02/R3-05: 新请求与旧文件的评级边界。"""
+
+    def test_missing_ratings_round_trip_is_unrestricted(self, contract_client, tmp_factors):
+        """R3-02 反例: 新 POST 缺省 ratings 保存为 [](不限), 不落回旧七档迁移。"""
+        tmpl = _tmpl()
+        del tmpl["ratings"]  # 模拟前端不传 ratings 字段
+        r = contract_client.post(f"{BASE}/factors", json={
+            "active_id": "t1", "templates": [tmpl],
+        })
+        assert r.status_code == 200
+        # 响应值
+        assert r.json()["data"]["templates"][0]["ratings"] == []
+        # 文件内容
+        on_disk = json.loads(tmp_factors.read_text(encoding="utf-8"))
+        assert on_disk["templates"][0]["ratings"] == []
+        # 再次 GET 一致
+        r2 = contract_client.get(f"{BASE}/factors")
+        assert r2.json()["templates"][0]["ratings"] == []
+
+    def test_null_ratings_rejected(self, contract_client, tmp_factors):
+        """R3-02: null ratings 按合同返回 422(不是静默转 [] 并触发旧迁移)。"""
+        r = contract_client.post(f"{BASE}/factors", json={
+            "active_id": "t1", "templates": [_tmpl(ratings=None)],
+        })
+        assert r.status_code == 422
+
+    def test_new_post_rejects_legacy_exclusions(self, contract_client, tmp_factors):
+        """R3-02: 新 POST 携带旧字段 excluded_ratings 返回 422(兼容只在读旧文件)。"""
+        r = contract_client.post(f"{BASE}/factors", json={
+            "active_id": "t1",
+            "templates": [_tmpl(ratings=["AA"], excluded_ratings=["BB"])],
+        })
+        assert r.status_code == 422
+
+    def test_exact_duplicate_ratings_rejected(self, contract_client, tmp_factors):
+        """R3-05: 完全重复的评级 422(不是静默去重)。"""
+        r = contract_client.post(f"{BASE}/factors", json={
+            "active_id": "t1", "templates": [_tmpl(ratings=["AAA", "AAA"])],
+        })
+        assert r.status_code == 422
+
+    def test_normalized_duplicate_ratings_rejected(self, contract_client, tmp_factors):
+        """R3-05: 大小写/空白归一后重复也 422。"""
+        r = contract_client.post(f"{BASE}/factors", json={
+            "active_id": "t1", "templates": [_tmpl(ratings=["AAA", " aaa "])],
+        })
+        assert r.status_code == 422
+        # 422 请求不得改文件
+        assert not tmp_factors.exists()
+
+    def test_legacy_read_migration_idempotent(self, tmp_factors):
+        """旧文件读取迁移连续两次结果一致。"""
+        from backend.services import cb_factors
+
+        legacy = {
+            "version": 1, "active_id": "t1",
+            "templates": [_tmpl(ratings=None, excluded_ratings=["BB"])],
+        }
+        tmp_factors.write_text(json.dumps(legacy), encoding="utf-8")
+        first = cb_factors.read_config()
+        # 把第一次读取的结果写回, 再读第二次
+        tmp_factors.write_text(json.dumps(first), encoding="utf-8")
+        second = cb_factors.read_config()
+        assert first["templates"][0]["ratings"] == second["templates"][0]["ratings"]
 
 
 class TestReadConfigLegacy:
@@ -146,8 +191,8 @@ class TestReadConfigLegacy:
 
 
 class TestRatingCatalog:
-    def test_catalog_contains_14_standard_entries(self, client):
-        r = client.get(f"{BASE}/factors/ratings")
+    def test_catalog_contains_14_standard_entries(self, contract_client):
+        r = contract_client.get(f"{BASE}/factors/ratings")
         assert r.status_code == 200
         catalog = r.json()
         values = [e["value"] for e in catalog]
@@ -156,7 +201,7 @@ class TestRatingCatalog:
         none_entry = next(e for e in catalog if e["value"] == "NONE")
         assert none_entry["is_missing"] is True
 
-    def test_catalog_discovers_unknown_values(self, client, thread_db):
+    def test_catalog_discovers_unknown_values(self, contract_client, thread_db):
         """快照中出现未登记评级(如 BB+)时出现在目录末尾。"""
         from datetime import date
 
@@ -167,7 +212,7 @@ class TestRatingCatalog:
             rating_cd="BB+", price=100.0,
         ))
         thread_db.commit()
-        r = client.get(f"{BASE}/factors/ratings")
+        r = contract_client.get(f"{BASE}/factors/ratings")
         assert r.status_code == 200
         values = [e["value"] for e in r.json()]
         assert "BB+" in values
