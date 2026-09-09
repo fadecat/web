@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -187,20 +188,48 @@ class TestReadonlySafety:
         # alembic check: 没有新的 upgrade operation(捕获列/索引/约束漂移)
         alembic_command.check(_config(db_path))
 
-    def test_missing_unique_index_detected(self, test_artifact_dir):
-        """从 Alembic 库删除唯一索引后 compare_schema 必须报差异。
+    def test_missing_unique_constraint_detected(self, test_artifact_dir):
+        """从 Alembic 库移除 cb_daily_snapshot 的真实唯一约束后,
+        compare_schema 必须报"唯一约束"差异(不能用普通索引差异蒙混通过)。
 
-        反例直接改 migration 产物(不能用 Base.metadata.create_all 自比较)。
+        反例直接改 migration 产物: 读取原始建表 SQL, 用新表复制数据但省略
+        uq_cb_snapshot_bond_date(bond_id, trade_date), 保留其余列、主键与普通索引。
         """
         from scripts.check_db_baseline import compare_schema
 
         db_path = test_artifact_dir / "no_uq.db"
         _upgrade(db_path)
         with closing(sqlite3.connect(db_path)) as conn:
-            # 删掉 cb_daily_snapshot 的唯一约束对应的自动索引
-            conn.execute("DROP INDEX ix_cb_snapshot_bond")
+            # 自动提交: 建表/DROP/RENAME 等 DDL 以及复制数据的 INSERT 立即生效,
+            # 避免 with 退出时回滚(含 DML 的事务在 close 时会被撤销)
+            conn.isolation_level = None
+            # 读取 Alembic 生成的原始建表 SQL
+            create_sql = conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND name='cb_daily_snapshot'"
+            ).fetchone()[0]
+            # 去掉唯一约束(连同前导逗号), 其余列/主键/普通索引原样保留
+            new_sql = re.sub(
+                r",\s*CONSTRAINT uq_cb_snapshot_bond_date UNIQUE \(bond_id, trade_date\)",
+                "",
+                create_sql,
+            )
+            conn.execute(new_sql.replace("cb_daily_snapshot", "cb_daily_snapshot_tmp", 1))
+            conn.execute(
+                "INSERT INTO cb_daily_snapshot_tmp SELECT * FROM cb_daily_snapshot"
+            )
+            conn.execute("DROP TABLE cb_daily_snapshot")
+            conn.execute("ALTER TABLE cb_daily_snapshot_tmp RENAME TO cb_daily_snapshot")
+            # 重建被 DROP 顺带删除的普通索引(唯一约束移除本身不产生这些)
+            conn.execute(
+                "CREATE INDEX ix_cb_snapshot_bond ON cb_daily_snapshot (bond_id)"
+            )
+            conn.execute(
+                "CREATE INDEX ix_cb_snapshot_date ON cb_daily_snapshot (trade_date)"
+            )
         differences = compare_schema(f"sqlite:///{db_path.as_posix()}", Base.metadata)
-        assert any("索引" in item or "ix_cb_snapshot_bond" in item for item in differences)
+        # 只接受"唯一约束"差异; 普通索引/列等差异不得让断言通过
+        assert any("唯一约束" in item for item in differences), differences
 
     def test_index_column_order_detected(self, test_artifact_dir):
         """同名索引列序反转必须报差异。"""
@@ -214,3 +243,31 @@ class TestReadonlySafety:
             conn.execute("CREATE INDEX ix_cb_snapshot_bond ON cb_daily_snapshot (trade_date)")
         differences = compare_schema(f"sqlite:///{db_path.as_posix()}", Base.metadata)
         assert any("ix_cb_snapshot_bond" in item for item in differences)
+
+    def test_composite_index_column_order_detected(self, test_artifact_dir):
+        """ix_quote_idx_date 多列索引顺序反转必须报差异(同时含索引名与两边顺序)。
+
+        反例直接改 migration 产物: 把 (index_code, trade_date) 反转为
+        (trade_date, index_code) 同名索引, 证明列顺序而非列集合被比较。
+        """
+        from scripts.check_db_baseline import compare_schema
+
+        db_path = test_artifact_dir / "idxorder2.db"
+        _upgrade(db_path)
+        with closing(sqlite3.connect(db_path)) as conn:
+            # 原为 (index_code, trade_date), 反转为 (trade_date, index_code)
+            conn.execute("DROP INDEX ix_quote_idx_date")
+            conn.execute(
+                "CREATE INDEX ix_quote_idx_date ON index_daily_quote (trade_date, index_code)"
+            )
+        differences = compare_schema(f"sqlite:///{db_path.as_posix()}", Base.metadata)
+        msg = next(
+            d for d in differences
+            if "索引集合不匹配" in d and "ix_quote_idx_date" in d
+        )
+        # 差异须同时暴露索引名与两侧列顺序
+        assert "ix_quote_idx_date" in msg
+        # 模型期望顺序
+        assert "('index_code', 'trade_date')" in msg
+        # 实际被反转为
+        assert "('trade_date', 'index_code')" in msg
