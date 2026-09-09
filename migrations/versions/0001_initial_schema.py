@@ -1,8 +1,7 @@
 """initial schema
 
 Revision ID: 0001
-Revises: 
-Create Date: 2026-09-09 15:40:02.540759
+Revises:
 
 """
 from typing import Sequence, Union

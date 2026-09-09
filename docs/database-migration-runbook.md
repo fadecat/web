@@ -17,33 +17,41 @@
 
 ## 2. 固定顺序(已有库接管)
 
+> 顺序已按可执行链路校正(R5-03): **verify_restore 与 compare_schema 都忽略
+> `alembic_version` 迁移元数据表**, 因此 stamp 前后这些检查均通过;
+> upgrade head 在 stamp 之后执行。
+
 ```powershell
 # 1) 停止写入/调度(服务窗口, 避免期间写入)
 #    生产: systemctl stop webapp
 
-# 2) 一致性备份(含 WAL, 拒绝覆盖已有目标)
+# 2) 一致性备份(含 WAL, 拒绝覆盖已有目标; backup API 本身 fail closed)
 python scripts/backup_db.py --source D:/path/to/web.db --destination-dir D:/path/to/backups
 #    → 生成 D:/path/to/backups/web.db.<ts>.db
 
-# 3) 对备份副本做只读结构核对(任何差异立即停止, 禁止 stamp)
+# 3) 恢复验证(integrity/表集合/行数/主键值/内容摘要/结构, 忽略 alembic_version)
+python scripts/verify_db_restore.py --source D:/path/to/web.db --backup D:/path/to/backups/web.db.<ts>.db
+#    → "✅ 恢复副本验证通过" 才可继续
+
+# 4) 对备份副本做只读结构核对(任何差异立即停止, 禁止 stamp)
 python scripts/check_db_baseline.py --database-url sqlite:///D:/path/to/backups/web.db.<ts>.db
 #    → 输出"结构匹配"才可继续; 有差异则提交差异报告, 先对齐结构
 
-# 4) 在副本上显式 stamp 0001(不升级, 只写版本号)
+# 5) 在副本上显式 stamp 0001(不升级, 只写版本号)
 python -m alembic -x database_url=sqlite:///D:/path/to/backups/web.db.<ts>.db stamp 0001
 
-# 5) 确认版本
+# 6) 确认版本
 python -m alembic -x database_url=sqlite:///D:/path/to/backups/web.db.<ts>.db current
 #    → 0001
 
-# 6) 副本执行 upgrade head(空操作幂等, 验证迁移链完整)
+# 7) stamp 后再次 compare/verify(应仍通过: alembic_version 被忽略)
+python scripts/check_db_baseline.py --database-url sqlite:///D:/path/to/backups/web.db.<ts>.db
+python scripts/verify_db_restore.py --source D:/path/to/web.db --backup D:/path/to/backups/web.db.<ts>.db
+
+# 8) 副本执行 upgrade head(空操作幂等, 验证迁移链完整)
 python -m alembic -x database_url=sqlite:///D:/path/to/backups/web.db.<ts>.db upgrade head
 
-# 7) 恢复副本验证(integrity/表集合/行数/主键/结构)
-python scripts/verify_db_restore.py --source D:/path/to/web.db --backup D:/path/to/backups/web.db.<ts>.db
-#    → 输出"✅ 恢复副本验证通过"
-
-# 8) 隔离应用冒烟(用副本临时启动, 或部署验证)
+# 9) 隔离应用冒烟(用副本临时启动, 或部署验证)
 ```
 
 **硬性规则**:
@@ -62,8 +70,15 @@ python -m alembic -x database_url=sqlite:///D:/absolute/path/to/new.db upgrade h
 
 - 备份必须用 SQLite backup API(`scripts/backup_db.py`), **禁止只复制主 .db 文件**
   (WAL 模式下主文件不含未 checkpoint 写入)。
-- 目标文件已存在时脚本**拒绝覆盖**(fail closed)。
+- 目标文件已存在时**备份 API 与 CLI 都拒绝覆盖**(fail closed); 文件名带微秒
+  时间戳, 同秒两次备份不冲突。
+- 命令模式互斥: `--source <库>` 或 `--list <目录>` 二选一, 两者都缺/都传报错。
 - 恢复演练: 把副本当作源启动应用, 走冒烟。
+
+```powershell
+# 列出备份
+python scripts/backup_db.py --list D:/path/to/backups
+```
 
 ## 5. 失败停止与恢复
 
