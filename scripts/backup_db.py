@@ -5,20 +5,20 @@
 web.db-wal 里的未 checkpoint 数据, 得到损坏/不完整的备份。SQLite 官方
 Connection.backup() 会连同 WAL 一并快照, 是唯一可靠的在运行中备份方式。
 
-用法:
-    python scripts/backup_db.py            # 备份到 data/backups/ 并校验
+用法(第四阶段/T7: 显式路径, 默认目标目录只能由显式 source 派生):
+    python scripts/backup_db.py --source sqlite:///D:/path/to/web.db
+    python scripts/backup_db.py --source D:/path/to/web.db
     python scripts/backup_db.py --list     # 列出已有备份
 """
 from __future__ import annotations
 
+import argparse
 import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SRC_DB = PROJECT_ROOT / "data" / "web.db"
-BACKUP_DIR = PROJECT_ROOT / "data" / "backups"
+BACKUP_DIR = Path(__file__).resolve().parent.parent / "data" / "backups"
 
 
 def _table_counts(db_path: Path) -> dict[str, int]:
@@ -60,13 +60,29 @@ def backup(src: Path, dst: Path) -> None:
         src_con.close()
 
 
-def do_backup() -> int:
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dst = BACKUP_DIR / f"web.db.{ts}.db"
-    backup(SRC_DB, dst)
+def _resolve_source(raw: str) -> Path:
+    """接受 sqlite:///... URL 或纯文件路径。"""
+    if raw.startswith("sqlite:///"):
+        return Path(raw[len("sqlite:///"):])
+    return Path(raw)
 
-    src_counts = _table_counts(SRC_DB)
+
+def do_backup(source: str, destination_dir: Path | None = None) -> int:
+    src = _resolve_source(source).resolve()
+    if not src.exists():
+        print(f"源库不存在: {src}", file=sys.stderr)
+        return 2
+    target_dir = (destination_dir or src.parent).resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dst = target_dir / f"{src.stem}.{ts}.db"
+
+    if dst.exists():
+        raise FileExistsError(f"拒绝覆盖已有备份: {dst}")
+
+    backup(src, dst)
+
+    src_counts = _table_counts(src)
     dst_counts = _table_counts(dst)
     mismatch = [t for t in src_counts if src_counts[t] != dst_counts.get(t)]
     integrity = _integrity(dst)
@@ -86,7 +102,7 @@ def list_backups() -> int:
     if not BACKUP_DIR.exists():
         print("暂无备份")
         return 0
-    files = sorted(BACKUP_DIR.glob("web.db.*.db"))
+    files = sorted(BACKUP_DIR.glob("*.db"))
     if not files:
         print("暂无备份")
         return 0
@@ -95,7 +111,16 @@ def list_backups() -> int:
     return 0
 
 
+def main() -> int:
+    parser = argparse.ArgumentParser(description="SQLite 一致性备份(含 WAL)")
+    parser.add_argument("--source", required=True, help="源库(sqlite:///... URL 或文件路径)")
+    parser.add_argument("--destination-dir", help="备份目录(默认: 源库所在目录)")
+    parser.add_argument("--list", action="store_true", help="列出已有备份")
+    args = parser.parse_args()
+    if args.list:
+        return list_backups()
+    return do_backup(args.source, Path(args.destination_dir) if args.destination_dir else None)
+
+
 if __name__ == "__main__":
-    if "--list" in sys.argv:
-        sys.exit(list_backups())
-    sys.exit(do_backup())
+    sys.exit(main())
