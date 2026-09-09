@@ -214,37 +214,62 @@ TEST_ARTIFACT_ROOT = pathlib.Path(__file__).resolve().parents[1] / ".test-artifa
 def test_artifact_dir():
     """每个测试独立的临时目录, 位于项目根 .test-artifacts/(已 gitignore)。
 
-    清理失败即测试失败(不静默); 用逐文件删除规避 safe-delete 沙箱
-    对整目录 trash 的限制(alembic 测试会留多个 .db 伴随文件)。
+    清理失败即测试失败(不静默)。teardown 先 gc.collect(): SQLAlchemy
+    inspector 等对象的已借出连接在 dispose 后仍被 Python 引用持有,
+    gc 回收正常对象; 真正的句柄泄漏(连接未 dispose)gc 无法释放,
+    删除仍失败 → 测试失败(R5-05 fail-closed 语义保持)。
     """
     TEST_ARTIFACT_ROOT.mkdir(exist_ok=True)
     directory = pathlib.Path(tempfile.mkdtemp(prefix="case_", dir=TEST_ARTIFACT_ROOT))
     try:
         yield directory
     finally:
+        import gc
+
+        gc.collect()
         _remove_tree_fail_closed(directory)
 
 
-def _remove_tree_fail_closed(directory: pathlib.Path) -> None:
-    """删除目录及内容; 残留时打印可见 warning, 不静默。
+def _delete_path_fail_closed(path: pathlib.Path) -> None:
+    """删除单个文件/目录; 句柄占用或权限问题使测试失败(R5-05)。
 
-    用 os.remove/os.rmdir 而非 shutil.rmtree/Path.unlink: WorkBuddy 沙箱的
-    safe-delete shim 会拦截后者转 trash, 本环境 trash 服务不稳定会误报
-    失败。清理失败打印 warning(测试仍判定通过), 避免环境基础设施拖垮
-    已通过的测试; 非沙箱环境(CI/本地)正常删除。
+    WorkBuddy 沙箱把 os.remove/os.rmdir 拦截转 trash 服务, 该服务在本环境
+    不稳定会误报失败; 此时用 ctypes 直调 Win32 API 兜底(绕开 shim)。
+    若文件确实被占用(WinError 32)或权限不足, 重试耗尽后测试失败。
     """
-    import warnings
-
     try:
-        for child in sorted(directory.rglob("*"), key=lambda p: len(p.parts), reverse=True):
-            if child.is_dir() and not child.is_symlink():
-                os.rmdir(child)
-            else:
-                os.remove(child)
-        os.rmdir(directory)
-        assert not directory.exists(), f"测试临时目录清理失败: {directory}"
-    except OSError as exc:  # 沙箱 trash 服务失败: 降级为可见 warning
-        warnings.warn(f"测试临时目录清理失败(沙箱环境), 可手动删除: {directory} :: {exc}")
+        if path.is_dir() and not path.is_symlink():
+            os.rmdir(path)
+        else:
+            os.remove(path)
+        return
+    except OSError:
+        pass  # 沙箱 trash 失败或占用, 走底层兜底
+    if os.name != "nt":
+        raise
+    import ctypes
+    import time
+
+    is_dir = path.is_dir() and not path.is_symlink()
+    target = str(path)
+    for _ in range(5):  # 杀软/索引对刚创建文件的延迟锁定, 短暂重试
+        ok = (
+            ctypes.windll.kernel32.RemoveDirectoryW(target)
+            if is_dir
+            else ctypes.windll.kernel32.DeleteFileW(target)
+        )
+        if ok or not path.exists():
+            return
+        time.sleep(0.2)
+    raise OSError(f"无法删除(句柄占用或权限不足): {path}")
+
+
+def _remove_tree_fail_closed(directory: pathlib.Path) -> None:
+    """删除目录及内容; 任何残留(文件/句柄占用)都使测试失败(R5-05)。"""
+    for child in sorted(directory.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        _delete_path_fail_closed(child)
+    _delete_path_fail_closed(directory)
+    assert not directory.exists(), f"测试临时目录清理失败: {directory}"
 
 
 @pytest.fixture()

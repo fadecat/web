@@ -47,8 +47,18 @@ def _integrity(db_path: Path) -> str:
 
 
 def backup(src: Path, dst: Path) -> None:
-    """用 SQLite backup API 做一致性快照(含 WAL)。"""
-    src_con = sqlite3.connect(src)
+    """用 SQLite backup API 做一致性快照(含 WAL)。
+
+    安全(R5-06): 拒绝覆盖已有目标(由 API 本身保证, 不依赖 CLI);
+    源库用只读连接, 目标不存在才创建。
+    """
+    src = src.resolve(strict=True)
+    if not src.is_file():
+        raise ValueError(f"源库不是普通文件: {src}")
+    if dst.exists():
+        raise FileExistsError(f"拒绝覆盖已有备份: {dst}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    src_con = sqlite3.connect(f"file:{src.as_posix()}?mode=ro", uri=True)
     try:
         dst_con = sqlite3.connect(dst)
         try:
@@ -69,18 +79,16 @@ def _resolve_source(raw: str) -> Path:
 
 def do_backup(source: str, destination_dir: Path | None = None) -> int:
     src = _resolve_source(source).resolve()
-    if not src.exists():
-        print(f"源库不存在: {src}", file=sys.stderr)
+    if not src.is_file():
+        print(f"源库不是普通文件: {src}", file=sys.stderr)
         return 2
     target_dir = (destination_dir or src.parent).resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # 微秒时间戳: 同一秒两次备份不冲突(R5-06)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     dst = target_dir / f"{src.stem}.{ts}.db"
 
-    if dst.exists():
-        raise FileExistsError(f"拒绝覆盖已有备份: {dst}")
-
-    backup(src, dst)
+    backup(src, dst)  # backup API 本身拒绝覆盖
 
     src_counts = _table_counts(src)
     dst_counts = _table_counts(dst)
@@ -98,11 +106,12 @@ def do_backup(source: str, destination_dir: Path | None = None) -> int:
     return 0
 
 
-def list_backups() -> int:
-    if not BACKUP_DIR.exists():
-        print("暂无备份")
+def list_backups(directory: Path) -> int:
+    """列出指定目录下的备份文件(R5-06: 不再读取模块级默认目录)。"""
+    if not directory.is_dir():
+        print(f"备份目录不存在: {directory}")
         return 0
-    files = sorted(BACKUP_DIR.glob("*.db"))
+    files = sorted(directory.glob("*.db"))
     if not files:
         print("暂无备份")
         return 0
@@ -113,12 +122,15 @@ def list_backups() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="SQLite 一致性备份(含 WAL)")
-    parser.add_argument("--source", required=True, help="源库(sqlite:///... URL 或文件路径)")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--source", help="源库(sqlite:///... URL 或文件路径)")
+    mode.add_argument("--list", metavar="DIRECTORY", help="列出指定目录的备份")
     parser.add_argument("--destination-dir", help="备份目录(默认: 源库所在目录)")
-    parser.add_argument("--list", action="store_true", help="列出已有备份")
     args = parser.parse_args()
     if args.list:
-        return list_backups()
+        if args.destination_dir:
+            parser.error("--list 不能与 --destination-dir 同时使用")
+        return list_backups(Path(args.list))
     return do_backup(args.source, Path(args.destination_dir) if args.destination_dir else None)
 
 
