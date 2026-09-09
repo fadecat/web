@@ -53,9 +53,10 @@ class TestEmptyDatabaseUpgrade:
         engine = create_engine(f"sqlite:///{db_path.as_posix()}")
         try:
             inspector = inspect(engine)
+            table_names = set(inspector.get_table_names())
         finally:
             engine.dispose()
-        assert set(inspector.get_table_names()) == EXPECTED_TABLES | {"alembic_version"}
+        assert table_names == EXPECTED_TABLES | {"alembic_version"}
 
     def test_upgrade_head_is_idempotent(self, test_artifact_dir):
         db_path = test_artifact_dir / "repeat.db"
@@ -76,9 +77,9 @@ class TestEmptyDatabaseUpgrade:
         engine = create_engine(f"sqlite:///{db_path.as_posix()}")
         try:
             inspector = inspect(engine)
+            tables = set(inspector.get_table_names())
         finally:
             engine.dispose()
-        tables = set(inspector.get_table_names())
         assert EXPECTED_TABLES.isdisjoint(tables)  # 业务表全删
         assert "alembic_version" in tables  # 版本表保留(空)是 Alembic 行为
         with closing(sqlite3.connect(db_path)) as conn:

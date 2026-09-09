@@ -24,6 +24,7 @@ import pathlib  # noqa: E402
 import shutil  # noqa: E402
 import socket  # noqa: E402
 import tempfile  # noqa: E402
+import time  # noqa: E402
 from dataclasses import dataclass, field  # noqa: E402
 
 import pytest  # noqa: E402
@@ -231,37 +232,26 @@ def test_artifact_dir():
 
 
 def _delete_path_fail_closed(path: pathlib.Path) -> None:
-    """删除单个文件/目录; 句柄占用或权限问题使测试失败(R5-05)。
+    """删除单个文件/目录; 失败保存最后一个 OSError 并重新抛出(R5-05 fail-closed)。
 
-    WorkBuddy 沙箱把 os.remove/os.rmdir 拦截转 trash 服务, 该服务在本环境
-    不稳定会误报失败; 此时用 ctypes 直调 Win32 API 兜底(绕开 shim)。
-    若文件确实被占用(WinError 32)或权限不足, 重试耗尽后测试失败。
+    使用标准库 os.remove/os.rmdir, 最多重试 3 次(每次间隔 ≤100ms)。
+    成功立即返回; 持续失败则保存最后一个 OSError, 并以
+    `raise OSError(...) from last_error` 暴露真实原因, 不再丢失原始异常,
+    也不再依赖 ctypes / 宿主沙箱删除策略(测试代码不绕过宿主删除语义)。
     """
-    try:
-        if path.is_dir() and not path.is_symlink():
-            os.rmdir(path)
-        else:
-            os.remove(path)
-        return
-    except OSError:
-        pass  # 沙箱 trash 失败或占用, 走底层兜底
-    if os.name != "nt":
-        raise
-    import ctypes
-    import time
-
-    is_dir = path.is_dir() and not path.is_symlink()
-    target = str(path)
-    for _ in range(5):  # 杀软/索引对刚创建文件的延迟锁定, 短暂重试
-        ok = (
-            ctypes.windll.kernel32.RemoveDirectoryW(target)
-            if is_dir
-            else ctypes.windll.kernel32.DeleteFileW(target)
-        )
-        if ok or not path.exists():
+    if path.is_dir() and not path.is_symlink():
+        remove = os.rmdir
+    else:
+        remove = os.remove
+    last_error: OSError | None = None
+    for _ in range(3):
+        try:
+            remove(path)
             return
-        time.sleep(0.2)
-    raise OSError(f"无法删除(句柄占用或权限不足): {path}")
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.05)
+    raise OSError(f"无法删除(句柄占用或权限不足): {path}") from last_error
 
 
 def _remove_tree_fail_closed(directory: pathlib.Path) -> None:

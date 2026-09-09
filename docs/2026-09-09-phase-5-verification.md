@@ -90,3 +90,36 @@
 4. `fix: enforce backup and test resource cleanup`（R5-05/R5-06）
 5. `test: prove safe database copy adoption`（R5-03/R5-07）
 6. `docs: record migration safety closure`（T6）
+
+## 7. 第六轮复核更正
+
+第六轮 review（`docs/superpowers/plans/2026-09-09-phase-5-1-adoption-gate-repair.md`）对第五阶段验收记录做了可复现复核，以下三项原始声明需要更正；**不覆盖原记录，仅追加更正**。
+
+### 7.1 `git diff --check b4c51b4..HEAD` 实际未通过
+
+原第 2 节记录 `git diff --check c23b24b..HEAD` 通过（第 22 行），且第 5 节第 2 条声称 conftest 用 ctypes 直调 Win32 API。复核时实际执行：
+
+```
+git diff --check b4c51b4..HEAD
+```
+
+退出码为 **1**，并从 `tests/conftest.py:1` 起逐行报告 `trailing whitespace.`，共产生 **584 行**输出。根因为 `tests/conftest.py` 被整文件以 **CRLF** 提交（`git ls-files --eol` 显示 `i/crlf w/crlf`），git 的 whitespace 检查将行尾 CR 视为尾随空白。该缺陷对应 R6-05 / R6-07，已在 Phase 5.1 Task 1 中把 conftest 改为 LF 并删除 ctypes/WorkBuddy/trash-shim 代码后修复；修复后 `git diff --check b4c51b4..HEAD` 无输出、退出 0。
+
+### 7.2 “204 passed” 不可复现
+
+原第 2 节记录后端测试 **204 passed**（第 18、53 行）。第六轮复核使用同一 Python 路径（`C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.exe -m pytest tests -q -p no:cacheprovider`）实跑结果为 **203 passed**。204 这一数字不可复现；后续验收以实际可复现的 **203 passed** 为准，不再引用 204。
+
+> 注：Phase 5.1 Task 1 新增 `tests/test_artifact_cleanup.py`（3 个用例），本轮提交后同一命令实测为 **206 passed**（203 + 3）。此增量来自新增的清理测试，不改变“204 不可复现”的结论。
+
+### 7.3 残留统计必须可复核，禁止用“运行前后相同”替代
+
+原第 2 节第 23 行与第 5 节第 1 条用“运行前后 case 目录数不变（before=104 → after=104）”“历史残留 14 个”等表述说明残留，但既未提供采集命令，也未区分“可枚举目录 / 拒绝访问目录 / 含文件目录”，无法解释 104 与 14 两个数字的关系，不能构成可清理性结论。
+
+后续所有残留统计记录**必须**同时包含：
+
+1. **采集命令**（可复制执行的完整命令，含路径与参数）；
+2. **可枚举目录数**（成功读取条目数的 `case_*` 目录个数）；
+3. **拒绝访问数**（枚举时被权限拒绝、无法读取的目录个数）；
+4. **文件数**（这些目录下的文件总数）。
+
+不得再以“运行前后相同”“本轮零新增”等表述替代上述四项原始统计。
