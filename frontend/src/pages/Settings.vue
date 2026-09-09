@@ -14,6 +14,8 @@ const loadError = ref(''); // 加载失败提示(失败时禁用编辑并允许�
 
 // 表单草稿: 敏感项留空=不修改
 const draft = reactive({});
+// 最近一次成功读取的草稿快照(取消编辑恢复到这里)
+const savedSnapshot = ref(null);
 
 // SMTP 已配置(授权码已存在)时表单锁定, 点「重新配置」才解锁修改
 const smtpLocked = ref(true);
@@ -30,10 +32,14 @@ async function load() {
     for (const [key, item] of Object.entries(items.value)) {
       draft[key] = item.value || '';
     }
+    // 成功读取后保存不可变快照, 取消编辑恢复到这里(而非内存中的旧值)
+    savedSnapshot.value = { ...draft };
     // 已配置过(授权码存在)默认锁定; 保存成功后重新上锁
     smtpLocked.value = smtpConfigured();
+    return { ok: true };
   } catch (e) {
     loadError.value = e?.response?.data?.detail || e?.message || '配置加载失败';
+    return { ok: false, error: loadError.value };
   } finally {
     loading.value = false;
   }
@@ -51,8 +57,13 @@ async function onSave() {
   saving.value = true;
   try {
     await saveSettings({ ...draft });
-    await load(); // 重新拉取, 敏感项显示回脱敏状态, 且恢复锁定
-    notify('配置已保存');
+    // 保存成功 ≠ 重读成功: 两者分开提示, 避免"已保存"被重读失败掩盖
+    const reload = await load();
+    if (reload.ok) {
+      notify('配置已保存');
+    } else {
+      notify('配置已保存, 但页面重新读取失败, 请点「重新加载」查看最新配置', 'bad');
+    }
   } catch (e) {
     notify(e?.response?.data?.detail || '保存失败', 'bad');
   } finally {
@@ -64,10 +75,11 @@ function reconfigure() {
   smtpLocked.value = false;
 }
 
-// 取消编辑: 丢弃草稿改动, 恢复到服务端当前值并重新锁定
+// 取消编辑: 丢弃草稿改动, 恢复到最近一次成功读取的快照并重新锁定
 function onCancel() {
-  for (const [key, item] of Object.entries(items.value)) {
-    draft[key] = item.value || '';
+  if (!savedSnapshot.value) return; // 未成功读取过配置, 不提供取消恢复
+  for (const [key, value] of Object.entries(savedSnapshot.value)) {
+    draft[key] = value;
   }
   smtpLocked.value = smtpConfigured();
   notify('已放弃修改');
