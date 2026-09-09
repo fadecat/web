@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { screenBondsIntraday, getBlacklist, addBlacklist, removeBlacklist } from '../api';
+import { validateFilters } from '../utils/filterValidation.js';
 
 const loading = ref(false);
 const result = ref(null); // 盘中筛选结果 { total_all, total_filtered, rows, intraday }
@@ -9,8 +10,8 @@ const result = ref(null); // 盘中筛选结果 { total_all, total_filtered, row
 // ── 筛选条件(仿集思录手机端) ─────────────────────────
 // 页面唯一筛选机制: 实时拉集思录 → 纯条件过滤, 不打分不排序
 // 顺序=集思录自然顺序(默认双低升序); 结果页内直出, 不用弹窗
-// 注: 抓取层已有评级白名单(AAA~A-, 剔除无评级/BB 及以下),
-//     这里把白名单内 7 档的选择权完整交给用户, 默认全选
+// 注: 抓取层不再限制评级(集思录全部评级+无评级均返回),
+//     这里把完整评级谱系的选择权交给用户, 默认全选
 const FILTERS_STORAGE_KEY = 'cb-intraday-filters';
 
 // 旧版 localStorage 存的是数字+可能混入 el-input-number 的 0 值, 版本号升位直接作废重建
@@ -28,7 +29,9 @@ function loadSavedFilters() {
   }
 }
 
-const RATING_OPTIONS = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-'];
+// 抓取层已取消评级白名单: 集思录全部评级(含 BBB/BB 等)与无评级都会返回,
+// 选项完整交给用户; NONE = 无评级
+const RATING_OPTIONS = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-', 'BBB', 'BB', 'B', 'CCC', 'CC', 'C', 'NONE'];
 
 // 默认预置(对齐集思录截图): 价格≤120 / 溢价率≤30 / 评级全选
 // 数值条件用字符串存(普通输入框所见即所得, 无 .00 强制格式化), 查询时才转数字
@@ -65,27 +68,55 @@ const resetFilters = () => {
   filters.value = defaultFilters();
 };
 
-// 查询前把字符串条件转数字: 空串/非法输入 → 剔除该条件
+// 查询前校验并转换条件:
+//   - 非法输入(如 "120abc")直接报错, 不再静默截断成数字
+//   - 空串 = 不限; 0 是合法值
+//   - 评级转逗号分隔字符串, 匹配后端 ?ratings=AA,AA+ 口径
+//     (axios 默认把数组序列化成 ratings[]=AAA, 后端按逗号拆分解析不到)
+const NUM_FIELDS = {
+  price_min: { label: '转债价格最低', min: 0 },
+  price_max: { label: '转债价格最高', min: 0 },
+  premium_rt_max: { label: '转股溢价率' },        // 允许负值
+  curr_iss_amt_max: { label: '剩余规模', min: 0 },
+  ytm_min: { label: '到期收益率' },               // 允许负值
+  year_left_min: { label: '剩余年限最低', min: 0 },
+  year_left_max: { label: '剩余年限最高', min: 0 },
+};
+
 const normalizeFilters = (f) => {
-  const numKeys = [
-    'price_min', 'price_max', 'premium_rt_max', 'curr_iss_amt_max',
-    'ytm_min', 'year_left_min', 'year_left_max',
-  ];
-  const out = { ratings: [...(f.ratings || [])] };
-  for (const k of numKeys) {
-    const v = parseFloat(String(f[k]).trim());
-    if (!Number.isNaN(v)) out[k] = v;
+  const { ok, values, errors } = validateFilters(f, NUM_FIELDS, [
+    ['price_min', 'price_max', '转债价格'],
+    ['year_left_min', 'year_left_max', '剩余年限'],
+  ]);
+  if (!ok) {
+    const err = new Error(errors.join('；'));
+    err.validation = true;
+    throw err;
   }
-  return out;
+  return {
+    ...values,
+    ratings: (values.ratings || []).join(','),
+  };
 };
 
 const fmtNum = (v, d = 2) => (v == null ? '—' : Number(v).toFixed(d));
 const fmtPct = (v) => (v == null ? '—' : `${Number(v).toFixed(2)}%`);
 
 const runScreen = async () => {
+  // 注意: 局部变量不能叫 filters, 会遮蔽外层 ref 导致 filters.value 报错
+  let normalizedFilters;
+  try {
+    normalizedFilters = normalizeFilters(filters.value);
+  } catch (e) {
+    if (e?.validation) {
+      ElMessage.warning(e.message);
+      return;
+    }
+    throw e;
+  }
   loading.value = true;
   try {
-    result.value = await screenBondsIntraday(normalizeFilters(filters.value));
+    result.value = await screenBondsIntraday(normalizedFilters);
   } catch (e) {
     ElMessage.error(e?.response?.data?.detail || '实时数据拉取失败,请重试');
   } finally {
@@ -201,7 +232,7 @@ async function onUnblacklist(bondId) {
               size="small"
               style="width: 100%"
             >
-              <el-option v-for="r in RATING_OPTIONS" :key="r" :label="r" :value="r" />
+              <el-option v-for="r in RATING_OPTIONS" :key="r" :label="r === 'NONE' ? '无评级' : r" :value="r" />
             </el-select>
           </div>
         </div>

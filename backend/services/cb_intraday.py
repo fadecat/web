@@ -75,7 +75,12 @@ def _passes_filters(row: dict[str, Any], filters: dict[str, Any]) -> bool:
 
     ratings = filters.get("ratings") or []
     if ratings:
-        if str(row.get("rating") or "").strip() not in ratings:
+        # NONE = 无评级占位符(抓取层取消白名单后, 未评级债 rating 为空串)
+        allowed = set()
+        for r in ratings:
+            r = str(r).strip().upper()
+            allowed.add("" if r == "NONE" else r)
+        if str(row.get("rating") or "").strip().upper() not in allowed:
             return False
 
     return True
