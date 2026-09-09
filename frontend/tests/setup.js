@@ -12,20 +12,24 @@ if (!window.matchMedia) {
   });
 }
 
-// 统一拦截 axios 适配器, 防止任何测试意外发出真实 HTTP 请求
+// 统一拦截 axios 适配器, 防止任何测试意外发出真实 HTTP 请求。
+// 实现方式: 返回真实 axios 实例, 但把默认 adapter 换成"直接拒绝"。
+// 好处: 默认禁止真实网络, 而需要验证请求序列化的测试(api.test.js)
+// 可以覆盖 instance.defaults.adapter 观察实际发出的 config。
 vi.mock('axios', async () => {
   const actual = await vi.importActual('axios');
-  const mock = vi.fn(() => Promise.reject(new Error('测试中禁止真实 HTTP 请求')));
-  mock.create = vi.fn(() => {
-    const instance = vi.fn(() => Promise.reject(new Error('测试中禁止真实 HTTP 请求')));
-    instance.get = vi.fn(() => Promise.reject(new Error('测试中禁止真实 HTTP 请求')));
-    instance.post = vi.fn(() => Promise.reject(new Error('测试中禁止真实 HTTP 请求')));
-    instance.put = vi.fn(() => Promise.reject(new Error('测试中禁止真实 HTTP 请求')));
-    instance.patch = vi.fn(() => Promise.reject(new Error('测试中禁止真实 HTTP 请求')));
-    instance.delete = vi.fn(() => Promise.reject(new Error('测试中禁止真实 HTTP 请求')));
-    instance.interceptors = { request: { use: () => {} }, response: { use: () => {} } };
-    instance.defaults = actual.default.defaults;
+
+  function forbidRealHttp() {
+    throw new Error('测试中禁止真实 HTTP 请求');
+  }
+
+  function makeInstance() {
+    const instance = actual.create();
+    instance.defaults.adapter = async () => forbidRealHttp();
     return instance;
-  });
-  return { ...actual, default: mock };
+  }
+
+  const defaultMock = makeInstance();
+  defaultMock.create = vi.fn(() => makeInstance());
+  return { ...actual, default: defaultMock };
 });

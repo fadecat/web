@@ -34,6 +34,22 @@ const FALLBACK_RATINGS = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-', 'BBB', 'BB
 const ratingOptions = ref(FALLBACK_RATINGS.map((v) => ({
   value: v, label: v === 'NONE' ? '无评级' : v,
 })));
+// 评级目录加载失败提示(R4-06): 明确告知用户仍在用内置项, 可手动重试
+const ratingCatalogError = ref('');
+
+async function loadRatingCatalog() {
+  ratingCatalogError.value = '';
+  try {
+    const catalog = await getRatingCatalog();
+    if (Array.isArray(catalog) && catalog.length) {
+      ratingOptions.value = catalog.map((e) => ({
+        value: e.value, label: e.label || (e.value === 'NONE' ? '无评级' : e.value),
+      }));
+    }
+  } catch {
+    ratingCatalogError.value = '评级目录加载失败，当前使用内置列表，可重试';
+  }
+}
 
 // 默认预置(对齐集思录截图): 价格≤120 / 溢价率≤30 / 评级不限
 // 数值条件用字符串存(普通输入框所见即所得, 无 .00 强制格式化), 查询时才转数字
@@ -61,13 +77,7 @@ onMounted(() => {
   // 拉一次黑名单数量(按钮上展示计数)
   getBlacklist().then((rows) => { blacklistRows.value = rows; }).catch(() => {});
   // 评级目录: 成功后替换回退项; 已勾选值保留(未知旧值仍会提交)
-  getRatingCatalog().then((catalog) => {
-    if (Array.isArray(catalog) && catalog.length) {
-      ratingOptions.value = catalog.map((e) => ({
-        value: e.value, label: e.label || (e.value === 'NONE' ? '无评级' : e.value),
-      }));
-    }
-  }).catch(() => {});
+  loadRatingCatalog();
 });
 
 watch(filters, (f) => {
@@ -246,6 +256,10 @@ async function onUnblacklist(bondId) {
             >
               <el-option v-for="r in ratingOptions" :key="r.value" :label="r.label" :value="r.value" />
             </el-select>
+            <div v-if="ratingCatalogError" class="catalog-error">
+              {{ ratingCatalogError }}
+              <el-button text size="small" @click="loadRatingCatalog">重试评级目录</el-button>
+            </div>
           </div>
         </div>
         <div class="jfilter-row">
@@ -465,6 +479,15 @@ async function onUnblacklist(bondId) {
   gap: 12px;
   padding: 9px 0;
   border-bottom: 1px solid #f2f3f5;
+}
+
+.catalog-error {
+  font-size: 12px;
+  color: #a32d2d;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
 }
 
 .jfilter-row:last-of-type {

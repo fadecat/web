@@ -29,9 +29,12 @@ import Bonds from '../../src/pages/Bonds.vue';
 
 const STORAGE_KEY = 'cb-intraday-filters';
 
-// Element Plus 组件未全局注册时渲染为未解析的自定义元素, 不可交互。
+// Element Plus 组件未注册时渲染为未解析的自定义元素, 不可交互。
 // 提供功能桩: el-input 转发 v-model, el-button 转发 click 并保留透传 class,
-// el-table 列桩渲染 default 插槽并注入 row(否则页内 #default="{ row }" 解构报错)。
+// el-select 用 render 函数实现(multiple 数组值, 供评级勾选; 模板内联
+// 表达式版会把 multiple 分支求值错导致 emit 单值字符串), el-table 列桩注入 row。
+import { h } from 'vue';
+
 const EP_STUBS = {
   'el-input': {
     props: ['modelValue', 'placeholder'],
@@ -42,6 +45,33 @@ const EP_STUBS = {
   'el-button': {
     emits: ['click'],
     template: '<button type="button" @click="$emit(\'click\', $event)"><slot /></button>',
+  },
+  'el-select': {
+    props: ['modelValue', 'multiple', 'clearable'],
+    emits: ['update:modelValue'],
+    render() {
+      return h(
+        'select',
+        {
+          class: 'el-select',
+          multiple: this.multiple,
+          onChange: (e) => {
+            // 用 DOM 元素属性判断 multiple(vue-test-utils 的 render stub
+            // 对布尔 prop 传递不稳, this.multiple 可能为 undefined)
+            const t = e.target;
+            this.$emit(
+              'update:modelValue',
+              t.multiple ? Array.from(t.selectedOptions).map((o) => o.value) : t.value,
+            );
+          },
+        },
+        this.$slots.default ? this.$slots.default() : [],
+      );
+    },
+  },
+  'el-option': {
+    props: ['value', 'label'],
+    template: '<option :value="value"><slot>{{ label }}</slot></option>',
   },
   'el-table': { template: '<div class="tstub"><slot /></div>' },
   'el-table-column': { template: '<div class="cstub"><slot name="default" :row="{}" /></div>' },
@@ -109,10 +139,40 @@ describe('Bonds 页评级默认与查询合同', () => {
     getRatingCatalog.mockRejectedValue(new Error('目录接口挂了'));
     const wrapper = mountBonds();
     await flushPromises();
+    // 显示错误提示 + 重试按钮(R4-06), 不限语义保持
+    expect(wrapper.text()).toContain('评级目录加载失败');
+    expect(wrapper.text()).toContain('重试评级目录');
     await wrapper.find('.btn-query').trigger('click');
     await flushPromises();
     expect(screenBondsIntraday).toHaveBeenCalledTimes(1);
     expect(screenBondsIntraday.mock.calls[0][0].ratings).toBe('');
+  });
+
+  it('目录失败后点重试: 重新拉目录且可勾选 BB+ 保存(R4-06)', async () => {
+    // 首次失败, 重试成功并返回含 BB+ 的目录
+    getRatingCatalog
+      .mockRejectedValueOnce(new Error('目录接口挂了'))
+      .mockResolvedValueOnce([
+        { value: 'AAA', label: 'AAA' }, { value: 'BB+', label: 'BB+' }, { value: 'NONE', label: '无评级' },
+      ]);
+    const wrapper = mountBonds();
+    await flushPromises();
+    expect(wrapper.text()).toContain('评级目录加载失败');
+    // 点重试
+    const retryBtn = wrapper.findAll('button').find((b) => b.text().includes('重试评级目录'));
+    await retryBtn.trigger('click');
+    await flushPromises();
+    expect(getRatingCatalog).toHaveBeenCalledTimes(2);
+    expect(wrapper.text()).not.toContain('评级目录加载失败');
+    // 在 el-select 中选择 BB+(multiple 桩: 选中 option 后触发 change)
+    const select = wrapper.find('select.el-select');
+    const bbOption = select.element.children[1]; // 0=AAA, 1=BB+
+    bbOption.selected = true;
+    await select.trigger('change');
+    await flushPromises();
+    await wrapper.find('.btn-query').trigger('click');
+    await flushPromises();
+    expect(screenBondsIntraday.mock.calls[0][0].ratings).toBe('BB+');
   });
 
   it('目录返回未知评级 BB+: 仅作为可选项, 默认仍不限', async () => {

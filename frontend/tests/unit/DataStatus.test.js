@@ -1,9 +1,11 @@
-// DataStatus 页组件测试(R3-04/T4): 同步生命周期封闭
+// DataStatus 页组件测试(R3-04/T4, R4-06): 同步生命周期 + 添加指数流程
 // 核心反例: 用户点「同步」→ POST 在途时卸载页面 → POST 完成后
 // 不得启动自动刷新(无新 GET、无活动定时器)。
-// 另覆盖: 正常路径一次 POST + 控制器立即 GET。
+// 另覆盖: 正常路径一次 POST + 控制器立即 GET; 添加指数入口 addIndex 恰一次;
+// 5 分钟截止后不再 GET; 卸载后零定时器残留。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
+import { h } from 'vue';
 
 vi.mock('../../src/api/index.js', () => ({
   default: {},
@@ -19,7 +21,9 @@ vi.mock('../../src/api/dataManagement.js', () => ({
 }));
 
 import { runJobManually } from '../../src/api/index.js';
-import { getDataManagement, syncIndex } from '../../src/api/dataManagement.js';
+import {
+  getDataManagement, syncIndex, probeIndex, addIndex,
+} from '../../src/api/dataManagement.js';
 import DataStatus from '../../src/pages/DataStatus.vue';
 
 const DM_PAYLOAD = {
@@ -34,21 +38,36 @@ const DM_PAYLOAD = {
   jobs: [],
 };
 
+const EP_STUBS = {
+  'el-table': { template: '<div class="tstub"><slot /></div>' },
+  'el-table-column': { template: '<div class="cstub"><slot name="default" :row="{}" /></div>' },
+  'el-dialog': { template: '<div class="dlg-stub"><slot /><slot name="footer" /></div>' },
+  'el-tabs': { template: '<div class="tabs-stub"><slot /></div>' },
+  'el-tab-pane': { template: '<div class="pane-stub"><slot /></div>' },
+  'el-button': {
+    emits: ['click'],
+    template: '<button type="button" @click="$emit(\'click\', $event)"><slot /></button>',
+  },
+  'el-input': {
+    props: ['modelValue', 'placeholder'],
+    emits: ['update:modelValue'],
+    template:
+      '<input :value="modelValue" :placeholder="placeholder" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+  },
+  'el-select': {
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    template:
+      '<select class="el-select" @change="$emit(\'update:modelValue\', $event.target.value)"><slot /></select>',
+  },
+  'el-option': {
+    props: ['value', 'label'],
+    template: '<option :value="value"><slot>{{ label }}</slot></option>',
+  },
+};
+
 function mountPage() {
-  return mount(DataStatus, {
-    global: {
-      stubs: {
-        // element-plus 未注册, 渲染为自定义元素; 只桩掉重的
-        'el-table': { template: '<div class="tstub"><slot /></div>' },
-        'el-table-column': { template: '<div class="cstub"><slot name="default" :row="{}" /></div>' },
-        'el-dialog': true,
-        'el-button': {
-          emits: ['click'],
-          template: '<button type="button" @click="$emit(\'click\', $event)"><slot /></button>',
-        },
-      },
-    },
-  });
+  return mount(DataStatus, { global: { stubs: EP_STUBS } });
 }
 
 beforeEach(() => {
@@ -56,7 +75,6 @@ beforeEach(() => {
   getDataManagement.mockResolvedValue(JSON.parse(JSON.stringify(DM_PAYLOAD)));
 });
 
-// 每个 case 结束后确认无残留定时器(vi.useFakeTimers 下可检查)
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -67,13 +85,11 @@ describe('DataStatus 同步生命周期', () => {
     const wrapper = mountPage();
     await flushPromises();
     const initialGets = getDataManagement.mock.calls.length;
-    // 点第一张卡片的「同步」按钮
     const syncBtn = wrapper.findAll('button').find((b) => b.text().includes('同步'));
     await syncBtn.trigger('click');
     await flushPromises();
     expect(syncIndex).toHaveBeenCalledTimes(1);
     expect(syncIndex).toHaveBeenCalledWith('930955');
-    // 控制器立即执行了第一次 loadList
     expect(getDataManagement.mock.calls.length).toBeGreaterThan(initialGets);
   });
 
@@ -83,17 +99,14 @@ describe('DataStatus 同步生命周期', () => {
     const wrapper = mountPage();
     await flushPromises();
     const initialGets = getDataManagement.mock.calls.length;
-
     const syncBtn = wrapper.findAll('button').find((b) => b.text().includes('同步'));
     await syncBtn.trigger('click');
-    await flushPromises(); // POST 已发出但未返回
-    expect(getDataManagement.mock.calls.length).toBe(initialGets); // 未提前刷新
-
-    wrapper.unmount(); // 用户此刻离开页面
-    resolvePost({ status: 'started' }); // POST 稍后成功
+    await flushPromises();
+    expect(getDataManagement.mock.calls.length).toBe(initialGets);
+    wrapper.unmount();
+    resolvePost({ status: 'started' });
     await flushPromises();
     await flushPromises();
-    // 关键断言: 卸载后不得有任何新 GET
     expect(getDataManagement.mock.calls.length).toBe(initialGets);
   });
 
@@ -108,7 +121,6 @@ describe('DataStatus 同步生命周期', () => {
     wrapper.unmount();
     rejectPost(new Error('网络错误'));
     await flushPromises();
-    // 卸载后组件已不在 DOM, 只要不抛未捕获异常即为通过
     expect(true).toBe(true);
   });
 
@@ -117,5 +129,76 @@ describe('DataStatus 同步生命周期', () => {
     const wrapper = mountPage();
     await flushPromises();
     expect(wrapper.exists()).toBe(true);
+  });
+});
+
+describe('DataStatus 添加指数入口(R4-06)', () => {
+  it('添加指数: 探测一次, 保存恰好一次, 成功后立即 GET', async () => {
+    probeIndex.mockResolvedValue({
+      code: '399296', name: '创成长', probe_token: 'tok-1',
+      capabilities: [{ key: 'quote', status: 'available', label: '收盘价' }],
+    });
+    addIndex.mockResolvedValue({ status: 'saved', sync_status: 'started', code: '399296', message: '已保存' });
+    const wrapper = mountPage();
+    await flushPromises();
+    const initialGets = getDataManagement.mock.calls.length;
+
+    // 打开添加弹窗
+    const addBtn = wrapper.findAll('button').find((b) => b.text().includes('添加指数'));
+    await addBtn.trigger('click');
+    await flushPromises();
+    // 填代码并检查
+    const codeInput = wrapper.findAll('input').find((i) => i.attributes('placeholder') === '6 位指数代码');
+    await codeInput.setValue('399296');
+    await flushPromises();
+    const checkBtn = wrapper.findAll('button').find((b) => b.text() === '检查');
+    await checkBtn.trigger('click');
+    await flushPromises();
+    expect(probeIndex).toHaveBeenCalledTimes(1);
+    expect(probeIndex).toHaveBeenCalledWith('399296', 'efunds');
+    // 保存(能力默认全选 available)
+    const saveBtn = wrapper.findAll('button').find((b) => b.text() === '保存');
+    // vue-test-utils 的 trigger 对 stub 根元素 click 有兼容怪癖, 用原生事件
+    saveBtn.element.dispatchEvent(new Event('click', { bubbles: true }));
+    await flushPromises();
+    expect(addIndex).toHaveBeenCalledTimes(1);
+    expect(addIndex).toHaveBeenCalledWith(expect.objectContaining({ code: '399296', source: 'efunds' }));
+    // 成功路径启动控制器: 立即 GET
+    expect(getDataManagement.mock.calls.length).toBeGreaterThan(initialGets);
+  });
+});
+
+describe('DataStatus 假时钟与 timer 清理(R4-06)', () => {
+  it('添加指数成功后: 5 分钟截止不再 GET, 卸载后零定时器', async () => {
+    vi.useFakeTimers();
+    probeIndex.mockResolvedValue({
+      code: '399296', name: '创成长', probe_token: 'tok-1',
+      capabilities: [{ key: 'quote', status: 'available', label: '收盘价' }],
+    });
+    addIndex.mockResolvedValue({ status: 'saved', sync_status: 'started', code: '399296', message: '已保存' });
+    const wrapper = mountPage();
+    await flushPromises();
+    const initialGets = getDataManagement.mock.calls.length;
+
+    await wrapper.findAll('button').find((b) => b.text().includes('添加指数')).trigger('click');
+    await flushPromises();
+    await wrapper.findAll('input').find((i) => i.attributes('placeholder') === '6 位指数代码').setValue('399296');
+    await flushPromises();
+    await wrapper.findAll('button').find((b) => b.text() === '检查').trigger('click');
+    await flushPromises();
+    const saveBtn = wrapper.findAll('button').find((b) => b.text() === '保存');
+    saveBtn.element.dispatchEvent(new Event('click', { bubbles: true }));
+    await flushPromises();
+    expect(addIndex).toHaveBeenCalledTimes(1);
+    // 控制器已启动: 有定时器
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    // 推进到 5 分钟以后: deadline 触发, 不再续排
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+    const afterDeadline = getDataManagement.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30 * 1000);
+    expect(getDataManagement.mock.calls.length).toBe(afterDeadline);
+    // 卸载: dispose 清掉剩余定时器
+    wrapper.unmount();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
