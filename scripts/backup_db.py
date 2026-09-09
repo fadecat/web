@@ -8,11 +8,12 @@ Connection.backup() 会连同 WAL 一并快照, 是唯一可靠的在运行中�
 用法(第四阶段/T7: 显式路径, 默认目标目录只能由显式 source 派生):
     python scripts/backup_db.py --source sqlite:///D:/path/to/web.db
     python scripts/backup_db.py --source D:/path/to/web.db
-    python scripts/backup_db.py --list     # 列出已有备份
+    python scripts/backup_db.py --list D:/path/to/backups   # 列出已有备份
 """
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import sys
 from datetime import datetime
@@ -49,15 +50,22 @@ def _integrity(db_path: Path) -> str:
 def backup(src: Path, dst: Path) -> None:
     """用 SQLite backup API 做一致性快照(含 WAL)。
 
-    安全(R5-06): 拒绝覆盖已有目标(由 API 本身保证, 不依赖 CLI);
-    源库用只读连接, 目标不存在才创建。
+    安全(Task 4 / R6-09): 先用 os.open(O_CREAT | O_EXCL | O_RDWR) 原子占位显式
+    dst(立即关闭 fd), 再交给 sqlite3.connect。占位保证目标不存在, 任何 backup 异常
+    都关闭连接并删除占位文件, 不留下半成品。删除失败则把原异常与清理异常一并暴露
+    (ExceptionGroup)。源库用只读连接。
     """
     src = src.resolve(strict=True)
     if not src.is_file():
         raise ValueError(f"源库不是普通文件: {src}")
-    if dst.exists():
-        raise FileExistsError(f"拒绝覆盖已有备份: {dst}")
+    dst = dst.resolve()
     dst.parent.mkdir(parents=True, exist_ok=True)
+    # 原子占位: dst 已存在时 O_EXCL 直接抛 FileExistsError(拒绝覆盖)
+    try:
+        fd = os.open(dst, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+    except FileExistsError:
+        raise FileExistsError(f"拒绝覆盖已有备份: {dst}")
+    os.close(fd)  # 占位已建立, 立即交还 fd 给 SQLite
     src_con = sqlite3.connect(f"file:{src.as_posix()}?mode=ro", uri=True)
     try:
         dst_con = sqlite3.connect(dst)
@@ -66,6 +74,20 @@ def backup(src: Path, dst: Path) -> None:
                 src_con.backup(dst_con)
         finally:
             dst_con.close()
+    except Exception as backup_err:
+        # backup 失败: 删除占位文件, 不让半成品进入 --list
+        cleanup_err = None
+        try:
+            dst.unlink(missing_ok=True)
+        except OSError as exc:
+            cleanup_err = exc
+        if cleanup_err is not None:
+            raise RuntimeError(
+                f"备份失败且无法清理占位文件: {dst}"
+            ) from ExceptionGroup(
+                "backup_failed_and_cleanup_failed", [backup_err, cleanup_err]
+            )
+        raise
     finally:
         src_con.close()
 
@@ -88,30 +110,58 @@ def do_backup(source: str, destination_dir: Path | None = None) -> int:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     dst = target_dir / f"{src.stem}.{ts}.db"
 
-    backup(src, dst)  # backup API 本身拒绝覆盖
+    try:
+        backup(src, dst)  # 原子占位 + SQLite backup
+    except FileExistsError:
+        # 占位竞争(极少: 同微秒时间戳或并发), 保守返回非 0
+        print(f"备份目标已存在(时间戳冲突或并发写同一目标): {dst}", file=sys.stderr)
+        return 2
 
     src_counts = _table_counts(src)
     dst_counts = _table_counts(dst)
     mismatch = [t for t in src_counts if src_counts[t] != dst_counts.get(t)]
     integrity = _integrity(dst)
 
-    print(f"备份完成: {dst} ({dst.stat().st_size:,} 字节)")
+    if mismatch or integrity != "ok":
+        # 校验失败: 隔离为 .failed 后缀, 不进 --list(*.db), 保留供排查
+        failed = dst.with_suffix(".failed")
+        try:
+            dst.rename(failed)
+        except OSError:
+            pass
+        print(
+            f"❌ 备份校验失败, 文件已隔离为 {failed.name}, 请勿依赖此备份",
+            file=sys.stderr,
+        )
+        return 1
+
+    # 仅在 integrity、表集合、每表行数全部一致后才发布为可列出备份
+    print(f"备份完成: {dst.resolve()} ({dst.stat().st_size:,} 字节)")
     print(f"源库表数: {len(src_counts)} | 备份表数: {len(dst_counts)}")
     print(f"行数校验: {'一致' if not mismatch else '不一致! ' + ', '.join(mismatch)}")
     print(f"integrity_check: {integrity}")
-    if mismatch or integrity != "ok":
-        print("❌ 备份校验失败, 请勿依赖此备份", file=sys.stderr)
-        return 1
     print("✅ 备份可恢复校验通过")
     return 0
 
 
 def list_backups(directory: Path) -> int:
-    """列出指定目录下的备份文件(R5-06: 不再读取模块级默认目录)。"""
+    """列出指定目录下的备份文件(Task 4 / R6-08: 失败即停语义)。
+
+    不存在 / 非目录 / 不可读 → 返回 2 并输出 stderr; 仅存在且可读的空目录
+    才返回 0 并打印"暂无备份"。
+    """
+    directory = Path(directory)
+    if not directory.exists():
+        print(f"备份目录不存在: {directory}", file=sys.stderr)
+        return 2
     if not directory.is_dir():
-        print(f"备份目录不存在: {directory}")
-        return 0
-    files = sorted(directory.glob("*.db"))
+        print(f"路径不是目录: {directory}", file=sys.stderr)
+        return 2
+    try:
+        files = sorted(directory.glob("*.db"))
+    except OSError as exc:
+        print(f"无法读取备份目录: {directory}: {exc}", file=sys.stderr)
+        return 2
     if not files:
         print("暂无备份")
         return 0

@@ -51,6 +51,73 @@ class TestBackup:
             backup(source, destination)
 
 
+class TestBackupAtomicPublish:
+    """Task 4 / R6-09: 备份必须在全部校验通过后才发布为可列出文件。
+
+    反例覆盖旧实现的已知缺陷:
+    - SQLite backup 中途抛错会留下半成品目标文件;
+    - 并发写同一 dst 可能都成功(竞争窗口);
+    - list_backups 对缺失目录错误地返回成功码 0。
+    """
+
+    def test_backup_removes_partial_file_on_failure(self, test_artifact_dir, monkeypatch):
+        """backup 在目标创建后抛异常, 最终目标(占位)文件必须不存在。"""
+        import sqlite3 as _sqlite3
+
+        source = test_artifact_dir / "src.db"
+        destination = test_artifact_dir / "dst.db"
+        _make_source(source)
+
+        class _BoomConn(_sqlite3.Connection):
+            def backup(self, target, *args, **kwargs):
+                raise _sqlite3.OperationalError("injected backup failure")
+
+        def _boom_connect(*args, **kwargs):
+            return _BoomConn(*args, **kwargs)
+
+        monkeypatch.setattr(_sqlite3, "connect", _boom_connect)
+        with pytest.raises(_sqlite3.OperationalError, match="injected backup failure"):
+            backup(source, destination)
+        assert not destination.exists(), "backup 失败后不应留下目标/占位文件"
+        # 也没有残留临时文件
+        leftovers = list(test_artifact_dir.glob("dst*"))
+        assert leftovers == [], f"不应有残留临时文件: {leftovers}"
+
+    def test_concurrent_backup_same_dst_only_one_succeeds(self, test_artifact_dir):
+        """并发写同一 dst: 恰好一个成功, 另一个必须抛 FileExistsError。"""
+        import threading
+
+        source = test_artifact_dir / "src.db"
+        destination = test_artifact_dir / "dst.db"
+        _make_source(source)
+
+        succeeded = {}
+        conflicted = {}
+
+        def worker(tag):
+            try:
+                backup(source, destination)
+                succeeded[tag] = True
+            except FileExistsError:
+                conflicted[tag] = True
+
+        t1 = threading.Thread(target=worker, args=("a",))
+        t2 = threading.Thread(target=worker, args=("b",))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        assert len(succeeded) == 1, f"恰好一个成功, 实际: {succeeded}"
+        assert len(conflicted) == 1, f"恰好一个抛 FileExistsError, 实际: {conflicted}"
+
+    def test_list_backups_missing_dir_returns_nonzero(self, test_artifact_dir):
+        """缺失目录: list_backups 必须返回非零(失败即停), 旧实现错误返回 0。"""
+        missing = test_artifact_dir / "does-not-exist"
+        from scripts.backup_db import list_backups
+
+        assert list_backups(missing) != 0
+
+
 class TestRestoreVerifier:
     def test_restore_verifier_accepts_identical_snapshot(self, test_artifact_dir):
         source = test_artifact_dir / "src.db"
