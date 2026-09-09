@@ -30,20 +30,62 @@ def test_contract_client_never_calls_production_startup(contract_client, startup
     assert startup_spies["start_scheduler"] == 0
 
 
-def test_request_session_is_closed(contract_client):
-    """请求结束后, 覆盖工厂创建的会话必须全部关闭。"""
-    from backend.main import app
-    from backend.models.database import get_db
+def test_request_session_is_closed(contract_client, contract_db_state):
+    """每个 HTTP 请求结束即关闭其会话(R4-03): 真实断言, 非空断言。"""
+    first = contract_client.get("/api/cb-list/factors/ratings")
+    assert first.status_code == 200
+    assert len(contract_db_state.opened) == 1
+    assert contract_db_state.closed_ids == [id(contract_db_state.opened[0]._session)]
 
-    contract_client.get("/api/health")
-    # 从 override 工厂取回会话列表验证关闭状态
-    factory = app.dependency_overrides.get(get_db)
-    assert factory is not None
-    # contract_client teardown 前会话尚未强制关闭; 直接发一次请求检查
-    # FastAPI 依赖的 yield/finally: 请求完成后原 get_db 会 close,
-    # 我们的 override 会话由 contract_client teardown 关闭。
-    # 这里验证 override 存在且请求成功即可, teardown 后由 fixture 自检。
-    assert callable(factory)
+    second = contract_client.get("/api/cb-list/factors/ratings")
+    assert second.status_code == 200
+    assert len(contract_db_state.opened) == 2
+    assert contract_db_state.opened[0]._session is not contract_db_state.opened[1]._session
+    assert contract_db_state.closed_ids == [
+        id(contract_db_state.opened[0]._session),
+        id(contract_db_state.opened[1]._session),
+    ]
+
+
+def test_production_lifespan_wires_database_and_scheduler(monkeypatch):
+    """R4-05: 真实 lifespan 接线顺序 —— init_db → start → stop, 用内存 spy。
+
+    不能使用 contract_client(它会替换 lifespan); 三个 spy 必须在
+    create_app() 之前完成, 且 TestClient 用新构造的 app。
+    """
+    from fastapi.testclient import TestClient
+
+    from backend import main as main_mod
+
+    events = []
+    monkeypatch.setattr(main_mod, "init_db", lambda: events.append("init_db"))
+    monkeypatch.setattr(main_mod, "start_scheduler", lambda: events.append("start"))
+    monkeypatch.setattr(main_mod, "stop_scheduler", lambda: events.append("stop"))
+    monkeypatch.setattr(main_mod.settings, "scheduler_enabled", True)
+
+    isolated_app = main_mod.create_app()
+    with TestClient(isolated_app) as client:
+        assert client.get("/api/health").status_code == 200
+        assert events == ["init_db", "start"]
+    assert events == ["init_db", "start", "stop"]
+
+
+def test_production_lifespan_skips_scheduler_when_disabled(monkeypatch):
+    """调度关闭时 lifespan 只 init_db, 不启动/停止 scheduler。"""
+    from fastapi.testclient import TestClient
+
+    from backend import main as main_mod
+
+    events = []
+    monkeypatch.setattr(main_mod, "init_db", lambda: events.append("init_db"))
+    monkeypatch.setattr(main_mod, "start_scheduler", lambda: events.append("start"))
+    monkeypatch.setattr(main_mod, "stop_scheduler", lambda: events.append("stop"))
+    monkeypatch.setattr(main_mod.settings, "scheduler_enabled", False)
+
+    isolated_app = main_mod.create_app()
+    with TestClient(isolated_app):
+        assert events == ["init_db"]
+    assert events == ["init_db"]
 
 
 def test_external_io_is_blocked(contract_client):
