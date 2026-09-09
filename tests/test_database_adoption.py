@@ -1,21 +1,17 @@
 # -*- coding: utf-8 -*-
-"""完整副本接管链测试(第五阶段/T5, R5-03).
+"""完整副本接管链测试(Task 5, R6-03/R6-04).
 
-在临时副本上验证可执行顺序:
-备份 → verify_restore → compare_schema → stamp 0001 → 再次 compare/verify
-(忽略 alembic_version 后仍通过) → upgrade head → 数据与版本号断言。
-漂移库禁止调用 stamp(Alembic command mock 断言调用次数为 0)。
+happy path: 调用真实 adopt_database_copy(verify/compare/stamp/revision/
+upgrade/smoke 全真实), 最终状态必须为 smoke_passed, 数据与版本号正确落库。
+漂移库: 真实编排入口在 schema_verified 阶段失败, stamp/upgrade/smoke 0 次调用。
+另覆盖状态机全部失败分支: 任一阶段失败 → 后续依赖 0 次调用、返回非零且含阶段名。
 """
 from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from unittest import mock
 
-import pytest
-from alembic import command
-from alembic.config import Config
 from sqlalchemy import create_engine, text
 
 from backend.models.app_setting import AppSetting
@@ -23,18 +19,6 @@ from backend.models.database import Base
 from backend.models import app_setting, data_status, valuation  # noqa: F401
 
 from scripts.backup_db import backup
-from scripts.check_db_baseline import compare_schema
-from scripts.verify_db_restore import verify_restore
-
-MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
-
-
-def _config(db_path: Path) -> Config:
-    cfg = Config()
-    cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
-    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path.as_posix()}")
-    return cfg
-
 
 def _build_unversioned_source(db_path: Path) -> None:
     """构造未 stamp 的 ORM 结构库, 含一行业务数据。"""
@@ -50,27 +34,29 @@ def _build_unversioned_source(db_path: Path) -> None:
 
 class TestDatabaseAdoption:
     def test_unversioned_database_copy_can_be_adopted(self, test_artifact_dir):
-        """完整接管链: backup → verify → compare → stamp → verify/compare(仍通过) → upgrade。"""
+        """完整接管链: 调用真实 adopt_database_copy(真实 verify/compare/stamp/
+        upgrade/smoke), 最终状态必须为 smoke_passed, 且数据/版本号正确落库。"""
         source = test_artifact_dir / "source.db"
         backup_copy = test_artifact_dir / "backup.db"
         _build_unversioned_source(source)
-
-        # 1) 备份
         backup(source, backup_copy)
-        # 2) 恢复验证(未 stamp 副本, alembic_version 不参与)
-        assert verify_restore(source, backup_copy, Base.metadata) == []
-        # 3) 结构核对
-        assert compare_schema(f"sqlite:///{backup_copy.as_posix()}", Base.metadata) == []
-        # 4) 在副本 stamp 0001
-        command.stamp(_config(backup_copy), "0001")
-        # 5) stamp 后 compare/verify 仍通过; 副本已 0001 而源未版本化,
-        #    用接管模式 expected_backup_revision 声明副本应有的 revision(R5-03/R6-01)
-        assert compare_schema(f"sqlite:///{backup_copy.as_posix()}", Base.metadata) == []
-        assert verify_restore(
-            source, backup_copy, Base.metadata, expected_backup_revision="0001"
-        ) == []
-        # 6) upgrade head(幂等)
-        command.upgrade(_config(backup_copy), "head")
+
+        from scripts.adopt_db_copy import adopt_database_copy, build_dependencies
+        from scripts.smoke_db_copy import run_smoke
+
+        deps = build_dependencies(source, backup_copy, "0001")
+
+        # 真实冒烟: 断言副本的 app_setting[smtp_host] 被应用读取(证明请求用副本)
+        def _smoke():
+            run_smoke(backup_copy, expect_key="smtp_host", expect_value="example.invalid")
+            return []
+
+        deps["smoke"] = _smoke
+
+        result = adopt_database_copy(source, backup_copy, "0001", deps)
+        assert result.code == 0, [f"{s.name}:{s.status}:{s.detail}" for s in result.stages]
+        assert result.failed_stage is None
+        assert result.stages[-1].name == "smoke_passed"
 
         with closing(sqlite3.connect(backup_copy)) as conn:
             assert conn.execute(
@@ -79,7 +65,8 @@ class TestDatabaseAdoption:
             assert conn.execute("select version_num from alembic_version").fetchone() == ("0001",)
 
     def test_drifted_database_never_calls_stamp(self, test_artifact_dir):
-        """缺列漂移库: compare_schema 返回差异, Alembic stamp 调用次数为 0。"""
+        """缺列漂移库: 真实 adopt_database_copy 在 schema_verified 阶段失败,
+        且 stamp / upgrade / smoke 均未被调用(fail closed)。"""
         source = test_artifact_dir / "drift.db"
         engine = create_engine(f"sqlite:///{source.as_posix()}")
         try:
@@ -89,24 +76,168 @@ class TestDatabaseAdoption:
                 conn.execute(text("ALTER TABLE app_setting DROP COLUMN updated_at"))
         finally:
             engine.dispose()
+        backup_copy = test_artifact_dir / "drift_backup.db"
+        backup(source, backup_copy)
 
-        differences = compare_schema(f"sqlite:///{source.as_posix()}", Base.metadata)
-        assert any("app_setting" in item and "缺列" in item for item in differences)
+        from scripts.adopt_db_copy import adopt_database_copy, build_dependencies
 
-        with mock.patch("alembic.command.stamp") as stamp_mock:
-            # 按 runbook 流程: 结构有差异禁止 stamp
-            # (测试不调用 stamp; mock 断言证明流程不会触发)
-            assert differences
-        stamp_mock.assert_not_called()
+        deps = build_dependencies(source, backup_copy, "0001")
+        stamp = _CallCounter()
+        upgrade = _CallCounter()
+        smoke = _CallCounter()
+        deps["stamp"] = stamp
+        deps["upgrade"] = upgrade
+        deps["smoke"] = smoke
+
+        result = adopt_database_copy(source, backup_copy, "0001", deps)
+        assert result.code != 0
+        assert result.failed_stage == "schema_verified"
+        assert stamp.calls == 0
+        assert upgrade.calls == 0
+        assert smoke.calls == 0
 
     def test_extra_table_database_never_calls_stamp(self, test_artifact_dir):
-        """多余表漂移库: 同样 fail closed, stamp 不被调用。"""
+        """多余表漂移库: 真实 adopt_database_copy 在 schema_verified 阶段失败,
+        且 stamp / upgrade / smoke 均未被调用(fail closed)。"""
         import sqlite3 as sq
 
         source = test_artifact_dir / "extra.db"
         with closing(sq.connect(source)) as conn:
             with conn:
                 conn.execute("create table unexpected_table (id integer primary key)")
-        differences = compare_schema(f"sqlite:///{source.as_posix()}", Base.metadata)
-        assert any("unexpected_table" in item for item in differences)
-        assert differences  # fail closed
+        backup_copy = test_artifact_dir / "extra_backup.db"
+        backup(source, backup_copy)
+
+        from scripts.adopt_db_copy import adopt_database_copy, build_dependencies
+
+        deps = build_dependencies(source, backup_copy, "0001")
+        stamp = _CallCounter()
+        upgrade = _CallCounter()
+        smoke = _CallCounter()
+        deps["stamp"] = stamp
+        deps["upgrade"] = upgrade
+        deps["smoke"] = smoke
+
+        result = adopt_database_copy(source, backup_copy, "0001", deps)
+        assert result.code != 0
+        assert result.failed_stage == "schema_verified"
+        assert stamp.calls == 0
+        assert upgrade.calls == 0
+        assert smoke.calls == 0
+
+
+class _CallCounter:
+    """可注入的接管依赖: 记录调用次数, 返回预设差异列表或抛异常。"""
+
+    def __init__(self, returns=None, raises=None):
+        self.calls = 0
+        self.returns = returns  # list -> 作为差异返回; None -> 返回 []
+        self.raises = raises  # 抛出的异常实例
+
+    def __call__(self):
+        self.calls += 1
+        if self.raises is not None:
+            raise self.raises
+        return self.returns if self.returns is not None else []
+
+
+class TestAdoptionOrchestration:
+    """Task 5 / R6-03: 接管编排状态机失败优先测试。
+
+    直接调用 adopt_database_copy(source, backup_copy, revision, dependencies),
+    注入可计数的 verify/compare/stamp/revision/upgrade/smoke 依赖, 断言:
+    - verify 失败 → 后续 5 个依赖 0 次调用
+    - compare 失败 → stamp/revision/upgrade/smoke 0 次
+    - stamp 失败 → revision/upgrade/smoke 0 次
+    - upgrade 失败 → smoke 0 次
+    - 任一步失败 → 返回非零且结果含失败阶段名
+    """
+
+    def _source_and_copy(self, tmp):
+        source = tmp / "source.db"
+        backup_copy = tmp / "backup.db"
+        _build_unversioned_source(source)
+        backup(source, backup_copy)
+        return source, backup_copy
+
+    def _make_deps(self, **overrides):
+        deps = {
+            "verify": _CallCounter(),
+            "compare": _CallCounter(),
+            "stamp": _CallCounter(),
+            "revision": _CallCounter(),
+            "upgrade": _CallCounter(),
+            "smoke": _CallCounter(),
+        }
+        deps.update(overrides)
+        return deps
+
+    def test_verify_failure_blocks_all_downstream(self, test_artifact_dir):
+        source, backup_copy = self._source_and_copy(test_artifact_dir)
+        verify = _CallCounter(returns=["integrity_check: corrupt"])
+        deps = self._make_deps(verify=verify)
+        from scripts.adopt_db_copy import adopt_database_copy
+
+        result = adopt_database_copy(source, backup_copy, "0001", deps)
+        assert result.code != 0
+        assert result.failed_stage == "backup_verified"
+        assert verify.calls == 1
+        for key in ("compare", "stamp", "revision", "upgrade", "smoke"):
+            assert deps[key].calls == 0, key
+
+    def test_compare_failure_blocks_stamp_and_after(self, test_artifact_dir):
+        source, backup_copy = self._source_and_copy(test_artifact_dir)
+        compare = _CallCounter(returns=["app_setting 缺列"])
+        deps = self._make_deps(compare=compare)
+        from scripts.adopt_db_copy import adopt_database_copy
+
+        result = adopt_database_copy(source, backup_copy, "0001", deps)
+        assert result.code != 0
+        assert result.failed_stage == "schema_verified"
+        assert compare.calls == 1
+        for key in ("stamp", "revision", "upgrade", "smoke"):
+            assert deps[key].calls == 0, key
+
+    def test_stamp_failure_blocks_revision_and_after(self, test_artifact_dir):
+        source, backup_copy = self._source_and_copy(test_artifact_dir)
+        stamp = _CallCounter(raises=RuntimeError("stamp failed"))
+        deps = self._make_deps(stamp=stamp)
+        from scripts.adopt_db_copy import adopt_database_copy
+
+        result = adopt_database_copy(source, backup_copy, "0001", deps)
+        assert result.code != 0
+        assert result.failed_stage == "stamped"
+        assert stamp.calls == 1
+        for key in ("revision", "upgrade", "smoke"):
+            assert deps[key].calls == 0, key
+
+    def test_upgrade_failure_blocks_smoke(self, test_artifact_dir):
+        source, backup_copy = self._source_and_copy(test_artifact_dir)
+        upgrade = _CallCounter(raises=RuntimeError("upgrade failed"))
+        deps = self._make_deps(upgrade=upgrade)
+        from scripts.adopt_db_copy import adopt_database_copy
+
+        result = adopt_database_copy(source, backup_copy, "0001", deps)
+        assert result.code != 0
+        assert result.failed_stage == "upgraded"
+        assert upgrade.calls == 1
+        assert deps["smoke"].calls == 0
+
+    def test_all_stages_pass_returns_zero(self, test_artifact_dir):
+        source, backup_copy = self._source_and_copy(test_artifact_dir)
+        deps = self._make_deps()
+        from scripts.adopt_db_copy import adopt_database_copy
+
+        result = adopt_database_copy(source, backup_copy, "0001", deps)
+        assert result.code == 0
+        assert result.failed_stage is None
+        assert [s.name for s in result.stages] == [
+            "backup_verified",
+            "schema_verified",
+            "stamped",
+            "revision_verified",
+            "upgraded",
+            "smoke_passed",
+        ]
+        for stage in result.stages:
+            assert stage.status == "passed", stage.name

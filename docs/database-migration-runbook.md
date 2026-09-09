@@ -53,13 +53,42 @@ python scripts/verify_db_restore.py --source D:/path/to/web.db --backup D:/path/
 # 8) 副本执行 upgrade head(空操作幂等, 验证迁移链完整)
 python -m alembic -x database_url=sqlite:///D:/path/to/backups/web.<ts>.db upgrade head
 
-# 9) 隔离应用冒烟(用副本临时启动, 或部署验证)
+# 9) 隔离应用冒烟(见 §3 单一编排入口, 已含此步)
 ```
 
 **硬性规则**:
 - 结构有任意差异**立即停止**, 不 stamp、不 upgrade、不对已有表重复建表。
 - 禁止对不匹配库执行 `stamp head`。
 - 本阶段**不对 `data/web.db` 执行**这些命令。
+
+## 2.1 接管副本: 单一编排入口(推荐)
+
+> Task 5(R6-03/R6-04): 步骤 3-9 的接管链已固化为一个失败即停的编排入口,
+> 操作员**禁止跳过 compare 直接 stamp**, 也无需手工逐条执行状态机命令。
+
+```powershell
+python scripts/adopt_db_copy.py --source D:/path/to/web.db --backup-copy D:/path/to/backups/web.<ts>.db --revision 0001
+```
+
+固定状态机(不可跳步, 任一阶段失败立即停止并返回非 0):
+
+| 阶段 | 含义 | 失败退出码 |
+|---|---|---|
+| backup_verified | 恢复验证(integrity/表集合/行数/主键/内容摘要) | 1 |
+| schema_verified | 结构核对(任何差异禁止 stamp) | 1 |
+| stamped | 在副本显式 stamp 指定 revision | 1 |
+| revision_verified | stamp 后用显式接管策略再次验证 | 1 |
+| upgraded | upgrade head 且 current 等于 head | 1 |
+| smoke_passed | 隔离应用冒烟(真实读库路由命中副本) | 1 |
+| path_guard / revision_arg | 输入护栏(同文件/日常库/空 revision) | 2 |
+
+产物记录: 每次运行把命令、各阶段 ✅/❌ 输出与最终退出码记入操作日志。
+护栏: 拒绝 backup_copy 等于日常 `data/web.db`, 拒绝 source 与 backup_copy 同文件。
+冒烟可单独执行:
+
+```powershell
+python scripts/smoke_db_copy.py --database D:/path/to/backups/web.<ts>.db --expect-key smtp_host --expect-value <明文值>
+```
 
 ## 3. 新空库初始化
 

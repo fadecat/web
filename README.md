@@ -84,13 +84,9 @@ Alembic 已建初始版本, 所有迁移命令**必须显式传 `-x database_url
 # 新空库
 python -m alembic -x database_url=sqlite:///D:/absolute/path/to/new.db upgrade head
 
-# 已有库接管(可执行顺序, 见 docs/database-migration-runbook.md):
-# 备份 → 恢复验证 → 只读核对 → 副本 stamp → 再核对 → upgrade
+# 已有库接管(备份后用单一编排入口完成 verify→compare→stamp→upgrade→冒烟, 见 docs/database-migration-runbook.md §2.1):
 python scripts/backup_db.py --source D:/path/to/web.db --destination-dir D:/path/to/backups
-python scripts/verify_db_restore.py --source D:/path/to/web.db --backup D:/path/to/backups/web.<ts>.db
-python scripts/check_db_baseline.py --database-url sqlite:///D:/path/to/backups/web.<ts>.db
-python -m alembic -x database_url=sqlite:///D:/path/to/backups/web.<ts>.db stamp 0001
-python -m alembic -x database_url=sqlite:///D:/path/to/backups/web.<ts>.db upgrade head
+python scripts/adopt_db_copy.py --source D:/path/to/web.db --backup-copy D:/path/to/backups/web.<ts>.db --revision 0001
 
 # 列出备份
 python scripts/backup_db.py --list D:/path/to/backups
