@@ -3,6 +3,9 @@ import { ref, computed, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { getFactorCatalog, getFactors, saveFactors, screenBonds } from '../api';
 
+// 抓取层已取消评级白名单, 完整评级谱系+无评级交给用户
+const RATING_OPTIONS = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-', 'BBB', 'BB', 'B', 'CCC', 'CC', 'C', 'NONE'];
+
 // ── 状态 ──────────────────────────────────────────────
 const catalog = ref([]);
 const templates = ref([]);
@@ -292,7 +295,7 @@ const activeScoreCount = computed(
               size="small"
               @update:model-value="(v) => updateTmpl({ ratings: v || [] })"
             >
-              <el-option v-for="r in ['AAA','AA+','AA','AA-','A+','A','A-']" :key="r" :label="r" :value="r" />
+              <el-option v-for="r in RATING_OPTIONS" :key="r" :label="r === 'NONE' ? '无评级' : r" :value="r" />
             </el-select>
             <span class="unit">勾选的评级保留, 未勾选的排除; 清空 = 不限</span>
           </div>
@@ -435,10 +438,13 @@ const activeScoreCount = computed(
             筛选结果
             <el-tag v-if="previewResult.source === 'live'" type="warning" size="small" style="margin-left:6px">实时集思录</el-tag>
             <el-tag v-else type="info" size="small" style="margin-left:6px">数据库快照</el-tag>
-            — <span class="success-text">{{ previewResult.top_n }}</span> 只入选
-            <span v-if="previewResult.keep_n > previewResult.top_n" class="info-text">
-              / {{ previewResult.keep_n - previewResult.top_n }} 只在容差范围
-            </span>
+            — <span class="success-text">{{ previewResult.selected_count ?? previewResult.top_n }}</span> 只实际入选
+            <template v-if="previewResult.selected_count != null && previewResult.selected_count < previewResult.top_n">
+              (目标 {{ previewResult.top_n }})
+            </template>
+            <template v-if="previewResult.buffer_count != null">
+              <span class="info-text"> / {{ previewResult.buffer_count }} 只在容差范围</span>
+            </template>
             / {{ previewResult.total_filtered }} 只通过排除 / {{ previewResult.total_excluded ?? 0 }} 只被排除 / {{ previewResult.total_all }} 只全量
           </b>
           <b v-else>正在筛选...</b>
@@ -474,8 +480,9 @@ const activeScoreCount = computed(
           </el-table-column>
         </el-table>
 
-        <!-- 被排除明细(可展开) -->
-        <template v-if="previewResult.excluded_rows?.length">
+        <!-- 被排除明细(可展开): 外层结果卡在 previewing 阶段也渲染,
+             这里必须再判 previewResult 非空, 否则 loading 期间访问空对象属性报错 -->
+        <template v-if="previewResult && previewResult.excluded_rows?.length">
           <div class="excluded-toggle">
             <el-button size="small" text type="info" @click="showExcluded = !showExcluded">
               {{ showExcluded ? '收起被排除明细' : `展开被排除明细 (${previewResult.excluded_rows.length})` }}

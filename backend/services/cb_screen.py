@@ -219,7 +219,8 @@ def filter_cb(
 
     redeem_remain_days_map: {bond_id: redeem_remain_days}, 来自 redeem_list 快照,
     用于 redeem_safe_days 判断(临近强赎触发天数)。
-    ratings: 评级白名单(勾选=保留); 空/None = 不限。白名单非空时无评级的债被排除。
+    ratings: 评级白名单(勾选=保留); 空/None = 不限。
+    抓取层已放开评级(含 BBB/无评级), "NONE" 占位符 = 无评级。
 
     返回 (通过列表, 被排除列表); 被排除行带 _exclude_reasons 供前端展示原因。
     """
@@ -231,7 +232,11 @@ def filter_cb(
 
     excluded_set = build_bond_code_match_set(excluded_bond_codes)
     remain_days_map = redeem_remain_days_map or {}
-    ratings_keep = {str(r).strip().upper() for r in (ratings or []) if str(r).strip()}
+    ratings_keep = {
+        "" if str(r).strip().upper() == "NONE" else str(r).strip().upper()
+        for r in (ratings or [])
+        if str(r).strip()
+    }
 
     result: list[dict] = []
     excluded_rows: list[dict] = []
@@ -257,10 +262,8 @@ def filter_cb(
 
         if ratings_keep:
             rating = str(c.get("rating_cd") or "").strip().upper()
-            if not rating:
-                reasons.append("评级缺失(已勾选评级白名单)")
-            elif rating not in ratings_keep:
-                reasons.append(f"评级不符({rating}未勾选)")
+            if rating not in ratings_keep:
+                reasons.append("评级缺失(已勾选评级白名单)" if not rating else f"评级不符({rating}未勾选)")
 
         if reasons:
             row["_exclude_reasons"] = reasons
@@ -349,12 +352,19 @@ def _screen_cell_rows(
     excluded_out = [_make(row, None) | {"exclude_reasons": row.get("_exclude_reasons", [])}
                     for row in excluded_rows]
 
+    # 实际入选数(可能小于目标: 通过排除的债不够), 与 top_n(目标值)区分;
+    # 实际容差缓冲数 = 入选之外仍在容差区间内的债(同样可能小于配置差值)
+    selected_count = sum(1 for r in result_rows if r["selected"])
+    buffer_count = sum(1 for r in result_rows if r["holdable"] and not r["selected"])
+
     return {
         "total_all": total_all,
         "total_filtered": len(filtered),
         "total_excluded": len(excluded_out),
         "top_n": target,
         "keep_n": keep_n,
+        "selected_count": selected_count,
+        "buffer_count": buffer_count,
         "rows": result_rows,
         "excluded_rows": excluded_out,
     }
