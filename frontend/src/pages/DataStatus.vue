@@ -92,17 +92,20 @@ const visibleIndexes = computed(() =>
 const nonIndexGroups = computed(() => dm.value?.non_index_groups || []);
 const sources = computed(() => dm.value?.sources || []);
 
+// 返回 true=本次成功更新, false=请求失败; 供自动刷新决定是否继续
 async function loadList() {
   const v = listGuard.next();
   listLoading.value = true;
   listError.value = '';
   try {
     const res = await getDataManagement();
-    if (!listGuard.isLatest(v)) return;
+    if (!listGuard.isLatest(v)) return true; // 已被更新请求取代, 视为不再继续
     dm.value = res;
+    return true;
   } catch (e) {
-    if (!listGuard.isLatest(v)) return;
+    if (!listGuard.isLatest(v)) return true;
     listError.value = e?.response?.data?.detail || e?.message || '加载失败';
+    return false;
   } finally {
     if (listGuard.isLatest(v)) listLoading.value = false;
   }
@@ -154,24 +157,45 @@ async function syncOne(code) {
   }
 }
 
+// 同步后自动刷新: POST 只发一次触发, 之后只 GET 列表刷新展示数据。
+// 语义定位是"自动刷新"而非"轮询任务终态"——数据新鲜度(fresh/stale 等)
+// 只反映数据新旧, 不能证明本次抓取是否完成; 任务真实结果以抓取记录为准。
+// 实现: 单次 setTimeout 串行调用(前次未完成不启动下一次),
+// 墙钟 5 分钟截止, GET 失败即停止并提示。
+const AUTO_REFRESH_INTERVAL = 3000;
+const AUTO_REFRESH_DEADLINE = 5 * 60 * 1000; // 墙钟 5 分钟
+let syncRefreshVersion = 0;
+
 function startSyncPoll(code) {
   stopSyncPoll();
   pendingSyncCode.value = code;
-  syncTimer = setInterval(async () => {
+  const version = ++syncRefreshVersion;
+  const deadline = Date.now() + AUTO_REFRESH_DEADLINE;
+  const tick = async () => {
+    if (version !== syncRefreshVersion) return; // 已被新目标/卸载取代
+    let ok = false;
     try {
-      const res = await syncIndex(code);
-      const st = res && res.sync_status;
-      if (st !== 'started' && st !== 'busy') {
-        await loadList();
-        stopSyncPoll();
-      }
+      ok = await loadList();
     } catch {
-      stopSyncPoll();
+      ok = false;
     }
-  }, 3000);
+    if (version !== syncRefreshVersion) return; // 请求期间被取代
+    if (!ok) {
+      stopSyncPoll();
+      notice.value = '自动刷新失败, 可手动点「同步」或刷新页面重试';
+      return;
+    }
+    if (Date.now() >= deadline) {
+      stopSyncPoll();
+      notice.value = '已停止自动刷新, 任务结果请查看抓取记录';
+      return;
+    }
+    syncTimer = setTimeout(tick, AUTO_REFRESH_INTERVAL);
+  };
+  syncTimer = setTimeout(tick, AUTO_REFRESH_INTERVAL);
 }
 function stopSyncPoll() {
-  if (syncTimer) clearInterval(syncTimer);
+  if (syncTimer) clearTimeout(syncTimer);
   syncTimer = null;
   pendingSyncCode.value = null;
 }
@@ -361,6 +385,7 @@ onBeforeUnmount(() => {
   listGuard.invalidate();
   runsGuard.invalidate();
   probeGuard.invalidate();
+  syncRefreshVersion += 1; // 使在途的自动刷新回调失效
   stopSyncPoll();
   stopRunsPoll();
   if (listTimer) clearInterval(listTimer);
