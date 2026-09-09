@@ -13,10 +13,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import ValidationError
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from backend.api.schemas.cb_screen import (
+    FactorsConfigModel,
+    IntradayFilterQuery,
+    normalize_ratings,
+)
 from backend.models.database import get_db
 from backend.models.valuation import CbDailySnapshot
 from backend.services.cb_blacklist_store import (
@@ -43,6 +49,19 @@ def get_factor_catalog() -> list[dict[str, str]]:
     return FACTOR_CATALOG
 
 
+@router.get("/cb-list/factors/ratings")
+def get_ratings_catalog(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    """评级目录(唯一事实源, P2-R04): 规范等级 + 快照中发现的未知非空值。"""
+    from sqlalchemy import distinct
+
+    from backend.services.rating_catalog import get_rating_catalog
+
+    discovered = [
+        str(v) for (v,) in db.query(distinct(CbDailySnapshot.rating_cd)).all() if v
+    ]
+    return get_rating_catalog(discovered)
+
+
 @router.get("/cb-list/factors")
 def get_factors() -> dict[str, Any]:
     """返回当前策略模板配置。"""
@@ -51,7 +70,16 @@ def get_factors() -> dict[str, Any]:
 
 @router.post("/cb-list/factors")
 def save_factors(body: dict[str, Any]) -> dict[str, Any]:
-    """保存策略模板配置到 data/factors.json。"""
+    """保存策略模板配置到 data/factors.json。
+
+    P2-R02: 先经 FactorsConfigModel 结构校验(ratings 必须为字符串数组,
+    拒绝 "AAA" 字符串/对象/空串——旧规范化曾把 "AAA" 按字符拆成 ["A"]),
+    校验通过后才交给 write_config 做数值规范化与落盘。
+    """
+    try:
+        FactorsConfigModel.model_validate(body)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()[0].get("msg", "配置结构非法"))
     normalized = write_config(body)
     return {"ok": True, "data": normalized}
 
@@ -142,20 +170,17 @@ def screen_active(db: Session = Depends(get_db)) -> dict[str, Any]:
 
 @router.get("/cb-list/screen/intraday")
 def screen_intraday(
-    price_min: float | None = None,
-    price_max: float | None = None,
-    premium_rt_max: float | None = None,
-    curr_iss_amt_max: float | None = None,
-    year_left_min: float | None = None,
-    year_left_max: float | None = None,
-    ytm_min: float | None = None,
+    request: Request,
     ratings: str | None = None,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """盘中选债: 实时拉集思录列表+强赎 → 纯条件过滤(不打分不排序) → 剔除黑名单。
 
+    输入约束由 IntradayFilterQuery 服务端强制(P2-R01): 价格/规模/年限非负、
+    区间顺序、非有限数一律 422; 前端校验仅是即时反馈, 可被其他客户端绕过。
+
     字段对齐集思录筛选页: 转债价格区间/溢价率≤/剩余规模≤/剩余年限区间/
-    到期收益率>(简化口径: (赎回价-现价)/现价/年限 年化) + 评级多选。
+    到期收益率≥(简化口径: (赎回价-现价)/现价) + 评级多选。
     返回全部通过条件的债(顺序=集思录自然顺序, 默认双低升序)。
     不读快照、不落库: 价格/双低/溢价率/强赎计数全部是当次请求的实时值。
     盘后调用返回当日收盘数据(比日频任务快照更新)。
@@ -163,17 +188,16 @@ def screen_intraday(
 
     黑名单联动: 查询时自动排除用户拉黑的转债, 返回 meta.blacklisted_count。
     """
-    filters = {
-        "price_min": price_min,
-        "price_max": price_max,
-        "premium_rt_max": premium_rt_max,
-        "curr_iss_amt_max": curr_iss_amt_max,
-        "year_left_min": year_left_min,
-        "year_left_max": year_left_max,
-        "ytm_min": ytm_min,
-        # ratings 以逗号分隔传递: ?ratings=AA,AA+
-        "ratings": [r.strip() for r in ratings.split(",") if r.strip()] if ratings else [],
-    }
+    # 手动构建模型: Depends() 查询模式与 model_validator 抛错交互怪异,
+    # 显式校验 + 统一 422 更可控
+    try:
+        query = IntradayFilterQuery.model_validate(request.query_params)
+        filters = query.model_dump()
+        # ratings 以逗号分隔传递: ?ratings=AA,AA+ (NONE=无评级占位符)
+        filters["ratings"] = normalize_ratings(ratings.split(",") if ratings else [])
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()[0].get("msg", "参数非法"))
+
     try:
         result = screen_bonds_intraday(filters)
     except Exception as exc:
