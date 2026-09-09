@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { screenBondsIntraday, getBlacklist, addBlacklist, removeBlacklist } from '../api';
+import { screenBondsIntraday, getBlacklist, addBlacklist, removeBlacklist, getRatingCatalog } from '../api';
 import { validateFilters } from '../utils/filterValidation.js';
 
 const loading = ref(false);
@@ -10,8 +10,7 @@ const result = ref(null); // 盘中筛选结果 { total_all, total_filtered, row
 // ── 筛选条件(仿集思录手机端) ─────────────────────────
 // 页面唯一筛选机制: 实时拉集思录 → 纯条件过滤, 不打分不排序
 // 顺序=集思录自然顺序(默认双低升序); 结果页内直出, 不用弹窗
-// 注: 抓取层不再限制评级(集思录全部评级+无评级均返回),
-//     这里把完整评级谱系的选择权交给用户, 默认全选
+// 评级目录来自后端唯一事实源(GET /factors/ratings), 不在本页硬编码
 const FILTERS_STORAGE_KEY = 'cb-intraday-filters';
 
 // 旧版 localStorage 存的是数字+可能混入 el-input-number 的 0 值, 版本号升位直接作废重建
@@ -29,9 +28,12 @@ function loadSavedFilters() {
   }
 }
 
-// 抓取层已取消评级白名单: 集思录全部评级(含 BBB/BB 等)与无评级都会返回,
-// 选项完整交给用户; NONE = 无评级
-const RATING_OPTIONS = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-', 'BBB', 'BB', 'B', 'CCC', 'CC', 'C', 'NONE'];
+// 评级目录(服务端唯一事实源): [{value,label,is_missing}]; 目录接口失败时
+// 回退到内置 14 项, 保证页面仍可用(P2-R04)
+const FALLBACK_RATINGS = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-', 'BBB', 'BB', 'B', 'CCC', 'CC', 'C', 'NONE'];
+const ratingOptions = ref(FALLBACK_RATINGS.map((v) => ({
+  value: v, label: v === 'NONE' ? '无评级' : v,
+})));
 
 // 默认预置(对齐集思录截图): 价格≤120 / 溢价率≤30 / 评级全选
 // 数值条件用字符串存(普通输入框所见即所得, 无 .00 强制格式化), 查询时才转数字
@@ -44,11 +46,11 @@ const defaultFilters = () => ({
   ytm_min: '',
   year_left_min: '',
   year_left_max: '',
-  ratings: [...RATING_OPTIONS],
+  ratings: [...FALLBACK_RATINGS],
 });
 const filters = ref(defaultFilters());
 
-// 恢复上次条件(集思录同款体验: 记住筛选)
+// 恢复上次条件(集思录同款体验: 记住筛选) + 拉评级目录
 onMounted(() => {
   const saved = loadSavedFilters();
   if (saved) {
@@ -56,6 +58,14 @@ onMounted(() => {
   }
   // 拉一次黑名单数量(按钮上展示计数)
   getBlacklist().then((rows) => { blacklistRows.value = rows; }).catch(() => {});
+  // 评级目录: 成功后替换回退项; 已勾选值保留(未知旧值仍会提交)
+  getRatingCatalog().then((catalog) => {
+    if (Array.isArray(catalog) && catalog.length) {
+      ratingOptions.value = catalog.map((e) => ({
+        value: e.value, label: e.label || (e.value === 'NONE' ? '无评级' : e.value),
+      }));
+    }
+  }).catch(() => {});
 });
 
 watch(filters, (f) => {
@@ -232,7 +242,7 @@ async function onUnblacklist(bondId) {
               size="small"
               style="width: 100%"
             >
-              <el-option v-for="r in RATING_OPTIONS" :key="r" :label="r === 'NONE' ? '无评级' : r" :value="r" />
+              <el-option v-for="r in ratingOptions" :key="r.value" :label="r.label" :value="r.value" />
             </el-select>
           </div>
         </div>

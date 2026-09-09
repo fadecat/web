@@ -12,6 +12,10 @@ export const getCbListLatest = (params = {}) =>
 export const getCbListHistory = (bondId) =>
   api.get('/cb-list/history', { params: { bond_id: bondId } }).then((r) => r.data);
 
+// 评级目录(唯一事实源): 规范等级+快照发现的未知值, 含 {value,label,order,is_missing}
+export const getRatingCatalog = () =>
+  api.get('/cb-list/factors/ratings', { timeout: 15000 }).then((r) => r.data);
+
 // 因子目录与模板配置
 export const getFactorCatalog = () =>
   api.get('/cb-list/factors/catalog').then((r) => r.data);

@@ -1,10 +1,13 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { getFactorCatalog, getFactors, saveFactors, screenBonds } from '../api';
+import { getFactorCatalog, getFactors, saveFactors, screenBonds, getRatingCatalog } from '../api';
 
-// 抓取层已取消评级白名单, 完整评级谱系+无评级交给用户
-const RATING_OPTIONS = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-', 'BBB', 'BB', 'B', 'CCC', 'CC', 'C', 'NONE'];
+// 评级目录(服务端唯一事实源): 失败时回退内置 14 项(P2-R04)
+const FALLBACK_RATINGS = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-', 'BBB', 'BB', 'B', 'CCC', 'CC', 'C', 'NONE'];
+const RATING_OPTIONS = ref(FALLBACK_RATINGS.map((v) => ({
+  value: v, label: v === 'NONE' ? '无评级' : v,
+})));
 
 // ── 状态 ──────────────────────────────────────────────
 const catalog = ref([]);
@@ -38,6 +41,14 @@ onMounted(async () => {
   } finally {
     loading.value = false;
   }
+  // 评级目录: 成功后替换回退项(非阻塞)
+  getRatingCatalog().then((list) => {
+    if (Array.isArray(list) && list.length) {
+      RATING_OPTIONS.value = list.map((e) => ({
+        value: e.value, label: e.label || (e.value === 'NONE' ? '无评级' : e.value),
+      }));
+    }
+  }).catch(() => {});
 });
 
 // ── 更新模板 ──────────────────────────────────────────
@@ -295,7 +306,7 @@ const activeScoreCount = computed(
               size="small"
               @update:model-value="(v) => updateTmpl({ ratings: v || [] })"
             >
-              <el-option v-for="r in RATING_OPTIONS" :key="r" :label="r === 'NONE' ? '无评级' : r" :value="r" />
+              <el-option v-for="r in RATING_OPTIONS" :key="r.value" :label="r.label" :value="r.value" />
             </el-select>
             <span class="unit">勾选的评级保留, 未勾选的排除; 清空 = 不限</span>
           </div>
