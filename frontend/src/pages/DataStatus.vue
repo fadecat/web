@@ -10,6 +10,7 @@ import {
   setIndexEnabled,
 } from '../api/dataManagement';
 import { createRequestGuard } from '../utils/requestGuard.js';
+import { createAutoRefresh } from '../utils/dataManagementPolling.js';
 import {
   indexNeedsAttention,
   filterIndexes,
@@ -74,9 +75,7 @@ const runMsg = ref('');
 
 let listTimer = null;
 let runsTimer = null;
-let syncTimer = null;
 const syncingCodes = reactive({}); // code -> true(同步中)
-const pendingSyncCode = ref(null); // 保存后需稍后重试同步的指数
 
 // ---- 我的数据: 搜索 / 只看问题 / 展开 ----
 const searchText = ref('');
@@ -144,12 +143,13 @@ async function toggleEnabled(index) {
 }
 
 // ---- 同步(初始补抓 / 稍后重试) ----
+// POST 成功后: 立即 GET 一次 + 启动自动刷新(慢任务期间持续看到数据变化)
 async function syncOne(code) {
   if (syncingCodes[code]) return;
   syncingCodes[code] = true;
   try {
     await syncIndex(code);
-    await loadList();
+    startSyncPoll(); // 控制器会立即执行第一次 loadList
   } catch (e) {
     notice.value = e?.response?.data?.detail || '同步触发失败';
   } finally {
@@ -157,47 +157,25 @@ async function syncOne(code) {
   }
 }
 
-// 同步后自动刷新: POST 只发一次触发, 之后只 GET 列表刷新展示数据。
+// 同步后自动刷新(P2-R03): POST 只发一次触发, 之后只 GET 列表刷新展示数据。
 // 语义定位是"自动刷新"而非"轮询任务终态"——数据新鲜度(fresh/stale 等)
 // 只反映数据新旧, 不能证明本次抓取是否完成; 任务真实结果以抓取记录为准。
-// 实现: 单次 setTimeout 串行调用(前次未完成不启动下一次),
-// 墙钟 5 分钟截止, GET 失败即停止并提示。
-const AUTO_REFRESH_INTERVAL = 3000;
-const AUTO_REFRESH_DEADLINE = 5 * 60 * 1000; // 墙钟 5 分钟
-let syncRefreshVersion = 0;
+// 两条入口(手动「同步」/ 添加指数成功)共用同一控制器实例;
+// 实现细节(串行不重叠/墙钟 5 分钟截止/失败即停)见 dataManagementPolling.js。
+const syncRefresh = createAutoRefresh({
+  load: loadList,
+  intervalMs: 3000,
+  deadlineMs: 5 * 60 * 1000,
+  onStop: (reason) => {
+    notice.value =
+      reason === 'load_failed'
+        ? '自动刷新失败, 可手动点「同步」或刷新页面重试'
+        : '已停止自动刷新, 任务结果请查看抓取记录';
+  },
+});
 
-function startSyncPoll(code) {
-  stopSyncPoll();
-  pendingSyncCode.value = code;
-  const version = ++syncRefreshVersion;
-  const deadline = Date.now() + AUTO_REFRESH_DEADLINE;
-  const tick = async () => {
-    if (version !== syncRefreshVersion) return; // 已被新目标/卸载取代
-    let ok = false;
-    try {
-      ok = await loadList();
-    } catch {
-      ok = false;
-    }
-    if (version !== syncRefreshVersion) return; // 请求期间被取代
-    if (!ok) {
-      stopSyncPoll();
-      notice.value = '自动刷新失败, 可手动点「同步」或刷新页面重试';
-      return;
-    }
-    if (Date.now() >= deadline) {
-      stopSyncPoll();
-      notice.value = '已停止自动刷新, 任务结果请查看抓取记录';
-      return;
-    }
-    syncTimer = setTimeout(tick, AUTO_REFRESH_INTERVAL);
-  };
-  syncTimer = setTimeout(tick, AUTO_REFRESH_INTERVAL);
-}
-function stopSyncPoll() {
-  if (syncTimer) clearTimeout(syncTimer);
-  syncTimer = null;
-  pendingSyncCode.value = null;
+function startSyncPoll() {
+  syncRefresh.start();
 }
 
 // ---- 抓取记录: 手动运行(复用现有 /data-status/run) ----
@@ -361,11 +339,10 @@ async function saveIndex() {
         // 名单已保存但抓取未完成: 明确说明, 不显示全部成功
         form.saveMsg =
           (res.message || '指数已加入名单') + '，但数据抓取尚未完成，可在列表稍后点「同步」重试。';
-        pendingSyncCode.value = res.code;
       } else {
         form.saveMsg = '已保存，正在初始抓取…';
         addVisible.value = false;
-        startSyncPoll(res.code);
+        startSyncPoll(); // 与手动同步共用同一自动刷新控制器
       }
     } else {
       form.saveMsg = res.message || '保存未确认';
@@ -385,8 +362,7 @@ onBeforeUnmount(() => {
   listGuard.invalidate();
   runsGuard.invalidate();
   probeGuard.invalidate();
-  syncRefreshVersion += 1; // 使在途的自动刷新回调失效
-  stopSyncPoll();
+  syncRefresh.stop(); // 使在途的自动刷新回调失效
   stopRunsPoll();
   if (listTimer) clearInterval(listTimer);
 });
