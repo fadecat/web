@@ -99,23 +99,38 @@ describe('Factors 页配置工作流', () => {
     expect(payload.templates[0]).not.toHaveProperty('excluded_ratings');
   });
 
-  it('复制模板保留空评级和未知评级', async () => {
+  it('复制模板保留未知评级(R5-09: 目录未登记值)', async () => {
     const withUnknown = JSON.parse(JSON.stringify(template));
     withUnknown.ratings = ['BB+']; // 未知评级(目录里没有也要能复制)
     getFactors.mockResolvedValue({ active_id: 't1', templates: [withUnknown] });
     const wrapper = mountPage();
     await flushPromises();
-    const dupBtn = wrapper.findAll('button').find((b) => b.text() === '复制');
-    await dupBtn.trigger('click');
+    await wrapper.findAll('button').find((b) => b.text() === '复制').trigger('click');
     await flushPromises();
-    // 复制后保存
     const saveBtn = wrapper.findAll('button').find((b) => b.text().includes('保存配置'));
     await saveBtn.trigger('click');
     await flushPromises();
     const payload = saveFactors.mock.calls[0][0];
     expect(payload.templates).toHaveLength(2);
     const copy = payload.templates.find((t) => t.name.includes('副本'));
-    expect(copy.ratings).toEqual(['BB+']); // 未知评级被保留
+    expect(copy.ratings).toEqual(['BB+']); // 未知评级被保留, 不是被清空
+  });
+
+  it('复制模板保留空评级(R5-09: 不限语义不清空为七档)', async () => {
+    const withEmpty = JSON.parse(JSON.stringify(template));
+    withEmpty.ratings = []; // 空评级 = 不限
+    getFactors.mockResolvedValue({ active_id: 't1', templates: [withEmpty] });
+    const wrapper = mountPage();
+    await flushPromises();
+    await wrapper.findAll('button').find((b) => b.text() === '复制').trigger('click');
+    await flushPromises();
+    const saveBtn = wrapper.findAll('button').find((b) => b.text().includes('保存配置'));
+    await saveBtn.trigger('click');
+    await flushPromises();
+    const payload = saveFactors.mock.calls[0][0];
+    expect(payload.templates).toHaveLength(2);
+    const copy = payload.templates.find((t) => t.name.includes('副本'));
+    expect(copy.ratings).toEqual([]); // 空评级被保留, 不是固定七档
   });
 
   it('新建模板复制当前模板而非固定七档', async () => {

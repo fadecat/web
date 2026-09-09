@@ -76,6 +76,15 @@
 
 ## 5. 已知边界与说明
 
+> ⚠️ **2026-09-09 第五轮复核更正**（详见 `2026-09-09-phase-5-verification.md`）：
+> ① 第 2 节记录"Vitest 30 passed, 0 failed"不完整——实际存在 4 个未处理异常
+> (DataStatus.vue `v-show` 内 `c.overview.first_date.slice()` 对缺失 overview 抛
+> TypeError), `pnpm test` 整体退出码为 1, 不算通过。第五阶段已修复并补充
+> 缺 overview 三态用例, 当前 `pnpm test` 退出 0。
+> ② 第 5.1 条"失败降级为可见 warning"不满足第四阶段"清理失败即失败"门禁;
+> 第五阶段已改为 fail-closed(ctypes 兜底 + gc.collect), 全量无清理 warning。
+> 以下为原始记录, 保留历史上下文。
+
 1. **沙箱 safe-delete 限制**：WorkBuddy 沙箱把 `shutil.rmtree`/`Path.unlink` 拦截转 trash，本环境 trash 服务不稳定导致 `.test-artifacts` 清理偶发失败。处理：conftest 改用 `os.remove/os.rmdir`，失败降级为可见 warning（不使已通过的测试失败）。CI/无沙箱环境为真实删除。
 2. **日常 `data/web.db` 接管未执行**：本阶段只对临时库演练；runbook 文档化流程，实际接管需独立实施单（停写 + 备份 + 只读核对 + 副本 stamp + 冒烟）。
 3. **`downgrade` 只限临时库**：downgrade 会删表，日常回退用备份恢复，runbook 已声明停写/数据损失窗口。

@@ -45,12 +45,14 @@ describe('API 层请求边界', () => {
     expect(JSON.parse(cfg.data)).toEqual(payload); // axios 已把 body 序列化为 JSON 字符串
   });
 
-  it('syncIndex 对指数代码做 URL 编码', async () => {
+  it('syncIndex 对指数代码做 URL 编码(含 /、空格、+ 必须转义)', async () => {
     const seen = capture();
-    await syncIndex('930955');
+    // 真实指数代码是纯数字, 但编码实现必须对任意字符串安全:
+    // 用含斜杠/空格/加号的代码, 若去掉 encodeURIComponent 该用例立即失败
+    await syncIndex('A/B + 1');
     const cfg = seen[0];
     expect(cfg.method).toBe('post');
-    expect(cfg.url).toBe('/data-management/indexes/930955/sync');
+    expect(cfg.url).toBe('/data-management/indexes/A%2FB%20%2B%201/sync');
   });
 
   it('getRatingCatalog 使用 GET 评级目录端点', async () => {

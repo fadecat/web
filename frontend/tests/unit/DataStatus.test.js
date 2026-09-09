@@ -67,16 +67,29 @@ const EP_STUBS = {
 };
 
 function mountPage() {
-  return mount(DataStatus, { global: { stubs: EP_STUBS } });
+  const wrapper = mount(DataStatus, { global: { stubs: EP_STUBS } });
+  mountedWrappers.push(wrapper);
+  return wrapper;
 }
 
 beforeEach(() => {
   vi.resetAllMocks();
   getDataManagement.mockResolvedValue(JSON.parse(JSON.stringify(DM_PAYLOAD)));
+  mountedWrappers.length = 0;
 });
 
-afterEach(() => {
-  vi.useRealTimers();
+// R5-04: 每个组件测试显式 unmount, 收尾清 timers/恢复 real timers
+const mountedWrappers = [];
+
+afterEach(async () => {
+  for (const wrapper of mountedWrappers.splice(0)) {
+    wrapper.unmount();
+  }
+  await flushPromises();
+  if (vi.isFakeTimers()) {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
 });
 
 describe('DataStatus 同步生命周期', () => {
@@ -200,5 +213,44 @@ describe('DataStatus 假时钟与 timer 清理(R4-06)', () => {
     // 卸载: dispose 清掉剩余定时器
     wrapper.unmount();
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('DataStatus 缺失 overview 安全渲染(R5-04)', () => {
+  it('探测返回无 overview / null 日期 / 完整 overview, 不抛异常且只展示完整日期', async () => {
+    const renderErrors = [];
+    probeIndex.mockResolvedValue({
+      code: '399296', name: '创成长', probe_token: 'tok-1',
+      capabilities: [
+        { key: 'quote', status: 'available', label: '收盘价' }, // 无 overview
+        { key: 'valuation', status: 'available', label: '估值', overview: { first_date: null, latest_date: null, count: 0 } },
+        { key: 'dividend', status: 'available', label: '股息率', overview: { first_date: '2020-01-02', latest_date: '2026-09-09', count: 100 } },
+      ],
+    });
+    const wrapper = mount(DataStatus, {
+      global: {
+        config: { errorHandler: (error) => renderErrors.push(error) },
+        stubs: EP_STUBS,
+      },
+    });
+    mountedWrappers.push(wrapper);
+    await flushPromises();
+    await wrapper.findAll('button').find((b) => b.text().includes('添加指数')).trigger('click');
+    await flushPromises();
+    await wrapper.findAll('input').find((i) => i.attributes('placeholder') === '6 位指数代码').setValue('399296');
+    await flushPromises();
+    await wrapper.findAll('button').find((b) => b.text() === '检查').trigger('click');
+    await flushPromises();
+    await flushPromises();
+    // 不抛异常: errorHandler 捕获为空
+    expect(renderErrors).toEqual([]);
+    const txt = wrapper.text();
+    // 完整 overview 的股息率展示实际日期
+    expect(txt).toContain('2020 年起');
+    expect(txt).toContain('09-09');
+    // null 日期的 valuation overview: 安全 fallback 为「暂无」(不抛 TypeError)
+    expect(txt).toContain('暂无 年起');
+    // 无 overview 的 quote: 条件渲染不出现该区块的日期文案
+    expect(txt).not.toContain('收盘价：');
   });
 });

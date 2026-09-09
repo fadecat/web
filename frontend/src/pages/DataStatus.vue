@@ -300,6 +300,13 @@ function capLabel(cap) {
   if (cap.key === 'dividend') return '股息率';
   return cap.label || cap.key;
 }
+
+// 探测 overview 日期安全格式化(R5-04): overview 可能缺失或字段为 null,
+// 不能用 v-show(仍会求值隐藏节点)。'year'=取前4位 / 'month-day'=取第5位起。
+function overviewDate(value, mode) {
+  if (typeof value !== 'string' || !value) return '暂无';
+  return mode === 'year' ? value.slice(0, 4) : value.slice(5);
+}
 function isChecked(key) {
   return form.selected.includes(key);
 }
@@ -566,9 +573,13 @@ onBeforeUnmount(() => {
               <span v-if="c.message && c.status !== 'available'">：{{ c.message }}</span>
             </span>
           </div>
-          <div v-for="c in form.caps" v-show="c.overview && c.status === 'available'" :key="c.key + '-ov'" class="cap-ov">
-            {{ capLabel(c) }}：{{ c.overview.first_date.slice(0, 4) }} 年起 · 最新 {{ c.overview.latest_date.slice(5) }} · 共 {{ c.overview.count }} 条
-          </div>
+          <template v-for="c in form.caps" :key="c.key + '-ov'">
+            <div v-if="c.overview && c.status === 'available'" class="cap-ov">
+              {{ capLabel(c) }}：{{ overviewDate(c.overview.first_date, 'year') }} 年起 ·
+              最新 {{ overviewDate(c.overview.latest_date, 'month-day') }} ·
+              共 {{ c.overview.count ?? 0 }} 条
+            </div>
+          </template>
           <p class="hint dlg-tip">error 表示检查失败(可重试), 不代表来源不支持; 仅「支持」项可勾选。</p>
         </div>
 
