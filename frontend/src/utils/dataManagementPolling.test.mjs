@@ -245,3 +245,33 @@ test('dispose 覆盖 inFlight 窗口: load 在途时 dispose, 完成后不续排
   assert.equal(refresh.isRunning(), false, '在途 load 完成后不得重启会话');
   assert.equal(clock.pendingCount(), 0, '不得残留任何定时器');
 });
+
+test('start 后同一轮 stop 不调用尚未开始的 load (R4-02)', async () => {
+  const clock = makeFakeClock();
+  let calls = 0;
+  const refresh = createAutoRefresh({
+    load: async () => { calls += 1; return true; },
+    now: clock.now, schedule: clock.schedule, cancel: clock.cancel,
+  });
+  refresh.start();
+  refresh.stop(); // 与 start 同一轮, load 尚未进入微任务队列后执行
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 0, 'stop 后不得执行尚未开始的 load');
+  assert.equal(refresh.isRunning(), false);
+  assert.equal(clock.pendingCount(), 0);
+});
+
+test('start 后同一轮 dispose 不调用尚未开始的 load (R4-02)', async () => {
+  const clock = makeFakeClock();
+  let calls = 0;
+  const refresh = createAutoRefresh({
+    load: async () => { calls += 1; return true; },
+    now: clock.now, schedule: clock.schedule, cancel: clock.cancel,
+  });
+  refresh.start();
+  refresh.dispose();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 0, 'dispose 后不得执行尚未开始的 load');
+  assert.equal(refresh.isRunning(), false);
+  assert.equal(clock.pendingCount(), 0);
+});

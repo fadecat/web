@@ -36,7 +36,7 @@ export function createAutoRefresh({
   let version = 0;      // 会话版本: start/stop 递增, 使在途回调失效
   let timerId = null;
   let running = false;
-  let inFlight = false; // 上一次 load 是否仍未返回
+  let inFlight = null;  // 当前 load 的 flight 标识(对象), 无 load 在途时为 null
   let disposed = false; // 永久失效(R3-04): dispose 后 start 不再可用
 
   function _clearTimer() {
@@ -53,20 +53,27 @@ export function createAutoRefresh({
       if (typeof onStop === 'function') onStop('deadline');
       return;
     }
-    if (inFlight) {
+    if (inFlight !== null) {
       // 理论上不可达(串行调度), 防御性兜底: 跳过本轮
       timerId = schedule(() => tick(versionAtStart, deadline), intervalMs);
       return;
     }
-    inFlight = true;
-    let ok = false;
+    const flight = { version: versionAtStart };
+    inFlight = flight;
     Promise.resolve()
-      .then(() => load())
-      .then((r) => { ok = r !== false; })
-      .catch(() => { ok = false; })
       .then(() => {
-        inFlight = false;
-        if (versionAtStart !== version) return; // 请求期间被取代
+        // R4-02: 真正调用 load 前复核会话状态——start 后同一轮 stop/dispose
+        // 会递增版本/置 disposed, 此时不得执行尚未开始的 load。
+        if (disposed || versionAtStart !== version || inFlight !== flight) {
+          return { skipped: true, ok: false };
+        }
+        return Promise.resolve(load())
+          .then((r) => ({ skipped: false, ok: r !== false }))
+          .catch(() => ({ skipped: false, ok: false }));
+      })
+      .then(({ skipped, ok }) => {
+        if (inFlight === flight) inFlight = null;
+        if (skipped || disposed || versionAtStart !== version) return;
         if (!ok) {
           stop();
           if (typeof onStop === 'function') onStop('load_failed');
