@@ -44,3 +44,6 @@ frontend/.vite/
 # SQLite WAL 伴随文件
 data/*.db-shm
 data/*.db-wal
+
+# pytest 隔离测试的临时数据目录(conftest 约定 .test_ 前缀)
+data/.test_*/
