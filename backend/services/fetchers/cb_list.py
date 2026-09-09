@@ -22,13 +22,13 @@ from backend.utils import parse_float
 CB_LIST_URL = "https://www.jisilu.cn/data/cbnew/cb_list_new/"
 CB_PAGE_SIZE = 1000
 
-CB_ALLOWED_RATINGS = ["AAA", "AA+", "AA", "AA-", "A+", "A", "A-"]
+# 评级白名单已取消(2026-09-09): 请求不带 rating_cd[] 即返回全部评级,
+# 含 BBB 及以下与无评级; 评级选择权完全交给前端用户。
 CB_ALLOWED_MARKETS = ["shmb", "shkc", "szmb", "szcy"]
 
 CB_FORM_DATA = {
     "fprice": "", "tprice": "", "curr_iss_amt": "", "convert_amt_ratio": "",
     "premium_rt": "", "fyear_left": "", "tyear_left": "",
-    "rating_cd[]": CB_ALLOWED_RATINGS,
     "is_search": "Y",
     "market_cd[]": CB_ALLOWED_MARKETS,
     "show_blocked": "N", "min_price_only": "N", "btype": "",

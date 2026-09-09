@@ -40,6 +40,9 @@ FACTOR_CATALOG: list[dict[str, str]] = [
 
 FACTORS_PATH = DATA_DIR / "factors.json"
 
+# 默认评级全集(白名单取消后仅作旧配置 excluded_ratings 反转的兜底基准)
+DEFAULT_RATINGS = {"AAA", "AA+", "AA", "AA-", "A+", "A", "A-"}
+
 
 # ---------------------------------------------------------------------------
 # 默认模板(三低策略)
@@ -71,7 +74,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "excluded_redeem_icons": ["R", "O", "B"],
             "redeem_safe_days": 2,
             "excluded_bond_codes": [],
-            "ratings": ["AAA", "AA+", "AA", "AA-", "A+", "A", "A-"],
+            "ratings": sorted(DEFAULT_RATINGS),
             "min_listing_days": 0,
         }
     ],
@@ -145,20 +148,21 @@ def _normalize_templates(data: dict) -> dict:
             seen.add(entry["code"])
             deduped.append(entry)
         tmpl["excluded_bond_codes"] = deduped
-        # 评级筛选(白名单): 统一大写, 白名单七档; 空 = 不限
-        _VALID_RATINGS = {"AAA", "AA+", "AA", "AA-", "A+", "A", "A-"}
+        # 评级筛选: 统一大写, 接受任意非空评级(AAA~A- 之外如 BBB、无评级等
+        # 在抓取层放开后都会出现), 不再做白名单裁剪; 空 = 不限
         raw_ratings = tmpl.get("ratings")
         if raw_ratings is None:
             # 兼容旧配置(此前为排除语义的 excluded_ratings): 反转为保留语义
             legacy = tmpl.get("excluded_ratings") or []
             tmpl["ratings"] = sorted(
-                _VALID_RATINGS - {str(x).strip().upper() for x in legacy}
+                DEFAULT_RATINGS - {str(x).strip().upper() for x in legacy}
             )
         else:
-            tmpl["ratings"] = [
-                r for r in (str(x).strip().upper() for x in raw_ratings)
-                if r in _VALID_RATINGS
-            ]
+            tmpl["ratings"] = sorted({
+                r
+                for r in (str(x).strip().upper() for x in raw_ratings)
+                if r
+            })
     return normalized
 
 
