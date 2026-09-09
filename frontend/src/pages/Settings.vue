@@ -10,6 +10,7 @@ const messageCls = ref('ok');
 
 // items: key -> { label, value, configured, sensitive }
 const items = ref({});
+const loadError = ref(''); // 加载失败提示(失败时禁用编辑并允许重试)
 
 // 表单草稿: 敏感项留空=不修改
 const draft = reactive({});
@@ -22,6 +23,7 @@ const smtpConfigured = () => !!items.value.smtp_password?.configured;
 
 async function load() {
   loading.value = true;
+  loadError.value = '';
   try {
     const data = await getSettings();
     items.value = data.items || {};
@@ -30,6 +32,8 @@ async function load() {
     }
     // 已配置过(授权码存在)默认锁定; 保存成功后重新上锁
     smtpLocked.value = smtpConfigured();
+  } catch (e) {
+    loadError.value = e?.response?.data?.detail || e?.message || '配置加载失败';
   } finally {
     loading.value = false;
   }
@@ -60,6 +64,15 @@ function reconfigure() {
   smtpLocked.value = false;
 }
 
+// 取消编辑: 丢弃草稿改动, 恢复到服务端当前值并重新锁定
+function onCancel() {
+  for (const [key, item] of Object.entries(items.value)) {
+    draft[key] = item.value || '';
+  }
+  smtpLocked.value = smtpConfigured();
+  notify('已放弃修改');
+}
+
 async function onTestMail() {
   testing.value = true;
   try {
@@ -85,6 +98,14 @@ onMounted(load);
     </div>
 
     <p v-if="loading" class="hint">加载中...</p>
+
+    <!-- 加载失败: 明确报错 + 重试, 不再静默渲染空表单 -->
+    <template v-else-if="loadError">
+      <p class="hint bad-text">{{ loadError }}</p>
+      <div class="actions">
+        <button class="btn ghost" @click="load">重新加载</button>
+      </div>
+    </template>
 
     <template v-else>
       <!-- 邮件通知配置 -->
@@ -229,6 +250,10 @@ onMounted(load);
 .hint {
   color: #9ca3af;
   font-size: 13px;
+}
+
+.hint.bad-text {
+  color: #a32d2d;
 }
 
 .card {
