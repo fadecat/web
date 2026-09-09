@@ -34,10 +34,16 @@
 - `data/web.db` 用 WAL + busy_timeout=5000（`backend/models/database.py`）。
 - APScheduler 线程池与 FastAPI 请求并发写同一库，依赖 WAL 的读写并发。
 
-### 迁移与回滚门禁（第五阶段已建立）
-- Alembic 初始版本 0001（10 张业务表）；已有库接管必须：备份 → 只读核对 →
-  副本 stamp → upgrade（runbook 可执行顺序，`tests/test_database_adoption.py` 证明）。
-- `check_db_baseline` / `verify_db_restore` / `backup_db` 均为 fail-closed。
+### 迁移与回滚门禁（第五阶段建立, Phase 5.1 修复后已验证为事实）
+> 2026-09-09 Phase 5.1 重新验收通过, 见 `docs/2026-09-09-phase-5-1-verification.md`
+> （commit 79bcfd5）。以下为已验证事实, 不再是待验证声明。
+- Alembic 初始版本 0001（10 张业务表）；已有库接管由单一编排入口
+  `scripts/adopt_db_copy.py` 固定状态机完成（backup_verified → schema_verified →
+  stamped → revision_verified → upgraded → smoke_passed, 失败即停）,
+  `tests/test_database_adoption.py` 证明所有失败分支在 stamp 前停止。
+- `check_db_baseline` / `verify_db_restore` / `backup_db` 均为 fail-closed;
+  verify_restore 默认严格比较 migration revision, 未版本化源库接管仅显式参数允许。
+- 隔离应用冒烟 `scripts/smoke_db_copy.py` 证明副本可被应用经真实路由读取。
 - 日常 `data/web.db` 尚未 stamp；应用启动仍用 `init_db()/create_all`。
 
 ## 2. 待设计问题（Phase 6 需回答）
