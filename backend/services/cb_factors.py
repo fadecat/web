@@ -163,6 +163,10 @@ def _normalize_templates(data: dict) -> dict:
                 for r in (str(x).strip().upper() for x in raw_ratings)
                 if r
             })
+        # R4-01: 迁移完成后删除旧字段, 使迁移结果可原样回存。
+        # 读取旧文件的输出必须只含当前结构, 否则 GET → POST 原样保存会
+        # 被 StrategyTemplateModel 的旧字段拦截(422)。
+        tmpl.pop("excluded_ratings", None)
     return normalized
 
 

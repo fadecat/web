@@ -34,26 +34,6 @@ def thread_db(contract_client, thread_safe_engine):
         session.close()
 
 
-@pytest.fixture()
-def tmp_factors(monkeypatch):
-    """factors.json 指到临时文件, 测试互不影响且不写真实 data/。
-
-    Windows 下 pytest tmp_path 基目录偶发 PermissionError(见 conftest 注释),
-    改用 DATA_DIR 下临时目录。"""
-    import pathlib
-    import shutil
-    import tempfile
-
-    from backend.config import DATA_DIR
-    from backend.services import cb_factors
-
-    d = pathlib.Path(tempfile.mkdtemp(dir=str(DATA_DIR), prefix=".test_factors_"))
-    f = d / "factors.json"
-    monkeypatch.setattr(cb_factors, "FACTORS_PATH", f)
-    yield f
-    shutil.rmtree(d, ignore_errors=True)
-
-
 def _tmpl(**overrides):
     base = {
         "id": "t1", "name": "测试策略",
@@ -172,6 +152,26 @@ class TestR3Contracts:
         tmp_factors.write_text(json.dumps(first), encoding="utf-8")
         second = cb_factors.read_config()
         assert first["templates"][0]["ratings"] == second["templates"][0]["ratings"]
+
+    def test_legacy_get_response_can_be_posted_as_current_config(self, contract_client, tmp_factors):
+        """R4-01: GET 旧配置 → 原样 POST 完整往返, 响应/磁盘均不含迁移字段。"""
+        legacy = {
+            "version": 1, "active_id": "t1",
+            "templates": [_tmpl(ratings=None, excluded_ratings=["AA"])],
+        }
+        tmp_factors.write_text(json.dumps(legacy), encoding="utf-8")
+
+        loaded = contract_client.get(f"{BASE}/factors")
+        assert loaded.status_code == 200
+        template = loaded.json()["templates"][0]
+        assert template["ratings"] == ["A", "A+", "A-", "AA+", "AA-", "AAA"]
+        assert "excluded_ratings" not in template
+
+        saved = contract_client.post(f"{BASE}/factors", json=loaded.json())
+        assert saved.status_code == 200
+        on_disk = json.loads(tmp_factors.read_text(encoding="utf-8"))
+        assert "excluded_ratings" not in on_disk["templates"][0]
+        assert on_disk["templates"][0]["ratings"] == template["ratings"]
 
 
 class TestReadConfigLegacy:
