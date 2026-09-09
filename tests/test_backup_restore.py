@@ -137,6 +137,126 @@ class TestRestoreVerifier:
         assert any("内容摘要不一致" in item for item in differences)
 
 
+class TestContentDigest:
+    """R6-02: 内容摘要必须编码原始类型与完整 payload, 不被 NUL/分隔符/类型变化绕过。
+
+    这些反例针对旧实现(用 SQLite quote() 生成摘要)的已知漏检: quote() 在 NUL 处
+    截断文本, 且无法区分 "1"(TEXT) 与 1(INTEGER)、BLOB 末字节变化、含分隔符的多列值。
+    新实现按类型标签 + 固定宽度长度 + 完整 payload 帧编码, 任何控制字符与 NUL
+    都不能改变分帧。
+    """
+
+    def _build(self, db_path, rows):
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, c1, c2)")
+            conn.executemany("INSERT INTO t(id, c1, c2) VALUES (?, ?, ?)", rows)
+            conn.commit()
+
+    def test_digest_detects_nul_truncation(self, test_artifact_dir):
+        """源 'a\\0x' 与副本 'a\\0y': NUL 后文本不同, 旧 quote() 在 NUL 处截断会漏检。"""
+        source = test_artifact_dir / "src.db"
+        backup_copy = test_artifact_dir / "bak.db"
+        self._build(source, [(1, "a\x00x", "k")])
+        self._build(backup_copy, [(1, "a\x00y", "k")])
+        differences = verify_restore(source, backup_copy)
+        assert any("内容摘要不一致" in item for item in differences), differences
+
+    def test_digest_detects_type_change(self, test_artifact_dir):
+        """TEXT '1' 与 INTEGER 1: 类型变化必须被发现。"""
+        source = test_artifact_dir / "src.db"
+        backup_copy = test_artifact_dir / "bak.db"
+        self._build(source, [(1, "1", "k")])  # TEXT "1"
+        self._build(backup_copy, [(1, 1, "k")])  # INTEGER 1
+        differences = verify_restore(source, backup_copy)
+        assert any("内容摘要不一致" in item for item in differences), differences
+
+    def test_digest_detects_blob_tail_change(self, test_artifact_dir):
+        """BLOB b'a\\0b' 末字节变化: 二进制内容必须逐字节比较。"""
+        source = test_artifact_dir / "src.db"
+        backup_copy = test_artifact_dir / "bak.db"
+        self._build(source, [(1, b"a\x00b", "k")])
+        self._build(backup_copy, [(1, b"a\x00c", "k")])
+        differences = verify_restore(source, backup_copy)
+        assert any("内容摘要不一致" in item for item in differences), differences
+
+    def test_digest_survives_delimiter_collision(self, test_artifact_dir):
+        """含分隔符 \\x1f/\\x1e 的多列值, 列顺序不同必须被发现(不能靠列拼接)。"""
+        source = test_artifact_dir / "src.db"
+        backup_copy = test_artifact_dir / "bak.db"
+        # ("a","b\x1fc") 与 ("a\x1fb","c") 在 \x1f 连接下文本相同, 但列顺序不同
+        self._build(source, [(1, "a", "b\x1fc")])
+        self._build(backup_copy, [(1, "a\x1fb", "c")])
+        differences = verify_restore(source, backup_copy)
+        assert any("内容摘要不一致" in item for item in differences), differences
+
+
+class TestMigrationRevision:
+    """R6-01: 默认严格比较 revision; 接管特例需显式 expected_backup_revision。"""
+
+    def _build(self, db_path, revision):
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                "CREATE TABLE app_setting "
+                "(key VARCHAR(64) PRIMARY KEY, value VARCHAR(2000), updated_at DATETIME)"
+            )
+            conn.execute(
+                "INSERT INTO app_setting(key, value, updated_at) "
+                "VALUES ('k', 'v', '2026-01-01 00:00:00')"
+            )
+            if revision is not None:
+                conn.execute(
+                    "CREATE TABLE alembic_version (version_num VARCHAR(32) PRIMARY KEY)"
+                )
+                conn.execute("INSERT INTO alembic_version VALUES (?)", (revision,))
+            conn.commit()
+
+    def test_no_version_table_on_both_sides_passes(self, test_artifact_dir):
+        """两侧均无版本表(未版本化): 默认严格比较, revision 同为 None → 通过。"""
+        source = test_artifact_dir / "src.db"
+        backup_copy = test_artifact_dir / "bak.db"
+        self._build(source, None)
+        self._build(backup_copy, None)
+        assert verify_restore(source, backup_copy) == []
+
+    def test_same_revision_on_both_sides_passes(self, test_artifact_dir):
+        """两侧均为 0001: 默认严格比较, revision 相同 → 通过。"""
+        source = test_artifact_dir / "src.db"
+        backup_copy = test_artifact_dir / "bak.db"
+        self._build(source, "0001")
+        self._build(backup_copy, "0001")
+        assert verify_restore(source, backup_copy) == []
+
+    def test_different_revision_default_fails(self, test_artifact_dir):
+        """源 0001、副本 9999: 默认严格比较必须失败。"""
+        source = test_artifact_dir / "src.db"
+        backup_copy = test_artifact_dir / "bak.db"
+        self._build(source, "0001")
+        self._build(backup_copy, "9999")
+        differences = verify_restore(source, backup_copy)
+        assert any(
+            "revision" in item or "版本" in item for item in differences
+        ), differences
+
+    def test_adoption_with_expected_revision_passes(self, test_artifact_dir):
+        """接管特例: 源无版本表、副本 0001, 传入 expected_backup_revision='0001' → 通过。"""
+        source = test_artifact_dir / "src.db"
+        backup_copy = test_artifact_dir / "bak.db"
+        self._build(source, None)  # 未版本化源库
+        self._build(backup_copy, "0001")  # 已 stamp 副本
+        assert verify_restore(source, backup_copy, expected_backup_revision="0001") == []
+
+    def test_adoption_without_expected_revision_fails(self, test_artifact_dir):
+        """接管特例未传参: 源 None、副本 0001 默认严格比较必须失败。"""
+        source = test_artifact_dir / "src.db"
+        backup_copy = test_artifact_dir / "bak.db"
+        self._build(source, None)
+        self._build(backup_copy, "0001")
+        differences = verify_restore(source, backup_copy)
+        assert any(
+            "revision" in item or "版本" in item for item in differences
+        ), differences
+
+
 class TestBackupCli:
     """R5-06: backup CLI 模式互斥与独立 --list。"""
 

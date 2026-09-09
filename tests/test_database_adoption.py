@@ -63,9 +63,12 @@ class TestDatabaseAdoption:
         assert compare_schema(f"sqlite:///{backup_copy.as_posix()}", Base.metadata) == []
         # 4) 在副本 stamp 0001
         command.stamp(_config(backup_copy), "0001")
-        # 5) stamp 后 compare/verify 仍通过(alembic_version 被忽略, R5-03)
+        # 5) stamp 后 compare/verify 仍通过; 副本已 0001 而源未版本化,
+        #    用接管模式 expected_backup_revision 声明副本应有的 revision(R5-03/R6-01)
         assert compare_schema(f"sqlite:///{backup_copy.as_posix()}", Base.metadata) == []
-        assert verify_restore(source, backup_copy, Base.metadata) == []
+        assert verify_restore(
+            source, backup_copy, Base.metadata, expected_backup_revision="0001"
+        ) == []
         # 6) upgrade head(幂等)
         command.upgrade(_config(backup_copy), "head")
 
