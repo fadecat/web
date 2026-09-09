@@ -195,3 +195,53 @@ test('onStop 回调: 失败报 load_failed, 截止报 deadline, 手动 stop 不�
 test('缺 load 参数直接抛错', () => {
   assert.throws(() => createAutoRefresh({}));
 });
+
+test('dispose 后 start 被忽略, stop 后仍可重启(R3-04)', async () => {
+  const clock = makeFakeClock();
+  const load = makeLoad([true]);
+  const refresh = createAutoRefresh({
+    load, intervalMs: 3000, deadlineMs: 60000,
+    now: clock.now, schedule: clock.schedule, cancel: clock.cancel,
+  });
+
+  // stop 后可重启
+  refresh.start();
+  await new Promise((r) => setImmediate(r));
+  refresh.stop();
+  refresh.start();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(load.calls.length, 2);
+  assert.equal(refresh.isRunning(), true);
+  refresh.stop();
+
+  // dispose 后: 一切 start 被忽略
+  refresh.dispose();
+  refresh.start(); // 迟到调用(如卸载后 await POST 完成的续体)
+  await new Promise((r) => setImmediate(r));
+  assert.equal(load.calls.length, 2, 'dispose 后 start 不得触发 load');
+  assert.equal(refresh.isRunning(), false);
+  clock.advance(60000);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(load.calls.length, 2, 'dispose 后不得续排任何定时器');
+});
+
+test('dispose 覆盖 inFlight 窗口: load 在途时 dispose, 完成后不续排', async () => {
+  const clock = makeFakeClock();
+  let resolveFirst;
+  const load = async () => {
+    await new Promise((r) => { resolveFirst = r; });
+    return true;
+  };
+  const refresh = createAutoRefresh({
+    load, intervalMs: 3000, deadlineMs: 60000,
+    now: clock.now, schedule: clock.schedule, cancel: clock.cancel,
+  });
+  refresh.start();
+  await new Promise((r) => setImmediate(r)); // load 已发出未返回
+  refresh.dispose(); // 卸载
+  resolveFirst();
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(refresh.isRunning(), false, '在途 load 完成后不得重启会话');
+  assert.equal(clock.pendingCount(), 0, '不得残留任何定时器');
+});

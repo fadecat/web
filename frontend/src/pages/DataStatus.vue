@@ -144,14 +144,18 @@ async function toggleEnabled(index) {
 
 // ---- 同步(初始补抓 / 稍后重试) ----
 // POST 成功后: 立即 GET 一次 + 启动自动刷新(慢任务期间持续看到数据变化)
+// isDisposed 哨兵(R3-04): POST 是跨 await 的, 用户点完同步立即离开页面时,
+// POST 完成的续体会在卸载后执行——此时绝不能再启动刷新或发新请求。
+let isDisposed = false;
+
 async function syncOne(code) {
   if (syncingCodes[code]) return;
   syncingCodes[code] = true;
   try {
     await syncIndex(code);
-    startSyncPoll(); // 控制器会立即执行第一次 loadList
+    if (!isDisposed) startSyncPoll(); // 卸载后迟到 POST: 静默放弃
   } catch (e) {
-    notice.value = e?.response?.data?.detail || '同步触发失败';
+    if (!isDisposed) notice.value = e?.response?.data?.detail || '同步触发失败';
   } finally {
     syncingCodes[code] = false;
   }
@@ -184,12 +188,15 @@ async function triggerRun(jobId) {
   try {
     await runJobManually(jobId);
   } catch (e) {
+    if (isDisposed) return; // 卸载后迟到响应: 不再更新界面
     const detail = e?.response?.data?.detail;
     runMsg.value = detail || '触发失败';
     if (e?.response?.status === 409) return; // 运行中, 仍进入轮询
   }
+  if (isDisposed) return; // 卸载后不得启动轮询
   pendingRuns[jobId] = true;
   if (!runsLoading.value) await loadRuns();
+  if (isDisposed) return; // loadRuns 期间卸载
   startRunsPoll();
 }
 function startRunsPoll() {
@@ -333,7 +340,9 @@ async function saveIndex() {
     });
     // res: { code, status:'saved', sync_status:'started'|'busy'|'failed', message }
     if (res.status === 'saved') {
+      if (isDisposed) return; // 卸载后迟到保存: 不再更新界面/启动刷新
       await loadList();
+      if (isDisposed) return; // loadList 期间卸载
       const sync = res.sync_status;
       if (sync === 'busy' || sync === 'failed') {
         // 名单已保存但抓取未完成: 明确说明, 不显示全部成功
@@ -359,10 +368,11 @@ onMounted(() => {
   loadList();
 });
 onBeforeUnmount(() => {
+  isDisposed = true; // R3-04: 卸载后所有 await 续体不得启动刷新/发请求
   listGuard.invalidate();
   runsGuard.invalidate();
   probeGuard.invalidate();
-  syncRefresh.stop(); // 使在途的自动刷新回调失效
+  syncRefresh.dispose(); // 永久失效: 之后任何 start(含迟到调用)被忽略
   stopRunsPoll();
   if (listTimer) clearInterval(listTimer);
 });

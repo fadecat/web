@@ -37,6 +37,7 @@ export function createAutoRefresh({
   let timerId = null;
   let running = false;
   let inFlight = false; // 上一次 load 是否仍未返回
+  let disposed = false; // 永久失效(R3-04): dispose 后 start 不再可用
 
   function _clearTimer() {
     if (timerId !== null) {
@@ -83,8 +84,10 @@ export function createAutoRefresh({
   /**
    * 启动一次自动刷新会话(取代已有会话)。
    * 立即执行第一次 load, 之后每 intervalMs 一次, 直到失败/截止/stop。
+   * dispose 后调用: 直接忽略(不抛错), 保证卸载后迟到调用安全。
    */
   function start() {
+    if (disposed) return;
     stop();
     version += 1;
     const versionAtStart = version;
@@ -93,16 +96,26 @@ export function createAutoRefresh({
     tick(versionAtStart, deadline);
   }
 
-  /** 停止当前会话(若在跑)。之后的 load 回调不会再续排。 */
+  /** 停止当前会话(若在跑)。之后可再次 start; dispose 后则不可。 */
   function stop() {
     version += 1;
     _clearTimer();
     running = false;
   }
 
+  /**
+   * 永久失效(R3-04): 与 stop 的区别是之后任何 start 都被忽略,
+   * 用于组件卸载——卸载后迟到的 start(如 await POST 完成后的续体)
+   * 不得重启刷新。
+   */
+  function dispose() {
+    disposed = true;
+    stop();
+  }
+
   function isRunning() {
     return running;
   }
 
-  return { start, stop, isRunning };
+  return { start, stop, dispose, isRunning };
 }
