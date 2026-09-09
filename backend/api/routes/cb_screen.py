@@ -72,15 +72,21 @@ def get_factors() -> dict[str, Any]:
 def save_factors(body: dict[str, Any]) -> dict[str, Any]:
     """保存策略模板配置到 data/factors.json。
 
-    P2-R02: 先经 FactorsConfigModel 结构校验(ratings 必须为字符串数组,
-    拒绝 "AAA" 字符串/对象/空串——旧规范化曾把 "AAA" 按字符拆成 ["A"]),
-    校验通过后才交给 write_config 做数值规范化与落盘。
+    P2-R02/R3-02: 先经 FactorsConfigModel 结构校验, 再把**校验后的模型输出**
+    (model_dump, 含缺省 ratings=[])交给 write_config——不能把原始 body 传下去,
+    否则缺省/null 评级会被旧迁移函数识别成旧配置补成七档。
+
+    合同:
+    - ratings 缺省/[] = 不限; null/错误类型/空串/归一后重复 = 422
+    - 旧字段 excluded_ratings 仅在读取旧文件时迁移, 新 POST 出现即 422
     """
     try:
-        FactorsConfigModel.model_validate(body)
+        validated = FactorsConfigModel.model_validate(body)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors()[0].get("msg", "配置结构非法"))
-    normalized = write_config(body)
+    validated_data = validated.model_dump()
+    # 透传字段(extra)在 model_dump 后仍在; 顶层 active_id 已由模型字段承载
+    normalized = write_config(validated_data)
     return {"ok": True, "data": normalized}
 
 

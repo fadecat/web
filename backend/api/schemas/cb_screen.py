@@ -78,7 +78,13 @@ def normalize_ratings(raw: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 class StrategyTemplateModel(BaseModel):
-    """单条策略模板的结构校验。只校验跨层合同字段, 其余字段透传。"""
+    """单条策略模板的结构校验。只校验跨层合同字段, 其余字段透传。
+
+    合同(R3-02/R3-05):
+    - ratings 缺省/显式 [] = 不限; null = 422(不接受"未选择"与"不限"混淆)
+    - 归一(strip+upper)后重复 = 422(不静默去重)
+    - 旧字段 excluded_ratings 是读旧文件的迁移语义, 新 POST 出现即 422
+    """
 
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
@@ -88,7 +94,7 @@ class StrategyTemplateModel(BaseModel):
     @classmethod
     def _ratings_must_be_str_list(cls, v: Any) -> Any:
         if v is None:
-            return []
+            raise ValueError("ratings 不允许为 null(不限请传空数组或缺省)")
         if not isinstance(v, list) or any(not isinstance(x, str) for x in v):
             raise ValueError("ratings 必须为字符串数组")
         return v
@@ -103,10 +109,19 @@ class StrategyTemplateModel(BaseModel):
             if not token:
                 raise ValueError("ratings 不允许空字符串")
             if token in seen:
-                continue
+                raise ValueError(f"ratings 存在重复项: {token}")
             seen.add(token)
             out.append(token)
         return out
+
+    @model_validator(mode="after")
+    def _reject_legacy_fields(self) -> "StrategyTemplateModel":
+        # extra="allow" 下旧字段会进 __pycache__ 之外的 extra; 显式拦截
+        extra_keys = set(self.model_extra or {})
+        banned = {"excluded_ratings"}
+        if banned & extra_keys:
+            raise ValueError("excluded_ratings 是旧配置字段, 新请求不接受(不限评级请传 ratings: [])")
+        return self
 
     model_config = {"extra": "allow"}  # 其余字段(exclusion_rules 等)不在此层校验
 
