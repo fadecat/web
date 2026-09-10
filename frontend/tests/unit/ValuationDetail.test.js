@@ -95,7 +95,7 @@ describe('ValuationDetail 股债 Tab', () => {
       { ...EB_STATS, series: makeEbSeries(30) },
     ]);
     getDividendYieldMock.mockResolvedValue([]);
-    const wrapper = await mountWith({ tab: 'eb' });
+    const wrapper = await mountWith({ tab: 'spread' });
     await flushPromises();
     await flushPromises();
     const chartData = wrapper.vm.chartData;
@@ -109,7 +109,7 @@ describe('ValuationDetail 股债 Tab', () => {
     expect(chartData.primaryUnit).toBe('百分点');
   });
 
-  it('切换 ratio 时主指标切换但国债对照保留, 窗口同日对齐', async () => {
+  it('旧链接 ?tab=eb 兼容映射到股债差', async () => {
     getValuationSnapshotMock.mockResolvedValue([
       { index_code: '930955', index_name: '红利低波100', rows: makeSnapshotRows(30) },
     ]);
@@ -119,11 +119,25 @@ describe('ValuationDetail 股债 Tab', () => {
     getDividendYieldMock.mockResolvedValue([]);
     const wrapper = await mountWith({ tab: 'eb' });
     await flushPromises();
+    expect(wrapper.vm.metric).toBe('spread');
+    expect(wrapper.vm.chartData.primaryUnit).toBe('百分点');
+  });
+
+  it('切换 ratio 时主指标切换但国债对照保留, 窗口同日对齐', async () => {
+    getValuationSnapshotMock.mockResolvedValue([
+      { index_code: '930955', index_name: '红利低波100', rows: makeSnapshotRows(30) },
+    ]);
+    getEquityBondMock.mockResolvedValue([
+      { ...EB_STATS, series: makeEbSeries(30) },
+    ]);
+    getDividendYieldMock.mockResolvedValue([]);
+    const wrapper = await mountWith({ tab: 'spread' });
+    await flushPromises();
     // 初始 spread
     expect(wrapper.vm.chartData.values[0]).toBeCloseTo(5, 4);
     expect(wrapper.vm.chartData.primaryUnit).toBe('百分点');
-    // 切到 ratio
-    wrapper.vm.ebMetric = 'ratio';
+    // 切到 ratio(一级平级 Tab)
+    wrapper.vm.metric = 'ratio';
     await flushPromises();
     expect(wrapper.vm.chartData.values[0]).toBeCloseTo(2, 4);
     expect(wrapper.vm.chartData.primaryUnit).toBe('倍');

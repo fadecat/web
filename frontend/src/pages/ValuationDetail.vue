@@ -24,19 +24,28 @@ const dividendRows = ref([]); // 股息率全历史(按日期升序, 画折线�
 const ebData = ref(null); // 股债收益差/比(含全历史序列)
 
 // 图表控制: 指标 + 时间窗口
-// metric 支持 URL ?tab=pe/pb/dividend 控制默认值, 方便分享链接/回归测试
+// metric 支持 URL ?tab=pe/pb/dividend/spread/ratio 控制默认值, 方便分享链接/回归测试
 const METRIC_OPTIONS = [
   { key: 'pe', label: 'PE走势' },
   { key: 'pb', label: 'PB走势' },
   { key: 'dividend', label: '股息率' },
-  { key: 'eb', label: '股债差｜股债比' },
+  { key: 'spread', label: '股债差' },
+  { key: 'ratio', label: '股债比' },
 ];
 const RANGE_OPTIONS = [
   { key: 3, label: '近3年' },
   { key: 5, label: '近5年' },
   { key: 10, label: '近10年' },
 ];
-const metric = ref(['pe', 'pb', 'dividend', 'eb'].includes(route.query.tab) ? route.query.tab : 'pe');
+// 旧链接 ?tab=eb 兼容映射到股债差(spread)
+const METRIC_KEYS = ['pe', 'pb', 'dividend', 'spread', 'ratio'];
+const metric = ref(
+  METRIC_KEYS.includes(route.query.tab)
+    ? route.query.tab
+    : route.query.tab === 'eb'
+      ? 'spread'
+      : 'pe',
+);
 const rangeYears = ref(3);
 
 const isMobile = ref(false);
@@ -96,14 +105,7 @@ const windowRows = computed(() => {
   return allRows.value.filter((r) => r.trade_date >= cutoff);
 });
 
-// 股债差 Tab 内二级切换: 看差值(spread)还是比值(ratio)的走势
-const ebMetric = ref('spread');
-const EB_METRIC_OPTIONS = [
-  { key: 'spread', label: '股债差' },
-  { key: 'ratio', label: '股债比' },
-];
-
-// 图表数据: PE/PB 走快照表, 股息率走股息率表, 股债差走现算序列, 都按窗口切片
+// 图表数据: PE/PB 走快照表, 股息率走股息率表, 股债差/比走现算序列, 都按窗口切片
 const chartData = computed(() => {
   if (metric.value === 'dividend') {
     const rows = dividendRows.value;
@@ -120,7 +122,7 @@ const chartData = computed(() => {
       values: windowed.map((r) => r.dividend_yield),
     };
   }
-  if (metric.value === 'eb') {
+  if (metric.value === 'spread' || metric.value === 'ratio') {
     const series = ebData.value?.series || [];
     const last = series.length ? series[series.length - 1].date : '';
     let cutoff = '';
@@ -136,10 +138,10 @@ const chartData = computed(() => {
     );
     return {
       dates: windowed.map((p) => p.date),
-      values: windowed.map((p) => p[ebMetric.value]),
+      values: windowed.map((p) => p[metric.value]),
       comparisonValues: bondValues,
       comparisonLabel: '十年期国债收益率',
-      primaryUnit: ebMetric.value === 'ratio' ? '倍' : '百分点',
+      primaryUnit: metric.value === 'ratio' ? '倍' : '百分点',
       comparisonUnit: '%',
     };
   }
@@ -154,13 +156,15 @@ const chartLabel = computed(() => {
   if (metric.value === 'pe') return 'PE';
   if (metric.value === 'pb') return 'PB';
   if (metric.value === 'dividend') return '股息率';
-  if (metric.value === 'eb') return ebMetric.value === 'ratio' ? '股债比' : '股债差';
+  if (metric.value === 'spread') return '股债差';
+  if (metric.value === 'ratio') return '股债比';
   return 'PE';
 });
 
-// 股债差 Tab 的分位条: 随二级切换展示对应指标的 1/3/5/10Y 分位
+// 股债差/股债比 Tab 的分位条: 展示对应指标的 1/3/5/10Y 分位
 const ebPercentiles = computed(() => {
-  const block = ebMetric.value === 'ratio' ? ebData.value?.ratio : ebData.value?.spread;
+  const block =
+    metric.value === 'ratio' ? ebData.value?.ratio : ebData.value?.spread;
   const p = block?.percentiles || {};
   return [
     { key: '1y', label: '近1年', value: p['1y'] },
@@ -289,7 +293,7 @@ onBeforeUnmount(() => {
             {{ opt.label }}
           </button>
         </div>
-        <!-- 时间窗口(四个指标都有历史) -->
+        <!-- 时间窗口(所有指标都有历史) -->
         <div class="seg-group">
           <button
             v-for="opt in RANGE_OPTIONS"
@@ -301,22 +305,10 @@ onBeforeUnmount(() => {
             {{ opt.label }}
           </button>
         </div>
-        <!-- 股债差 Tab 内的差值/比值切换 -->
-        <div v-if="metric === 'eb'" class="seg-group">
-          <button
-            v-for="opt in EB_METRIC_OPTIONS"
-            :key="opt.key"
-            class="seg-btn"
-            :class="{ active: ebMetric === opt.key }"
-            @click="ebMetric = opt.key"
-          >
-            {{ opt.label }}
-          </button>
-        </div>
       </div>
 
-      <!-- 股债差 Tab: 走势图(差值/比值可切) + 当前值/5Y均值 + 分位条 -->
-      <template v-if="metric === 'eb'">
+      <!-- 股债差 / 股债比 Tab: 走势图(叠加同期十年期国债) + 当前值/5Y均值 + 分位条 -->
+      <template v-if="metric === 'spread' || metric === 'ratio'">
         <ValuationChart
           :dates="chartData.dates"
           :values="chartData.values"
@@ -329,23 +321,23 @@ onBeforeUnmount(() => {
         <div v-if="ebData" class="dividend-panel eb-panel">
           <div class="dy-compare">
             <div class="dy-item">
-              <div class="dy-label">{{ ebMetric === 'ratio' ? '当前股债比' : '当前股债差' }}</div>
+              <div class="dy-label">{{ metric === 'ratio' ? '当前股债比' : '当前股债差' }}</div>
               <div class="dy-value primary">
-                {{ fmtNum(ebMetric === 'ratio' ? ebData.ratio?.current : ebData.spread?.current) }}
+                {{ fmtNum(metric === 'ratio' ? ebData.ratio?.current : ebData.spread?.current) }}
               </div>
             </div>
             <div class="dy-vs">·</div>
             <div class="dy-item">
-              <div class="dy-label">{{ ebMetric === 'ratio' ? '股债差' : '股债比' }}</div>
+              <div class="dy-label">{{ metric === 'ratio' ? '股债差' : '股债比' }}</div>
               <div class="dy-value">
-                {{ fmtNum(ebMetric === 'ratio' ? ebData.spread?.current : ebData.ratio?.current) }}
+                {{ fmtNum(metric === 'ratio' ? ebData.spread?.current : ebData.ratio?.current) }}
               </div>
             </div>
             <div class="dy-vs">·</div>
             <div class="dy-item">
               <div class="dy-label">5 年均值</div>
               <div class="dy-value">
-                {{ fmtNum(ebMetric === 'ratio' ? ebData.ratio?.average_5y : ebData.spread?.average_5y) }}
+                {{ fmtNum(metric === 'ratio' ? ebData.ratio?.average_5y : ebData.spread?.average_5y) }}
               </div>
             </div>
           </div>
@@ -369,7 +361,7 @@ onBeforeUnmount(() => {
 
       <!-- PE / PB 走势 -->
       <ValuationChart
-        v-else-if="metric !== 'dividend'"
+        v-else-if="metric === 'pe' || metric === 'pb'"
         :dates="chartData.dates"
         :values="chartData.values"
         :metric-label="chartLabel"
