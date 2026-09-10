@@ -40,6 +40,11 @@ Thumbs.db
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/.dist-next/
+frontend/.dist-prev/
+
+# 本地启停脚本运行态(PID与日志)
+.runtime/
 
 # SQLite WAL 伴随文件
 data/*.db-shm

@@ -60,6 +60,72 @@ pnpm dev                          # vite dev server, 代理 /api 到后端
 
 API 文档: `http://localhost:8000/api/docs`
 
+## 应用启停
+
+日常操作统一从仓库根目录执行 `scripts/app.ps1`。本地默认后端端口为
+`8001`，前端端口为 `5173`，与 Vite 代理配置一致。
+
+```powershell
+# 整个本地开发环境
+.\scripts\app.ps1 start
+.\scripts\app.ps1 status
+.\scripts\app.ps1 restart
+.\scripts\app.ps1 stop
+
+# 单独操作
+.\scripts\app.ps1 restart backend
+.\scripts\app.ps1 stop backend
+.\scripts\app.ps1 restart frontend
+.\scripts\app.ps1 build frontend
+```
+
+本地进程的PID、进程指纹和日志保存在 `.runtime/`。脚本优先使用
+`APP_PYTHON` 指定的Python，其次查找 `.venv`、PATH和本机WorkBuddy运行时：
+
+```powershell
+$env:APP_PYTHON = 'D:\tools\Python313\python.exe'
+.\scripts\app.ps1 restart backend
+```
+
+Windows也用同一入口管理ECS。它通过SSH别名 `aliyun-ecs` 调用ECS仓库中的
+`scripts/app.sh`；该命令只做启停和构建，不执行 `git pull`、数据库迁移或数据同步。
+
+```powershell
+.\scripts\app.ps1 status -Environment ecs
+.\scripts\app.ps1 restart backend -Environment ecs
+.\scripts\app.ps1 build frontend -Environment ecs
+.\scripts\app.ps1 restart frontend -Environment ecs
+.\scripts\app.ps1 restart -Environment ecs
+.\scripts\app.ps1 stop -Environment ecs
+.\scripts\app.ps1 start -Environment ecs
+```
+
+ECS前端是由FastAPI托管的静态文件，没有独立前端进程。因此ECS上的
+`restart frontend` 会先安装锁定依赖、在临时目录构建并替换 `frontend/dist`，
+然后重启 `webapp` 并检查 `/api/health`；`start frontend` 和 `stop frontend`
+会被拒绝。完整的 `restart` 与 `restart frontend` 使用同一安全流程。
+
+默认值可覆盖：
+
+```powershell
+.\scripts\app.ps1 status -Environment ecs `
+  -EcsHost aliyun-ecs -EcsRoot /opt/webapp -ServiceName webapp
+
+# 只查看计划，不启动、停止或连接ECS
+.\scripts\app.ps1 restart -DryRun
+.\scripts\app.ps1 restart -Environment ecs -DryRun
+```
+
+若 PowerShell 执行策略阻止脚本，可用一次性进程范围调用：
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\scripts\app.ps1 status
+```
+
+返回码约定：操作成功为 `0`；服务停止、健康检查失败、参数不支持或PID归属
+校验失败均为非零。ECS上的直接等价命令为
+`bash scripts/app.sh <action> [all|backend|frontend]`。
+
 ## 测试
 
 ```bash
