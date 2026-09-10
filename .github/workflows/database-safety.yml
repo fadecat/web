@@ -16,4 +16,15 @@ jobs:
         with:
           python-version: '3.13'
       - run: python -m pip install -r requirements.txt -r requirements-dev.txt
-      - run: python -m pytest -q tests/test_backup_restore.py tests/test_database_adoption.py tests/test_cli_entrypoints.py
+      - name: Run database safety tests
+        shell: pwsh
+        run: |
+          $output = python -m pytest -q tests/test_backup_restore.py tests/test_database_adoption.py tests/test_cli_entrypoints.py --tb=short 2>&1
+          $testExit = $LASTEXITCODE
+          $output | Write-Output
+          if ($testExit -ne 0) {
+            $tail = (($output | Select-Object -Last 80) -join "`n")
+            $escaped = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=database safety pytest::$escaped"
+            exit $testExit
+          }
