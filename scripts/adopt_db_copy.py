@@ -35,6 +35,17 @@ STAGES = (
 )
 
 
+def _configure_console_output() -> None:
+    """让窄编码控制台转义不可表示字符，而不是在写操作前后抛编码异常。"""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors="backslashreplace")
+            except (OSError, ValueError):
+                pass
+
+
 @dataclass
 class StageResult:
     """单个阶段的结果。"""
@@ -317,6 +328,7 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
 
 
 def main() -> int:
+    _configure_console_output()
     parser = argparse.ArgumentParser(description="安全接管 SQLite 副本(固定状态机)")
     parser.add_argument("--source", required=True, help="源库(绝对路径或 sqlite:/// URL)")
     parser.add_argument("--backup-copy", required=True, help="待接管副本(绝对路径)")

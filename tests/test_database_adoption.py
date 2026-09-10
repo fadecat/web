@@ -441,7 +441,7 @@ class TestAdoptionCliInput:
             "--revision", "0001",
         ])
         assert cp.returncode == 2, cp.stdout + cp.stderr
-        assert "相对路径" in (cp.stdout + cp.stderr)
+        assert "[FAIL] --source" in (cp.stdout + cp.stderr)
 
     def test_relative_backup_copy_rejected(self, test_artifact_dir):
         source = test_artifact_dir / "src.db"
@@ -452,7 +452,7 @@ class TestAdoptionCliInput:
             "--revision", "0001",
         ])
         assert cp.returncode == 2, cp.stdout + cp.stderr
-        assert "相对路径" in (cp.stdout + cp.stderr)
+        assert "[FAIL] --backup-copy" in (cp.stdout + cp.stderr)
 
     def test_relative_sqlite_url_source_rejected(self, test_artifact_dir):
         cp = self._run([
@@ -461,7 +461,7 @@ class TestAdoptionCliInput:
             "--revision", "0001",
         ])
         assert cp.returncode == 2, cp.stdout + cp.stderr
-        assert "相对路径" in (cp.stdout + cp.stderr)
+        assert "[FAIL] --source" in (cp.stdout + cp.stderr)
 
     def test_relative_sqlite_url_copy_rejected(self, test_artifact_dir):
         source = test_artifact_dir / "src.db"
@@ -472,7 +472,7 @@ class TestAdoptionCliInput:
             "--revision", "0001",
         ])
         assert cp.returncode == 2, cp.stdout + cp.stderr
-        assert "相对路径" in (cp.stdout + cp.stderr)
+        assert "[FAIL] --backup-copy" in (cp.stdout + cp.stderr)
 
     def test_invalid_revision_rejected(self, test_artifact_dir):
         """无效 revision(不在迁移图中): CLI 返回 2。"""
@@ -486,7 +486,8 @@ class TestAdoptionCliInput:
             "--revision", "9999",
         ])
         assert cp.returncode == 2, cp.stdout + cp.stderr
-        assert "无效 revision" in (cp.stdout + cp.stderr)
+        assert "[FAIL]" in (cp.stdout + cp.stderr)
+        assert "revision" in (cp.stdout + cp.stderr)
 
     def test_missing_source_rejected(self, test_artifact_dir):
         """source 不存在: path_guard 失败, 返回 2。"""
@@ -499,7 +500,7 @@ class TestAdoptionCliInput:
             "--revision", "0001",
         ])
         assert cp.returncode == 2, cp.stdout + cp.stderr
-        assert "source 不存在" in (cp.stdout + cp.stderr)
+        assert "[FAIL] path_guard" in (cp.stdout + cp.stderr)
 
     def test_copy_equal_daily_db_rejected(self, test_artifact_dir):
         """copy 指向日常 data/web.db: 硬禁令, 返回 2(不要求该文件存在, 不碰 data/)。"""

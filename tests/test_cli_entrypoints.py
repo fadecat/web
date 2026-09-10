@@ -163,3 +163,21 @@ def test_adopt_chain_gbk_failure(tmp_path):
     assert cp.returncode != 0, text
     assert "[FAIL]" in text, text
     assert "UnicodeEncodeError" not in text, text
+
+
+def test_adopt_chain_cp1252_failure_is_structured(tmp_path):
+    """Windows runner 的 cp1252 控制台也必须保留退出码和 ASCII 状态标记。"""
+    source = tmp_path / "missing-source.db"
+    copy = tmp_path / "copy.db"
+    copy.write_bytes(b"placeholder")
+
+    cp = _run_module(
+        "adopt_db_copy",
+        ["--source", str(source), "--backup-copy", str(copy), "--revision", "0001"],
+        encoding="cp1252",
+    )
+    text = _decode(cp)
+    assert cp.returncode == 2, text
+    assert "[FAIL]" in text
+    assert "path_guard" in text
+    assert "UnicodeEncodeError" not in text
