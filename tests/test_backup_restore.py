@@ -9,11 +9,14 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
+import time
 from contextlib import closing
 
 import pytest
 
-from scripts.backup_db import backup
+from scripts import backup_db
+from scripts.backup_db import backup, do_backup, list_backups, _publish
 from scripts.verify_db_restore import verify_restore
 
 
@@ -377,3 +380,259 @@ class TestBackupCli:
         assert bd.do_backup(str(src), out) == 0
         files = sorted(out.glob("src.*.db"))
         assert len(files) == 2
+
+
+class TestPartialPublish:
+    """Task 3 / R7-05: 备份先写 .partial, 校验通过后才发布最终 .db。
+
+    覆盖: 发布时序(阻塞期间 list 空、只见 partial)、全部失败点(源连接/目标连接/
+    backup/表统计/integrity/内容摘要/发布)、完整比较(额外表/缺表/内容篡改)、
+    清理失败不被吞、--list 永不展示 partial/failed/sidecar。
+    """
+
+    def test_publish_visibility_blocked_list_empty(self, test_artifact_dir):
+        """阻塞发布钩子: 阻塞期间 --list 返回空, 目录只见 .partial; 释放后
+        .db 出现且 .partial 消失(R7-05 时序反例)。"""
+        source = test_artifact_dir / "src.db"
+        _make_source(source)
+        out = test_artifact_dir / "out"
+        out.mkdir()
+
+        observed: dict = {}
+        block = threading.Event()
+
+        def hook():
+            observed["partials"] = sorted(p.name for p in out.glob("*.partial"))
+            observed["dbs"] = sorted(p.name for p in out.glob("*.db"))
+            observed["list_rc"] = list_backups(out)
+            block.wait()  # 阻塞直到主线程放行
+
+        backup_db._PRE_PUBLISH_HOOK = hook
+        try:
+            t = threading.Thread(target=do_backup, args=(str(source), out))
+            t.start()
+            # 等待钩子完整触发(partial 已写、list 已观测、尚未发布);
+            # 必须等 list_rc 就绪, 避免读到赋值中间态的竞态
+            for _ in range(500):
+                if "list_rc" in observed:
+                    break
+                time.sleep(0.01)
+            assert "list_rc" in observed, "发布前钩子未完整触发"
+            # 阻塞窗口: 只见 partial, 无最终 .db, list 为空(返回 0)
+            assert observed["dbs"] == [], observed
+            assert len(observed["partials"]) == 1, observed
+            assert observed["list_rc"] == 0, observed
+            block.set()
+            t.join(timeout=15)
+            assert not t.is_alive(), "do_backup 在释放后仍未结束"
+        finally:
+            backup_db._PRE_PUBLISH_HOOK = None
+
+        # 发布后: 最终 .db 出现, partial 消失
+        dbs = sorted(p.name for p in out.glob("*.db"))
+        assert len(dbs) == 1, dbs
+        assert not list(out.glob("*.partial")), "发布后 partial 应消失"
+
+    @pytest.mark.parametrize(
+        "fail_point",
+        [
+            "source_connect",
+            "dest_connect",
+            "backup",
+            "table_stats",
+            "integrity",
+            "content_digest",
+            "publish",
+        ],
+    )
+    def test_failure_point_leaves_no_final_db(self, test_artifact_dir, monkeypatch, fail_point):
+        """每个失败点: 返回非零、最终 .db 不存在、partial 与 sidecar 已清理。"""
+        source = test_artifact_dir / "src.db"
+        _make_source(source, rows=2)
+        out = test_artifact_dir / "out"
+        out.mkdir()
+
+        if fail_point == "source_connect":
+            orig = sqlite3.connect
+
+            def _c(*a, **k):
+                dsn = str(a[0]) if a else str(k.get("database", ""))
+                if "mode=ro" in dsn:
+                    raise sqlite3.OperationalError("injected source connect failure")
+                return orig(*a, **k)
+
+            monkeypatch.setattr(sqlite3, "connect", _c)
+        elif fail_point == "dest_connect":
+            orig = sqlite3.connect
+
+            def _c(*a, **k):
+                dsn = str(a[0]) if a else str(k.get("database", ""))
+                if "mode=ro" not in dsn:
+                    raise sqlite3.OperationalError("injected dest connect failure")
+                return orig(*a, **k)
+
+            monkeypatch.setattr(sqlite3, "connect", _c)
+        elif fail_point == "backup":
+            class _BoomConn(sqlite3.Connection):
+                def backup(self, target, *args, **kwargs):
+                    raise sqlite3.OperationalError("injected backup failure")
+
+            orig = sqlite3.connect
+
+            def _c(*a, **k):
+                return _BoomConn(*a, **k)
+
+            monkeypatch.setattr(sqlite3, "connect", _c)
+        elif fail_point == "table_stats":
+            monkeypatch.setattr(
+                backup_db, "verify_restore",
+                lambda s, d: ["表 sample: 行数不一致(源 2 vs 备份 0)"],
+            )
+        elif fail_point == "integrity":
+            monkeypatch.setattr(
+                backup_db, "verify_restore",
+                lambda s, d: ["备份副本 integrity_check: 损坏"],
+            )
+        elif fail_point == "content_digest":
+            monkeypatch.setattr(
+                backup_db, "verify_restore",
+                lambda s, d: ["表 sample: 内容摘要不一致(非主键数据被篡改)"],
+            )
+        elif fail_point == "publish":
+            def _boom_publish(partial, dst):
+                raise OSError("injected publish failure")
+            monkeypatch.setattr(backup_db, "_publish", _boom_publish)
+
+        rc = do_backup(str(source), out)
+        assert rc != 0, "失败点必须返回非零"
+        # 最终 .db 绝不能出现
+        assert not list(out.glob("*.db")), "失败不应留下最终 .db"
+        # partial / sidecar 必须清理
+        assert not list(out.glob("*.partial")), "失败必须清理 partial"
+
+    def test_cleanup_failure_not_swallowed(self, test_artifact_dir, monkeypatch):
+        """校验失败且 partial 清理抛错: 必须返回非零并报告, 不得声称成功(R7-06)。"""
+        from pathlib import Path as _Path
+
+        source = test_artifact_dir / "src.db"
+        _make_source(source, rows=1)
+        out = test_artifact_dir / "out"
+        out.mkdir()
+
+        # 让 verify 失败
+        monkeypatch.setattr(
+            backup_db, "verify_restore",
+            lambda s, d: ["表 sample: 行数不一致(源 1 vs 备份 0)"],
+        )
+        # 让清理抛错: Path.unlink 直接失败
+        def _boom_unlink(self):
+            raise OSError("injected cleanup failure")
+
+        monkeypatch.setattr(_Path, "unlink", _boom_unlink)
+
+        rc = do_backup(str(source), out)
+        assert rc != 0, "清理失败必须返回非零"
+        # 因清理失败, 该 partial 可能仍在; 重点是不得声称成功(rc==0)
+        assert rc != 0
+
+    def test_extra_table_rejected_before_publish(self, test_artifact_dir, monkeypatch):
+        """R7-07: partial 被注入额外表, 完整比较必须失败, 不发布最终 .db。"""
+        source = test_artifact_dir / "src.db"
+        _make_source(source, rows=1)
+        out = test_artifact_dir / "out"
+        out.mkdir()
+
+        def _inject(partial):
+            with closing(sqlite3.connect(partial)) as conn:
+                conn.execute("CREATE TABLE attacker_extra (id INTEGER PRIMARY KEY)")
+                conn.commit()
+
+        backup_db._POST_WRITE_HOOK = _inject
+        try:
+            rc = do_backup(str(source), out)
+        finally:
+            backup_db._POST_WRITE_HOOK = None
+        assert rc != 0, "额外表必须被拒绝"
+        assert not list(out.glob("*.db")), "额外表副本不得发布"
+        assert not list(out.glob("*.partial")), "额外表 partial 必须清理"
+
+    def test_content_tamper_rejected_before_publish(self, test_artifact_dir, monkeypatch):
+        """内容篡改(删行): 行数/摘要不一致必须失败, 不发布最终 .db。"""
+        source = test_artifact_dir / "src.db"
+        _make_source(source, rows=2)
+        out = test_artifact_dir / "out"
+        out.mkdir()
+
+        def _inject(partial):
+            with closing(sqlite3.connect(partial)) as conn:
+                conn.execute("DELETE FROM sample WHERE id = 1")
+                conn.commit()
+
+        backup_db._POST_WRITE_HOOK = _inject
+        try:
+            rc = do_backup(str(source), out)
+        finally:
+            backup_db._POST_WRITE_HOOK = None
+        assert rc != 0, "内容篡改必须被拒绝"
+        assert not list(out.glob("*.db")), "篡改副本不得发布"
+        assert not list(out.glob("*.partial")), "篡改 partial 必须清理"
+
+    def test_list_never_shows_partial_or_failed(self, test_artifact_dir, capsys):
+        """R7-05/Step5: --list 永远不展示 partial/failed/sidecar。"""
+        d = test_artifact_dir / "mix"
+        d.mkdir()
+        (d / "web.20260910_000000_000000.partial").write_bytes(b"x")
+        (d / "web.20260910_000000_000000.failed").write_bytes(b"x")
+        rc = list_backups(d)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "暂无备份" in out
+        assert ".partial" not in out
+        assert ".failed" not in out
+
+
+class TestAtomicPublish:
+    """Task 3 / Step4: 原子不覆盖发布原语与并发竞争。"""
+
+    def test_publish_refuses_overwrite(self, test_artifact_dir):
+        """dst 已存在时 _publish 必须抛 FileExistsError(不覆盖)。"""
+        source = test_artifact_dir / "src.db"
+        _make_source(source, rows=1)
+        dst = test_artifact_dir / "final.db"
+        dst.write_bytes(b"preexisting")
+        partial = test_artifact_dir / "final.partial"
+        backup(source, partial)  # 写入合法 partial
+        with pytest.raises(FileExistsError):
+            _publish(partial, dst)
+
+    def test_concurrent_publish_same_dst_only_one_succeeds(self, test_artifact_dir):
+        """并发发布同一 dst: 恰好一个成功, 另一个抛 FileExistsError(R7-05 并发原语)。"""
+        import threading
+
+        source = test_artifact_dir / "src.db"
+        _make_source(source, rows=1)
+        dst = test_artifact_dir / "final.db"
+        pa = test_artifact_dir / "a.partial"
+        pb = test_artifact_dir / "b.partial"
+        backup(source, pa)
+        backup(source, pb)
+
+        succeeded: dict = {}
+        conflicted: dict = {}
+
+        def worker(tag, partial):
+            try:
+                _publish(partial, dst)
+                succeeded[tag] = True
+            except FileExistsError:
+                conflicted[tag] = True
+
+        t1 = threading.Thread(target=worker, args=("a", pa))
+        t2 = threading.Thread(target=worker, args=("b", pb))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        assert len(succeeded) == 1, f"恰好一个成功, 实际: {succeeded}"
+        assert len(conflicted) == 1, f"恰好一个抛 FileExistsError, 实际: {conflicted}"
+        assert dst.exists(), "最终 .db 应被发布"

@@ -278,7 +278,7 @@ def main() -> int:
     if differences:
         print(f"共 {len(differences)} 处差异: 备份副本不可依赖")
         return 1
-    print("✅ 恢复副本验证通过(integrity/表集合/行数/主键值/内容摘要/结构全部一致)")
+    print("[PASS] 恢复副本验证通过(integrity/表集合/行数/主键值/内容摘要/结构全部一致)")
     return 0
 
 
