@@ -215,14 +215,14 @@ def main() -> int:
     result = adopt_database_copy(source, backup_copy, args.revision, deps)
 
     for stage in result.stages:
-        mark = "✅" if stage.status == "passed" else "❌"
+        mark = "[PASS]" if stage.status == "passed" else "[FAIL]"
         suffix = f" — {stage.detail}" if stage.detail else ""
         print(f"{mark} {stage.name}{suffix}")
 
     if result.code == 0:
-        print(f"✅ 副本接管完成, revision={args.revision}")
+        print(f"[PASS] 副本接管完成, revision={args.revision}")
     else:
-        print(f"❌ 接管在阶段 {result.failed_stage} 失败", file=sys.stderr)
+        print(f"[FAIL] 接管在阶段 {result.failed_stage} 失败", file=sys.stderr)
     return result.code
 
 

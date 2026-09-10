@@ -107,10 +107,10 @@ def main() -> int:
     try:
         run_smoke(args.database, args.expect_key, args.expect_value)
     except Exception as exc:  # noqa: BLE001
-        print(f"❌ 冒烟失败: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"[FAIL] 冒烟失败: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
-    print(f"✅ 隔离应用冒烟通过(副本 {args.database} 可被应用读取)")
+    print(f"[PASS] 隔离应用冒烟通过(副本 {args.database} 可被应用读取)")
     return 0
 
 

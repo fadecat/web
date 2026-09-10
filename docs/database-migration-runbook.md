@@ -26,17 +26,17 @@
 #    生产: systemctl stop webapp
 
 # 2) 一致性备份(含 WAL, 拒绝覆盖已有目标; backup API 本身 fail closed)
-python scripts/backup_db.py --source D:/path/to/web.db --destination-dir D:/path/to/backups
+& 'C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe' -m scripts.backup_db --source D:/path/to/web.db --destination-dir D:/path/to/backups
 #    → 生成 D:/path/to/backups/web.<YYYYMMDD_HHMMSS_microseconds>.db
 #      后续命令务必从 backup 输出的"备份完成: <绝对路径>"行复制真实路径,
 #      禁止手工拼接 web.<ts>.db(脚本实际生成的是 web.<ts>.db, 拼错会找不到文件)
 
 # 3) 恢复验证(integrity/表集合/行数/主键值/内容摘要/结构, 忽略 alembic_version)
-python scripts/verify_db_restore.py --source D:/path/to/web.db --backup D:/path/to/backups/web.<ts>.db
+& 'C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe' -m scripts.verify_db_restore --source D:/path/to/web.db --backup D:/path/to/backups/web.<ts>.db
 #    → "✅ 恢复副本验证通过" 才可继续
 
 # 4) 对备份副本做只读结构核对(任何差异立即停止, 禁止 stamp)
-python scripts/check_db_baseline.py --database-url sqlite:///D:/path/to/backups/web.<ts>.db
+& 'C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe' -m scripts.check_db_baseline --database-url sqlite:///D:/path/to/backups/web.<ts>.db
 #    → 输出"结构匹配"才可继续; 有差异则提交差异报告, 先对齐结构
 
 # 5) 在副本上显式 stamp 0001(不升级, 只写版本号)
@@ -47,8 +47,8 @@ python -m alembic -x database_url=sqlite:///D:/path/to/backups/web.<ts>.db curre
 #    → 0001
 
 # 7) stamp 后再次 compare/verify(应仍通过: alembic_version 被忽略)
-python scripts/check_db_baseline.py --database-url sqlite:///D:/path/to/backups/web.<ts>.db
-python scripts/verify_db_restore.py --source D:/path/to/web.db --backup D:/path/to/backups/web.<ts>.db
+& 'C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe' -m scripts.check_db_baseline --database-url sqlite:///D:/path/to/backups/web.<ts>.db
+& 'C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe' -m scripts.verify_db_restore --source D:/path/to/web.db --backup D:/path/to/backups/web.<ts>.db
 
 # 8) 副本执行 upgrade head(空操作幂等, 验证迁移链完整)
 python -m alembic -x database_url=sqlite:///D:/path/to/backups/web.<ts>.db upgrade head
@@ -67,7 +67,7 @@ python -m alembic -x database_url=sqlite:///D:/path/to/backups/web.<ts>.db upgra
 > 操作员**禁止跳过 compare 直接 stamp**, 也无需手工逐条执行状态机命令。
 
 ```powershell
-python scripts/adopt_db_copy.py --source D:/path/to/web.db --backup-copy D:/path/to/backups/web.<ts>.db --revision 0001
+& 'C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe' -m scripts.adopt_db_copy --source D:/path/to/web.db --backup-copy D:/path/to/backups/web.<ts>.db --revision 0001
 ```
 
 固定状态机(不可跳步, 任一阶段失败立即停止并返回非 0):
@@ -82,12 +82,12 @@ python scripts/adopt_db_copy.py --source D:/path/to/web.db --backup-copy D:/path
 | smoke_passed | 隔离应用冒烟(真实读库路由命中副本) | 1 |
 | path_guard / revision_arg | 输入护栏(同文件/日常库/空 revision) | 2 |
 
-产物记录: 每次运行把命令、各阶段 ✅/❌ 输出与最终退出码记入操作日志。
+产物记录: 每次运行把命令、各阶段 [PASS]/[FAIL] 输出与最终退出码记入操作日志。
 护栏: 拒绝 backup_copy 等于日常 `data/web.db`, 拒绝 source 与 backup_copy 同文件。
 冒烟可单独执行:
 
 ```powershell
-python scripts/smoke_db_copy.py --database D:/path/to/backups/web.<ts>.db --expect-key smtp_host --expect-value <明文值>
+& 'C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe' -m scripts.smoke_db_copy --database D:/path/to/backups/web.<ts>.db --expect-key smtp_host --expect-value <明文值>
 ```
 
 ## 3. 新空库初始化
@@ -108,7 +108,7 @@ python -m alembic -x database_url=sqlite:///D:/absolute/path/to/new.db upgrade h
 
 ```powershell
 # 列出备份
-python scripts/backup_db.py --list D:/path/to/backups
+& 'C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe' -m scripts.backup_db --list D:/path/to/backups
 ```
 
 ## 5. 失败停止与恢复
