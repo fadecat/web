@@ -19,7 +19,7 @@ from backend.services.index_universe import (
 
 
 def test_default_universe_merges_three_sources():
-    """默认名单应合并估值(9) + 腾讯(2) = 11 个指数, 且 931052 存储键=512040。"""
+    """默认名单应合并估值(10) + 腾讯(2) = 12 个指数, 且 931052 存储键=512040。"""
     indices = {i["code"]: i for i in load_universe()}
 
     # 估值标的 canonical 是真实指数代码
@@ -30,6 +30,12 @@ def test_default_universe_merges_three_sources():
     # 980081(国证价值100) storage=159263
     assert indices["980081"]["datasets"][DATASET_VALUATION]["storage_code"] == "159263"
 
+    # 980080(成长100) 纳入估值名单且无重复记录
+    assert "980080" in indices, "成长100 canonical 应为 980080"
+    assert indices["980080"]["name"] == "成长100"
+    assert indices["980080"]["datasets"][DATASET_VALUATION]["source"] == SOURCE_EFUNDS
+    assert indices["980080"]["datasets"][DATASET_VALUATION]["storage_code"] == "980080"
+
     # 腾讯两只 quote 独立
     assert indices["399376"]["datasets"][DATASET_QUOTE]["source"] == SOURCE_TENCENT
     assert indices["399373"]["datasets"][DATASET_QUOTE]["source"] == SOURCE_TENCENT
@@ -39,10 +45,18 @@ def test_default_universe_merges_three_sources():
     assert indices["399296"]["datasets"][DATASET_QUOTE]["source"] == SOURCE_EFUNDS
 
 
+def test_default_universe_has_no_duplicate_codes():
+    """默认名单无重复 code(980080 只出现一次)。"""
+    codes = [i["code"] for i in load_universe()]
+    assert len(codes) == len(set(codes)), "默认名单存在重复 code"
+    assert codes.count("980080") == 1
+
+
 def test_datasets_for_job_routing():
     """三个任务各取正确的 dataset 集合。"""
     val_codes = {i["code"] for i, _d in datasets_for_job("valuation_daily")}
     assert "931052" in val_codes and "930955" in val_codes
+    assert "980080" in val_codes, "成长100 应被估值任务枚举"
     assert "399376" not in val_codes  # 腾讯不是估值任务
 
     eod_codes = {i["code"] for i, _d in datasets_for_job("index_eod_daily")}
