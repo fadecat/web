@@ -19,24 +19,128 @@ from typing import Any
 from backend.config import DATA_DIR
 
 # ---------------------------------------------------------------------------
-# 因子目录(单一事实源)
+# 因子目录(单一事实源, V3 类型化, 方案 §4.2)
 # ---------------------------------------------------------------------------
 # tab: "basic" = 转债自身因子 | "stock" = 正股因子
-FACTOR_CATALOG: list[dict[str, str]] = [
-    {"field": "dblow",             "label": "双低值",     "unit": "",   "tab": "basic"},
-    {"field": "premium_rt",        "label": "转股溢价率", "unit": "%",  "tab": "basic"},
-    {"field": "curr_iss_amt",      "label": "剩余规模",   "unit": "亿", "tab": "basic"},
-    {"field": "convert_value",     "label": "转股价值",   "unit": "",   "tab": "basic"},
-    {"field": "year_left",         "label": "剩余年限",   "unit": "年", "tab": "basic"},
-    {"field": "price",             "label": "收盘价",     "unit": "元", "tab": "basic"},
-    {"field": "convert_amt_ratio", "label": "转债市占比", "unit": "%",  "tab": "basic"},
-    {"field": "volume",            "label": "成交额",     "unit": "万", "tab": "basic"},
-    {"field": "increase_rt",       "label": "涨跌幅",     "unit": "%",  "tab": "basic"},
-    {"field": "ytm_rt",            "label": "到期收益率", "unit": "%",  "tab": "basic"},
-    {"field": "pb",                "label": "市净率",     "unit": "倍", "tab": "stock"},
-    {"field": "sprice",            "label": "正股收盘价", "unit": "元", "tab": "stock"},
-    {"field": "sincrease_rt",      "label": "正股涨跌幅", "unit": "%",  "tab": "stock"},
+# V3 每项新增: type(数据类型)/operators(合法运算符)/filterable/scorable/
+#   description(用途说明)/allow_negative(负数阈值允许标记, §4.3:
+#   目录显式记录每个数字字段允许负数与否, 不能仅依据 type=number 判断)
+# 兼容: 保留旧 field/label/unit/tab 键, 前端既有读取不受影响;
+#   集思录 ytm_rt 已移除(R1), 新指标统一为 simple_maturity_yield_pct。
+
+_NUM_OPS = ["gte", "lte", "gt", "between"]
+
+
+def _num_field(
+    field: str,
+    label: str,
+    unit: str,
+    tab: str,
+    *,
+    allow_negative: bool = False,
+    scorable: bool = True,
+    description: str = "",
+) -> dict[str, Any]:
+    """数值型目录项: 统一 gte/lte/gt/between 运算符。"""
+    return {
+        "field": field,
+        "label": label,
+        "unit": unit,
+        "tab": tab,
+        "type": "number",
+        "operators": list(_NUM_OPS),
+        "filterable": True,
+        "scorable": scorable,
+        "allow_negative": allow_negative,
+        "description": description or label,
+    }
+
+
+def _enum_field(
+    field: str,
+    label: str,
+    unit: str,
+    tab: str,
+    *,
+    operators: list[str],
+    description: str = "",
+) -> dict[str, Any]:
+    """枚举/集合/布尔型目录项: 不可评分。"""
+    return {
+        "field": field,
+        "label": label,
+        "unit": unit,
+        "tab": tab,
+        "type": (
+            "set" if operators == ["not_any"]
+            else "boolean" if operators == ["eq"]
+            else "enum"
+        ),
+        "operators": list(operators),
+        "filterable": True,
+        "scorable": False,
+        "allow_negative": False,
+        "description": description or label,
+    }
+
+
+FACTOR_CATALOG: list[dict[str, Any]] = [
+    _num_field("dblow", "双低值", "", "basic",
+               description="价格+溢价率百分点的双低复合值"),
+    _num_field("premium_rt", "转股溢价率", "%", "basic", allow_negative=True,
+               description="转股溢价率, 允许负值"),
+    _num_field("curr_iss_amt", "剩余规模", "亿", "basic",
+               description="剩余发行规模, 非负"),
+    _num_field("convert_value", "转股价值", "", "basic",
+               description="转股价值, 非负"),
+    _num_field("year_left", "剩余年限", "年", "basic",
+               description="剩余年限, 非负"),
+    _num_field("price", "当前价格", "元", "basic",
+               description="转债当前价格(DB 快照为收盘价), 非负"),
+    _num_field("convert_amt_ratio", "转债市占比", "%", "basic",
+               description="转债市值占比, 非负"),
+    _num_field("volume", "成交额", "万", "basic",
+               description="成交额, 非负"),
+    _num_field("increase_rt", "涨跌幅", "%", "basic", allow_negative=True,
+               description="当日涨跌幅, 允许负值"),
+    _num_field("pb", "市净率", "倍", "stock", allow_negative=True,
+               description="市净率; 负值表示净资产为负"),
+    _num_field("sprice", "正股收盘价", "元", "stock",
+               description="正股价格, 非负"),
+    _num_field("sincrease_rt", "正股涨跌幅", "%", "stock", allow_negative=True,
+               description="正股当日涨跌幅, 允许负值"),
+    # V3 新增指标(方案 §3.1/§4.2)
+    _num_field("simple_maturity_yield_pct", "简单到期收益率", "%", "basic",
+               allow_negative=True,
+               description="公共公式 (到期赎回价-现价)/现价×100, 未年化不含票息和税; 允许负值"),
+    _num_field("redeem_price", "到期赎回价", "元", "basic",
+               description="到期赎回价(来自强赎快照 redeem_price, 非强赎触发价), 正数"),
+    _num_field("redeem_remain_days", "距强赎触发天数", "天", "basic",
+               allow_negative=True, scorable=False,
+               description="距强赎触发剩余天数; 数据可为负(已过触发日), 负阈值允许"),
+    _num_field("listed_days", "上市天数", "天", "basic", scorable=False,
+               description="上市至数据交易日/实时时区日期的自然日天数, 阈值非负"),
+    _enum_field("industry_code", "细分行业", "", "basic",
+                operators=["in", "not_in"],
+                description="申万2021原始行业码, 空码归一为 NONE; 筛选匹配原始码"),
+    _enum_field("rating_cd", "评级", "", "basic",
+                operators=["in", "not_in"],
+                description="评级目录, 含 NONE(无评级)与快照发现的未知评级"),
+    _enum_field("redeem_icons", "强赎状态", "", "basic",
+                operators=["not_any"],
+                description="强赎标记集合 R/O/B/G, 命中任一所选即排除"),
+    _enum_field("stock_is_st", "正股ST", "", "stock",
+                operators=["eq"],
+                description="正股名称含 ST/*ST(复用现有识别定义)"),
+    _enum_field("code", "转债代码", "", "basic",
+                operators=["not_in"],
+                description="个券排除, 归一为 6 位代码"),
 ]
+
+# field -> 目录项索引(schema 校验与条件引擎共用)
+FACTOR_CATALOG_BY_FIELD: dict[str, dict[str, Any]] = {
+    entry["field"]: entry for entry in FACTOR_CATALOG
+}
 
 FACTORS_PATH = DATA_DIR / "factors.json"
 
