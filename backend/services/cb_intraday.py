@@ -22,6 +22,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from backend.services.cb_metrics import simple_maturity_yield_pct
 from backend.services.cb_screen import format_redeem_status
 from backend.services.industry import industry_name_of
 from backend.services.queries.live import fetch_live_snapshot
@@ -94,9 +95,10 @@ def _live_row(rec: dict[str, Any], redeem_cell: dict[str, Any] | None) -> dict[s
     year_left = _num(rec.get("year_left"))
 
     # 到期收益率(简化): (赎回价-现价)/现价, 持有到期总回报率(未年化); 赎回价缺失不算
-    ytm_simple: float | None = None
-    if redeem_price is not None and price is not None and price > 0:
-        ytm_simple = round((redeem_price - price) / price * 100, 3)
+    # T1: 改调公共公式 cb_metrics.simple_maturity_yield_pct, 保证与选债 V3
+    # 新指标同一事实源; 旧响应字段名(ytm_simple)与 3 位小数精度保持不变
+    ytm_raw = simple_maturity_yield_pct(price, redeem_price)
+    ytm_simple: float | None = round(ytm_raw, 3) if ytm_raw is not None else None
 
     return {
         "code": str(rec.get("bond_id") or ""),
