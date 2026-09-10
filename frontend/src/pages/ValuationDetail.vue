@@ -130,9 +130,17 @@ const chartData = computed(() => {
       cutoff = d.toISOString().slice(0, 10);
     }
     const windowed = cutoff ? series.filter((p) => p.date >= cutoff) : series;
+    // 同期十年期国债收益率走右轴对照线(与主指标同一窗口/同一日期集合)
+    const bondValues = windowed.map((p) =>
+      p.cn_10y_bond_yield != null ? p.cn_10y_bond_yield : null,
+    );
     return {
       dates: windowed.map((p) => p.date),
       values: windowed.map((p) => p[ebMetric.value]),
+      comparisonValues: bondValues,
+      comparisonLabel: '十年期国债收益率',
+      primaryUnit: ebMetric.value === 'ratio' ? '倍' : '百分点',
+      comparisonUnit: '%',
     };
   }
   const key = metric.value; // 'pe' | 'pb'
@@ -313,6 +321,10 @@ onBeforeUnmount(() => {
           :dates="chartData.dates"
           :values="chartData.values"
           :metric-label="chartLabel"
+          :comparison-values="chartData.comparisonValues"
+          :comparison-label="chartData.comparisonLabel"
+          :primary-unit="chartData.primaryUnit"
+          :comparison-unit="chartData.comparisonUnit"
         />
         <div v-if="ebData" class="dividend-panel eb-panel">
           <div class="dy-compare">
@@ -349,8 +361,8 @@ onBeforeUnmount(() => {
           </div>
 
           <p class="dy-note">
-            股债差 = 盈利收益率(1/PE) − 10年期国债收益率, 股债比 = 盈利收益率 ÷ 10年期国债收益率。<br />
-            差值/比值越高代表股票相对债券越有吸引力, 分位越高越便宜。
+            盈利收益率 = 100/PE(%)。股债差 = 盈利收益率 − 国债收益率(百分点), 股债比 = 盈利收益率 ÷ 国债收益率(倍)。<br />
+            右轴为同期 10 年期国债收益率(%)。差值/比值越高代表股票相对债券越有吸引力, 分位越高越便宜。
           </p>
         </div>
       </template>

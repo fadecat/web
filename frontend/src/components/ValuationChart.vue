@@ -7,6 +7,7 @@ import {
   AxisPointerComponent,
   DataZoomComponent,
   GridComponent,
+  LegendComponent,
   MarkLineComponent,
   TooltipComponent,
 } from 'echarts/components';
@@ -15,6 +16,7 @@ use([
   CanvasRenderer,
   LineChart,
   GridComponent,
+  LegendComponent,
   MarkLineComponent,
   TooltipComponent,
   DataZoomComponent,
@@ -25,6 +27,11 @@ const props = defineProps({
   dates: { type: Array, default: () => [] },
   values: { type: Array, default: () => [] },
   metricLabel: { type: String, default: 'PE' }, // 图例/tooltip 用的指标名
+  // 可选对照序列(如十年期国债收益率): 不传时保持单轴单线行为
+  comparisonValues: { type: Array, default: () => [] },
+  comparisonLabel: { type: String, default: '' },
+  primaryUnit: { type: String, default: '' }, // 主轴单位(如 百分点/倍)
+  comparisonUnit: { type: String, default: '%' }, // 对照轴单位
 });
 
 const chartRef = ref(null);
@@ -56,6 +63,11 @@ const refLines = computed(() => {
 });
 
 const fmt = (v) => (v == null ? '—' : Number(v).toFixed(2));
+
+// 对照序列(如十年期国债)是否有可用数据: 全部缺失时退回单轴单线
+const hasComparison = computed(() =>
+  props.comparisonValues.some((v) => v != null && !Number.isNaN(v)),
+);
 
 function buildMarkLine() {
   const { p30, p50, p70 } = refLines.value;
@@ -99,6 +111,59 @@ function buildOption() {
   }
 
   const mobile = isMobile();
+  const comparison = hasComparison.value;
+  // 对照序列缺失时提示但不阻断主图
+  const comparisonMissing =
+    props.comparisonLabel &&
+    !comparison &&
+    props.comparisonValues.some((v) => v != null);
+  const yAxis = [
+    {
+      type: 'value',
+      scale: true, // 不强制从 0 起, 否则 PE 波动被压平看不见
+      name: comparison ? props.primaryUnit : '',
+      nameTextStyle: { color: '#9ca3af', fontSize: mobile ? 9 : 11, align: 'right' },
+      axisLabel: { color: '#9ca3af', fontSize: mobile ? 9 : 11 },
+      axisLine: { show: false },
+      splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.18)' } },
+    },
+  ];
+  if (comparison) {
+    // 右轴: 对照序列(如十年期国债收益率), 不画网格线避免与主轴混淆
+    yAxis.push({
+      type: 'value',
+      scale: true,
+      name: props.comparisonUnit || '%',
+      nameTextStyle: { color: '#9ca3af', fontSize: mobile ? 9 : 11 },
+      axisLabel: { color: '#9ca3af', fontSize: mobile ? 9 : 11 },
+      axisLine: { show: false },
+      splitLine: { show: false },
+    });
+  }
+  const series = [
+    {
+      name: props.metricLabel,
+      type: 'line',
+      data: props.values,
+      symbol: 'none',
+      connectNulls: true, // 个别日期缺数据时不断线
+      lineStyle: { width: 1.8, color: '#274c77' },
+      areaStyle: { color: 'rgba(39, 76, 119, 0.08)' },
+      markLine: buildMarkLine(),
+    },
+  ];
+  if (comparison) {
+    // 对照线: 另一种颜色+虚线, 不带面积, 缺失点不连线
+    series.push({
+      name: props.comparisonLabel,
+      type: 'line',
+      yAxisIndex: 1,
+      data: props.comparisonValues,
+      symbol: 'none',
+      connectNulls: false,
+      lineStyle: { width: 1.5, color: '#b45309', type: 'dashed' },
+    });
+  }
   return {
     animation: false,
     tooltip: {
@@ -111,14 +176,30 @@ function buildOption() {
       extraCssText: 'box-shadow: 0 8px 20px rgba(15,23,42,0.14); border-radius: 10px;',
       formatter: (params) => {
         if (!params?.length) return '';
-        const p = params[0];
-        return `${p.axisValue}<br/>${props.metricLabel} <b>${fmt(p.data)}</b>`;
+        const rows = params.map((p) => {
+          const isComp = p.seriesName === props.comparisonLabel;
+          const unit = isComp ? props.comparisonUnit : props.primaryUnit;
+          return `${p.marker}${p.seriesName} <b>${fmt(p.data)}${unit}</b>`;
+        });
+        return `${params[0].axisValue}<br/>${rows.join('<br/>')}`;
       },
     },
+    legend:
+      comparison && props.comparisonLabel
+        ? {
+            data: [props.metricLabel, props.comparisonLabel],
+            top: mobile ? 2 : 6,
+            left: 'center',
+            itemWidth: 16,
+            itemHeight: 9,
+            itemGap: mobile ? 12 : 20,
+            textStyle: { color: '#4b5563', fontSize: mobile ? 10 : 12 },
+          }
+        : undefined,
     grid: {
-      top: mobile ? 24 : 32,
+      top: comparison ? (mobile ? 44 : 52) : mobile ? 24 : 32,
       left: mobile ? 48 : 62,
-      right: mobile ? 16 : 28,
+      right: comparison ? (mobile ? 44 : 60) : mobile ? 16 : 28,
       bottom: mobile ? 26 : 34,
     },
     xAxis: {
@@ -135,13 +216,7 @@ function buildOption() {
       axisTick: { show: false },
       axisLine: { lineStyle: { color: '#e4e7ed' } },
     },
-    yAxis: {
-      type: 'value',
-      scale: true, // 不强制从 0 起, 否则 PE 波动被压平看不见
-      axisLabel: { color: '#9ca3af', fontSize: mobile ? 9 : 11 },
-      axisLine: { show: false },
-      splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.18)' } },
-    },
+    yAxis,
     dataZoom: [
       {
         type: 'inside',
@@ -150,18 +225,24 @@ function buildOption() {
         zoomOnMouseWheel: true,
       },
     ],
-    series: [
-      {
-        name: props.metricLabel,
-        type: 'line',
-        data: props.values,
-        symbol: 'none',
-        connectNulls: true, // 个别日期缺数据时不断线
-        lineStyle: { width: 1.8, color: '#274c77' },
-        areaStyle: { color: 'rgba(39, 76, 119, 0.08)' },
-        markLine: buildMarkLine(),
-      },
-    ],
+    series,
+    graphic:
+      comparisonMissing && !props.dates.length
+        ? []
+        : comparisonMissing
+          ? [
+              {
+                type: 'text',
+                left: 'center',
+                top: 'middle',
+                style: {
+                  text: '同期国债走势数据暂缺',
+                  fill: '#9ca3af',
+                  fontSize: 12,
+                },
+              },
+            ]
+          : [],
   };
 }
 
@@ -183,7 +264,19 @@ const onResize = () => {
   }
 };
 
-watch(() => [props.dates, props.values, props.metricLabel], () => nextTick(render), { deep: true });
+watch(
+  () => [
+    props.dates,
+    props.values,
+    props.metricLabel,
+    props.comparisonValues,
+    props.comparisonLabel,
+    props.primaryUnit,
+    props.comparisonUnit,
+  ],
+  () => nextTick(render),
+  { deep: true },
+);
 
 onMounted(() => {
   nextTick(render);
