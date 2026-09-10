@@ -34,9 +34,9 @@
 - `data/web.db` 用 WAL + busy_timeout=5000（`backend/models/database.py`）。
 - APScheduler 线程池与 FastAPI 请求并发写同一库，依赖 WAL 的读写并发。
 
-### 迁移与回滚门禁（第五阶段建立, Phase 5.1 修复后已验证为事实）
-> 2026-09-09 Phase 5.1 重新验收通过, 见 `docs/2026-09-09-phase-5-1-verification.md`
-> （commit 79bcfd5）。以下为已验证事实, 不再是待验证声明。
+### 迁移与回滚门禁（Phase 5.2 修复后待验证, Phase 5.1 已被第七轮 review 推翻）
+> Phase 5.2 计划（`docs/superpowers/plans/2026-09-10-phase-5-2-cli-isolation-and-publish-safety.md`）
+> 关闭 R7-01~R7-10 后重新裁决. 在此之前该门禁为阻塞项, 不开始 Phase 6 实现。
 - Alembic 初始版本 0001（10 张业务表）；已有库接管由单一编排入口
   `scripts/adopt_db_copy.py` 固定状态机完成（backup_verified → schema_verified →
   stamped → revision_verified → upgraded → smoke_passed, 失败即停）,

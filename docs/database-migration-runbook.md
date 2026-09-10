@@ -17,49 +17,22 @@
 
 ## 2. 固定顺序(已有库接管)
 
-> 顺序已按可执行链路校正(R5-03): **verify_restore 与 compare_schema 都忽略
-> `alembic_version` 迁移元数据表**, 因此 stamp 前后这些检查均通过;
-> upgrade head 在 stamp 之后执行。
+> **唯一权威接管流程**: 步骤 1-9 已固化为 `scripts/adopt_db_copy.py` 单一编排入口
+> (本节 §2.1), 操作员不得手工拆分执行。§2.2 故障排查附录仅在编排入口失败后
+> 用于定位,**stamp 后人工 verify 必须带 `--expected-backup-revision 0001`**。
+>
+> **R5-03 校正: 已撤销**。原"verify_restore/compare_schema 忽略 alembic_version"
+> 的早期实现已被 `scripts/verify_db_restore.py` 的严格 revision 校验替代
+> (Phase 5.1 / 5.2): 默认 verify 拒绝源 None / 副本 stamped 0001 的差异,
+> 接管特例必须显式传 `--expected-backup-revision 0001`。人工诊断沿用旧文
+> 极易在 stamp 后得到 "migration revision 不一致" 误报, 请改用编排入口。
 
-```powershell
-# 1) 停止写入/调度(服务窗口, 避免期间写入)
-#    生产: systemctl stop webapp
-
-# 2) 一致性备份(含 WAL, 拒绝覆盖已有目标; backup API 本身 fail closed)
-& 'C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe' -m scripts.backup_db --source D:/path/to/web.db --destination-dir D:/path/to/backups
-#    → 生成 D:/path/to/backups/web.<YYYYMMDD_HHMMSS_microseconds>.db
-#      后续命令务必从 backup 输出的"备份完成: <绝对路径>"行复制真实路径,
-#      禁止手工拼接 web.<ts>.db(脚本实际生成的是 web.<ts>.db, 拼错会找不到文件)
-
-# 3) 恢复验证(integrity/表集合/行数/主键值/内容摘要/结构, 忽略 alembic_version)
-& 'C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe' -m scripts.verify_db_restore --source D:/path/to/web.db --backup D:/path/to/backups/web.<ts>.db
-#    → "✅ 恢复副本验证通过" 才可继续
-
-# 4) 对备份副本做只读结构核对(任何差异立即停止, 禁止 stamp)
-& 'C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe' -m scripts.check_db_baseline --database-url sqlite:///D:/path/to/backups/web.<ts>.db
-#    → 输出"结构匹配"才可继续; 有差异则提交差异报告, 先对齐结构
-
-# 5) 在副本上显式 stamp 0001(不升级, 只写版本号)
-python -m alembic -x database_url=sqlite:///D:/path/to/backups/web.<ts>.db stamp 0001
-
-# 6) 确认版本
-python -m alembic -x database_url=sqlite:///D:/path/to/backups/web.<ts>.db current
-#    → 0001
-
-# 7) stamp 后再次 compare/verify(应仍通过: alembic_version 被忽略)
-& 'C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe' -m scripts.check_db_baseline --database-url sqlite:///D:/path/to/backups/web.<ts>.db
-& 'C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe' -m scripts.verify_db_restore --source D:/path/to/web.db --backup D:/path/to/backups/web.<ts>.db
-
-# 8) 副本执行 upgrade head(空操作幂等, 验证迁移链完整)
-python -m alembic -x database_url=sqlite:///D:/path/to/backups/web.<ts>.db upgrade head
-
-# 9) 隔离应用冒烟(见 §3 单一编排入口, 已含此步)
-```
-
-**硬性规则**:
-- 结构有任意差异**立即停止**, 不 stamp、不 upgrade、不对已有表重复建表。
-- 禁止对不匹配库执行 `stamp head`。
-- 本阶段**不对 `data/web.db` 执行**这些命令。
+**写入边界(Phase 5.2 起, 不可违反)**:
+- `source`: 只读(备份 API 也以 `mode=ro` 打开, 禁止写入)。
+- `backup_copy`: 允许 backup、stamp、upgrade、smoke 的 init_db; 不得作为其他用途。
+- 任何 `unrelated` / `global` / 日常 `data/web.db`: 禁止被 adopt 或 smoke 打开。
+- 一旦 stamped 之后失败, copy 标记为"不可交付", 必须从已验证 backup 重新
+  开始完整接管链, 不得"补跑"后续命令(stamp 前的二进制安全摘要已记录在源).
 
 ## 2.1 接管副本: 单一编排入口(推荐)
 

@@ -72,3 +72,33 @@ for name in sorted(os.listdir(root)):
 - 所有迁移/stamp/upgrade/冒烟只针对测试副本，未读取或修改日常 `data/web.db`。✅
 
 **结论: Phase 5.1 门禁全部通过，第五阶段重新裁决为达标，可进入 Phase 6 共享状态设计。**
+
+---
+
+## 5. 第七轮复核更正（2026-09-10, Phase 5.2 起点）
+
+第七轮 review（`docs/superpowers/plans/2026-09-10-phase-5-2-cli-isolation-and-publish-safety.md`）
+判定 5.1 阶段不达标, 主要问题:
+
+- **R7-01 / R7-04**: 父进程 `_smoke()` 直接调用 `run_smoke()`, 进入全局 `backend.main`
+  lifespan, 可能向 `DATABASE_URL` 指向的非副本库写入（实测反例: 父进程 unrelated
+  库被创建 10 张业务表）。happy path 之前的测试以手工 `_smoke` 覆盖绕过生产 smoke。
+- **R7-02**: `python scripts/*.py` 文档命令从仓库根目录执行触发
+  `ModuleNotFoundError: scripts/backend`。
+- **R7-03**: 写操作成功后 `✅/❌` 状态字符在 Windows GBK 控制台抛
+  `UnicodeEncodeError`, 副本已写但运维看到"失败"。
+- **R7-05 / R7-06 / R7-07**: 备份占位即写最终 `.db`, 校验前可被 `--list` 列出;
+  source connect 失败留 0 字节 `.db`; 后置校验只比较 source 表, 副本多出
+  `attacker_extra` 仍判通过。
+- **R7-08**: runbook §2 仍声称"忽略 alembic_version 后默认 verify 通过", 与
+  严格 revision 策略冲突, 人工按文档执行 stamp 后会得到 "revision 不一致" 误报。
+- **R7-09**: 状态机接受相对路径、dependency 缺键时 KeyError 绕过结构化结果、
+  非 list 返回值被当成功; revision/smoke 失败分支无测试覆盖;
+  `_current_revision()` engine 未 dispose。
+- **R7-10**: 验证文档使用 PATH 中的裸 `python`（指向缺 pytest 的 2.7）,
+  验收依据（计划文档）未纳入跟踪, 干净 checkout 无法阅读。
+
+**裁决: Phase 5.1 已被 Phase 5.2 替代, 旧 5.1 验收记录仅作历史。**
+Phase 6 入口（`docs/2026-09-09-phase-6-shared-state-design-input.md` § 1 "迁移
+与回滚门禁"）在 Phase 5.2 验收通过前继续标记为阻塞项, 不开始共享配置表或
+operation/run 状态机实现。
