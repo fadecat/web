@@ -3,7 +3,7 @@
 ## 1. 变更范围
 
 - 基线：`cf3f6d0`
-- 已验证实现提交：`a37e316e2764cd7c3188884aee6e1719197a32c5`
+- 已验证实现提交：`673c5b14b49877e55a18b033bd55ca3e67e13c1c`
 - 目标：修复 no-clobber 发布、发布后失败状态、绝对路径门禁和 dependency 返回值契约。
 - 数据边界：本轮测试仅使用 `.test-artifacts` 临时库，未访问 `data/web.db`。
 
@@ -11,7 +11,7 @@
 
 | 命令 | 结果 |
 |---|---|
-| 受管 Python `-m pytest tests -q -p no:cacheprovider` | 266 passed，退出 0 |
+| 受管 Python `-m pytest tests -q -p no:cacheprovider` | 267 passed，退出 0 |
 | `frontend/pnpm test` | Node 34 passed；Vitest 32 passed，退出 0 |
 | `frontend/pnpm build` | 2256 modules transformed，退出 0 |
 | `git diff --check` | 通过 |
@@ -39,6 +39,13 @@
 - copy 最终 SHA-256：`30C8B58EF527C9C1A71752EB739A166645A31FEBC02EFB79D9691906901D4540`；
   Alembic revision 为 `0001`，目录中 `.partial` 数量为 0。
 
-## 5. 未完成的外部门禁
+## 5. 跨平台门禁与裁决
 
-`.github/workflows/database-safety.yml` 已加入 Windows/Linux 矩阵；需在远端 Actions 实际运行并保存两平台退出码后，才能把 Phase 5.3 裁决为达标。远端矩阵未完成前，不得进入 Phase 6。
+- GitHub Actions run：`34440497864`
+- 地址：`https://github.com/fadecat/web/actions/runs/34440497864`
+- `database-tools (windows-latest)`：成功。
+- `database-tools (ubuntu-latest)`：成功。
+- 总状态：Success；两个 job 完成，耗时 1m36s。
+
+**裁决：Phase 5.3 达标。** 本地全量、真实三库演练、Windows/Linux 专项矩阵和
+独立红队复核均已通过，Phase 5 数据库安全收口完成，可以进入 Phase 6。
