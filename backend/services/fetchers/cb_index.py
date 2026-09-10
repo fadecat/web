@@ -55,6 +55,27 @@ JISILU_FIELD_MAP: dict[str, str] = {
 # 页面抓取 + 解析
 # ---------------------------------------------------------------------------
 
+def _split_series_values(values: str) -> list[str]:
+    """把源数组字符串切分为 token 列表, 保留中间空位(日期对齐的关键)。
+
+    规则:
+    - 按逗号切分并对每个 token strip; 中间空串(如 '100,,102' 的第二个)
+      保留为空字符串, 对应这一天该字段缺值, 不能丢弃否则后续元素错位。
+    - 尾随逗号(如 '100,102,')只移除最后一个空 token(JS 语法允许的尾逗号)。
+    - 空字符串(源 '[]')视为空数组 -> 返回 [], 该字段按「全缺失」处理。
+
+    这是纯文本切分, 不解析 JS; 数值/None 的转化交给后端 utils.parse_float。
+    """
+    tokens = [v.strip() for v in values.split(",")]
+    # 仅当逗号后只有空白且最后一个 token 为空时移除 JS 语法尾 token
+    if values.rstrip().endswith(",") and tokens and tokens[-1] == "":
+        tokens = tokens[:-1]
+    # 只有空白内容才是源 '[]'; '[,]' 是长度为 1 的空位数组, 必须保留
+    if values.strip() == "":
+        tokens = []
+    return tokens
+
+
 def fetch_cb_index_page() -> str:
     """抓取集思录 cb_index 页面 HTML(自动带登录 cookie)。"""
     resp = fetch_with_auth(CB_INDEX_URL, timeout=15)
@@ -81,12 +102,26 @@ def parse_cb_index_page(html: str) -> list[dict[str, Any]]:
 
     series: dict[str, list[str]] = {}
     for key, values in pairs:
-        series[key] = [v.strip() for v in values.split(",") if v.strip()]
+        series[key] = _split_series_values(values)
 
     # 一个已知字段都映射不上 = 数据源字段变更, 否则会产出「只有日期、指标全 None」
     # 的记录被静默落库并记成功
     if not any(key in series for key in JISILU_FIELD_MAP):
         raise ValueError("可转债等权指数页面字段全部无法映射,数据源字段可能已变更")
+
+    # 已出现且非空的已知字段数组长度必须与日期数相同, 否则按日期下标取数会错位。
+    # 空数组(源 '[]')视为该字段全缺失, 不做长度校验。
+    for jisilu_key in JISILU_FIELD_MAP:
+        if jisilu_key not in series:
+            continue
+        arr = series[jisilu_key]
+        if not arr:
+            continue
+        if len(arr) != len(dates):
+            raise ValueError(
+                f"等权指数字段 '{jisilu_key}' 数组长度 {len(arr)} 与日期数 "
+                f"{len(dates)} 不一致, 数据源分页/截断可能导致错位"
+            )
 
     records: list[dict[str, Any]] = []
     for idx, date in enumerate(dates):

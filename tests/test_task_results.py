@@ -476,6 +476,157 @@ def test_cb_index_page_with_known_fields_parses_values():
     assert records == [{"date": "2026-09-07", "index_value": "180.1", "count": "560"}]
 
 
+# ---------------------------------------------------------------------------
+# T1: 锁定并修复数组错位 bug
+# 源数组形如 mid_price:[100,,102](中间有空位) 时, 按日期下标取数不能错位。
+# ---------------------------------------------------------------------------
+
+def test_cb_index_mid_price_gap_preserves_date_alignment():
+    """三日 mid_price:[100,,102] 必须保持日期对齐: d2 缺失, d3=102。
+
+    证明当前代码 bug: `if v.strip()` 会过滤空串,把 [100,,102] 变成
+    [100,102],导致 102 错位到 d2。
+    """
+    from backend.services.fetchers import cb_index
+
+    html = (
+        "var __date = ['2026-09-07', '2026-09-08', '2026-09-09'];\n"
+        "var __data = {'mid_price': [100,,102]};\n"
+    )
+    records = cb_index.parse_cb_index_page(html)
+
+    assert len(records) == 3
+    # d1 = 2026-09-07 -> 100
+    assert records[0] == {"date": "2026-09-07", "median_price": "100"}
+    # d2 = 2026-09-08 -> 中间空位, 缺失(空串, store 层 parse_float 转 None)
+    assert records[1] == {"date": "2026-09-08", "median_price": ""}
+    # d3 = 2026-09-09 -> 102, 不能错位到 d2
+    assert records[2] == {"date": "2026-09-09", "median_price": "102"}
+
+
+def test_cb_index_mid_price_explicit_null_preserved():
+    """三日 mid_price:[100,null,102] 中间空位保留, null 由 parse_float 转缺失。"""
+    from backend.services.fetchers import cb_index
+    from backend.utils import parse_float
+
+    html = (
+        "var __date = ['2026-09-07', '2026-09-08', '2026-09-09'];\n"
+        "var __data = {'mid_price': [100,null,102]};\n"
+    )
+    records = cb_index.parse_cb_index_page(html)
+
+    assert records[1] == {"date": "2026-09-08", "median_price": "null"}
+    assert records[2] == {"date": "2026-09-09", "median_price": "102"}
+    # 显式 null 在 store 层经 parse_float 转缺失, 不移动后续元素
+    assert parse_float(records[1]["median_price"]) is None
+    assert parse_float(records[2]["median_price"]) == 102.0
+
+
+def test_cb_index_trailing_comma_dropped_without_shift():
+    """尾随逗号 [100,102,] 只移除尾 token, 不产生错位。"""
+    from backend.services.fetchers import cb_index
+
+    html = (
+        "var __date = ['2026-09-08', '2026-09-09'];\n"
+        "var __data = {'mid_price': [100,102,]};\n"
+    )
+    records = cb_index.parse_cb_index_page(html)
+
+    assert len(records) == 2
+    assert records[0] == {"date": "2026-09-08", "median_price": "100"}
+    assert records[1] == {"date": "2026-09-09", "median_price": "102"}
+
+
+def test_cb_index_trailing_comma_with_whitespace_dropped_without_shift():
+    """尾随逗号后的空白仍是 JS 语法尾逗号, 不应制造额外元素。"""
+    from backend.services.fetchers import cb_index
+
+    html = (
+        "var __date = ['2026-09-08', '2026-09-09'];\n"
+        "var __data = {'mid_price': [100,102, ]};\n"
+    )
+    records = cb_index.parse_cb_index_page(html)
+
+    assert [r["median_price"] for r in records] == ["100", "102"]
+
+
+def test_cb_index_single_hole_array_preserves_js_position():
+    """[,] 是长度为 1 的 JS 数组, 空位必须保留而不能压成空数组。"""
+    from backend.services.fetchers import cb_index
+
+    html = (
+        "var __date = ['2026-09-08'];\n"
+        "var __data = {'mid_price': [,]};\n"
+    )
+    records = cb_index.parse_cb_index_page(html)
+
+    assert records == [{"date": "2026-09-08", "median_price": ""}]
+
+
+def test_cb_index_only_unknown_fields_raises():
+    """只有未知字段 -> 走已有 ValueError 分支(字段全部无法映射)。"""
+    from backend.services.fetchers import cb_index
+
+    html = (
+        "var __date = ['2026-09-07'];\n"
+        "var __data = {'brand_new_field': [180.1]};\n"
+    )
+    with pytest.raises(ValueError, match="字段全部无法映射"):
+        cb_index.parse_cb_index_page(html)
+
+
+def test_cb_index_short_array_raises_length_mismatch():
+    """三日日期但某已知字段数组只有 2 个元素 -> 抛 ValueError(防止错位)。"""
+    from backend.services.fetchers import cb_index
+
+    html = (
+        "var __date = ['2026-09-07', '2026-09-08', '2026-09-09'];\n"
+        "var __data = {'mid_price': [100,102]};\n"
+    )
+    with pytest.raises(ValueError, match="数组长度 2 与日期数 3 不一致"):
+        cb_index.parse_cb_index_page(html)
+
+
+def test_cb_index_extra_values_raises_length_mismatch():
+    """三日日期但某已知字段数组有 4 个元素 -> 抛 ValueError(防止多余值错位)。"""
+    from backend.services.fetchers import cb_index
+
+    html = (
+        "var __date = ['2026-09-07', '2026-09-08', '2026-09-09'];\n"
+        "var __data = {'mid_price': [100,102,103,104]};\n"
+    )
+    with pytest.raises(ValueError, match="数组长度 4 与日期数 3 不一致"):
+        cb_index.parse_cb_index_page(html)
+
+
+def test_cb_index_legal_array_aligned_without_error():
+    """合法等长数组按日期对齐解析, 不抛错。"""
+    from backend.services.fetchers import cb_index
+
+    html = (
+        "var __date = ['2026-09-07', '2026-09-08', '2026-09-09'];\n"
+        "var __data = {'mid_price': [100,101,102]};\n"
+    )
+    records = cb_index.parse_cb_index_page(html)
+    assert [r["median_price"] for r in records] == ["100", "101", "102"]
+
+
+def test_cb_index_malformed_array_does_not_partially_persist():
+    """错误输入(部分字段长度不符)必须在返回前抛错, 不能部分入库。
+
+    一个字段长度正确、另一个字段短一截时, 仍应整体抛错, 不应返回
+    已经对齐的那部分记录被误落库。
+    """
+    from backend.services.fetchers import cb_index
+
+    html = (
+        "var __date = ['2026-09-07', '2026-09-08', '2026-09-09'];\n"
+        "var __data = {'price': [1,2,3], 'mid_price': [100,102]};\n"
+    )
+    with pytest.raises(ValueError, match="数组长度"):
+        cb_index.parse_cb_index_page(html)
+
+
 def test_redeem_list_empty_rows_is_legal_empty(monkeypatch):
     """强赎接口结构正常但 rows 为空 -> 合法空,返回 [] 不抛错。"""
     from backend.services.fetchers import cb_redeem
