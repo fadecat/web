@@ -29,7 +29,7 @@ const METRIC_OPTIONS = [
   { key: 'pe', label: 'PE走势' },
   { key: 'pb', label: 'PB走势' },
   { key: 'dividend', label: '股息率' },
-  { key: 'eb', label: '股债差' },
+  { key: 'eb', label: '股债差｜股债比' },
 ];
 const RANGE_OPTIONS = [
   { key: 3, label: '近3年' },
