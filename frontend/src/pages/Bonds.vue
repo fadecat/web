@@ -401,6 +401,12 @@ async function onUnblacklist(bondId) {
         <el-table-column prop="curr_iss_amt" label="规模(亿)" width="84" align="right" sortable>
           <template #default="{ row }">{{ fmtNum(row.curr_iss_amt, 1) }}</template>
         </el-table-column>
+        <el-table-column prop="industry_name" label="细分行业" width="96" class-name="col-industry">
+          <template #default="{ row }">
+            <span v-if="row.industry_name">{{ row.industry_name }}</span>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="rating" label="评级" width="60" align="center" />
         <el-table-column prop="redeem" label="强赎" width="96" />
         <el-table-column label="操作" width="70" align="center">
@@ -636,6 +642,11 @@ async function onUnblacklist(bondId) {
     top: 0;
     z-index: 6; /* 盖过表体(含固定列 z-index:3), 低于抽屉遮罩(99) */
     background: var(--el-table-header-bg-color, #f8f8f8);
+  }
+
+  /* 细分行业列手机端隐藏(屏幕窄, 优先保留核心数值列; PC 端不受影响) */
+  .result-card :deep(.col-industry) {
+    display: none;
   }
 }
 </style>

@@ -20,6 +20,7 @@ from datetime import date, datetime
 from typing import Any, Callable
 
 from backend.services.cb_factors import build_bond_code_match_set
+from backend.services.industry import industry_name_of
 
 # 强赎图标 → 中文标签
 _REDEEM_LABELS = {
@@ -324,6 +325,7 @@ def _screen_cell_rows(
             "holdable": i is not None and i <= keep_n,
             "code": c.get("bond_id", ""),
             "name": c.get("bond_nm", ""),
+            "industry_name": industry_name_of(c.get("sw_cd")),
             "price": price,
             "change_rt": _safe_float(c.get("increase_rt")),
             "dblow": _safe_float(c.get("dblow")),

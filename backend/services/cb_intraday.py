@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import Any
 
 from backend.services.cb_screen import format_redeem_status
+from backend.services.industry import industry_name_of
 from backend.services.queries.live import fetch_live_snapshot
 
 
@@ -100,6 +101,7 @@ def _live_row(rec: dict[str, Any], redeem_cell: dict[str, Any] | None) -> dict[s
     return {
         "code": str(rec.get("bond_id") or ""),
         "name": str(rec.get("bond_nm") or ""),
+        "industry_name": industry_name_of(rec.get("sw_cd")),
         "price": price,
         "change_rt": _num(rec.get("increase_rt")),
         "dblow": _num(rec.get("dblow")),
