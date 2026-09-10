@@ -318,3 +318,173 @@ class TestAdoptionOrchestration:
         ]
         for stage in result.stages:
             assert stage.status == "passed", stage.name
+
+    def test_revision_failure_blocks_upgrade_and_smoke(self, test_artifact_dir):
+        """revision 阶段失败: upgrade / smoke 0 次调用, failed_stage 精确。"""
+        source, backup_copy = self._source_and_copy(test_artifact_dir)
+        revision = _CallCounter(returns=["migration revision 不一致(源 None vs 副本 0001)"])
+        deps = self._make_deps(revision=revision)
+        from scripts.adopt_db_copy import adopt_database_copy
+
+        result = adopt_database_copy(source, backup_copy, "0001", deps)
+        assert result.code != 0
+        assert result.failed_stage == "revision_verified"
+        assert revision.calls == 1
+        assert deps["upgrade"].calls == 0
+        assert deps["smoke"].calls == 0
+
+    def test_smoke_failure_blocks_nothing_after(self, test_artifact_dir):
+        """smoke 阶段失败: 已是最后阶段, failed_stage 精确, code 非 0。"""
+        source, backup_copy = self._source_and_copy(test_artifact_dir)
+        smoke = _CallCounter(raises=RuntimeError("隔离冒烟子进程失败"))
+        deps = self._make_deps(smoke=smoke)
+        from scripts.adopt_db_copy import adopt_database_copy
+
+        result = adopt_database_copy(source, backup_copy, "0001", deps)
+        assert result.code != 0
+        assert result.failed_stage == "smoke_passed"
+        # 前 5 阶段必须全部通过
+        assert [s.name for s in result.stages[:-1]] == [
+            "backup_verified",
+            "schema_verified",
+            "stamped",
+            "revision_verified",
+            "upgraded",
+        ]
+        assert smoke.calls == 1
+
+    def test_missing_dependency_fails_contract(self, test_artifact_dir):
+        """缺 dependency 键: 结构化失败 dependency_contract, code 2, 不进入任何阶段。"""
+        source, backup_copy = self._source_and_copy(test_artifact_dir)
+        deps = self._make_deps()
+        del deps["upgrade"]  # 模拟缺键
+        from scripts.adopt_db_copy import adopt_database_copy
+
+        result = adopt_database_copy(source, backup_copy, "0001", deps)
+        assert result.code == 2
+        assert result.failed_stage == "dependency_contract"
+        assert len(result.stages) == 1
+        assert "缺少 dependency 键" in result.stages[0].detail
+        assert "upgrade" not in deps
+        for key in ("verify", "compare", "stamp", "revision", "smoke"):
+            assert deps[key].calls == 0, key
+
+    def test_noncallable_dependency_fails_contract(self, test_artifact_dir):
+        """dependency 键不可调用: 结构化失败 dependency_contract, code 2。"""
+        source, backup_copy = self._source_and_copy(test_artifact_dir)
+        deps = self._make_deps()
+        deps["stamp"] = "not-callable"  # 不可调用
+        from scripts.adopt_db_copy import adopt_database_copy
+
+        result = adopt_database_copy(source, backup_copy, "0001", deps)
+        assert result.code == 2
+        assert result.failed_stage == "dependency_contract"
+        assert "不可调用" in result.stages[0].detail
+
+    def test_wrong_return_type_fails_stage(self, test_artifact_dir):
+        """阶段返回非 None/非 list 类型: 视为非法, 结构化失败于该阶段, code 1。
+
+        R7-09: 旧实现会把此类返回值当成功(返回空 list 之外), 这里必须失败。
+        """
+        source, backup_copy = self._source_and_copy(test_artifact_dir)
+        bad = _CallCounter(returns="not-a-list")  # callable 但返回 str
+        deps = self._make_deps(compare=bad)
+        from scripts.adopt_db_copy import adopt_database_copy
+
+        result = adopt_database_copy(source, backup_copy, "0001", deps)
+        assert result.code != 0
+        assert result.failed_stage == "schema_verified"
+        assert bad.calls == 1
+        for key in ("stamp", "revision", "upgrade", "smoke"):
+            assert deps[key].calls == 0, key
+
+
+class TestAdoptionCliInput:
+    """Task 4 / R7-09: CLI 输入护栏(相对路径 / 无效 revision / 不存在文件 / 日常库)。
+
+    均通过真实 subprocess 运行 python -m scripts.adopt_db_copy, 不得碰 data/。
+    """
+
+    def _run(self, args, env=None):
+        base = dict(os.environ)
+        base["SCHEDULER_ENABLED"] = "false"
+        if env:
+            base.update(env)
+        return subprocess.run(
+            [sys.executable, "-m", "scripts.adopt_db_copy", *args],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+            env=base,
+        )
+
+    def test_relative_source_rejected(self, test_artifact_dir):
+        """相对路径必须被 CLI 拒绝(返回 2), 不得先 resolve 后接受。"""
+        cp = self._run([
+            "--source", "relative_source.db",
+            "--backup-copy", str(test_artifact_dir / "copy.db"),
+            "--revision", "0001",
+        ])
+        assert cp.returncode == 2, cp.stdout + cp.stderr
+        assert "相对路径" in (cp.stdout + cp.stderr)
+
+    def test_relative_backup_copy_rejected(self, test_artifact_dir):
+        source = test_artifact_dir / "src.db"
+        _build_unversioned_source(source)
+        cp = self._run([
+            "--source", str(source),
+            "--backup-copy", "relative_copy.db",
+            "--revision", "0001",
+        ])
+        assert cp.returncode == 2, cp.stdout + cp.stderr
+        assert "相对路径" in (cp.stdout + cp.stderr)
+
+    def test_invalid_revision_rejected(self, test_artifact_dir):
+        """无效 revision(不在迁移图中): CLI 返回 2。"""
+        source = test_artifact_dir / "src.db"
+        backup_copy = test_artifact_dir / "copy.db"
+        _build_unversioned_source(source)
+        backup(source, backup_copy)
+        cp = self._run([
+            "--source", str(source),
+            "--backup-copy", str(backup_copy),
+            "--revision", "9999",
+        ])
+        assert cp.returncode == 2, cp.stdout + cp.stderr
+        assert "无效 revision" in (cp.stdout + cp.stderr)
+
+    def test_missing_source_rejected(self, test_artifact_dir):
+        """source 不存在: path_guard 失败, 返回 2。"""
+        source = test_artifact_dir / "absent_source.db"  # 故意不存在
+        backup_copy = test_artifact_dir / "copy.db"
+        _build_unversioned_source(backup_copy)  # copy 存在即可
+        cp = self._run([
+            "--source", str(source),
+            "--backup-copy", str(backup_copy),
+            "--revision", "0001",
+        ])
+        assert cp.returncode == 2, cp.stdout + cp.stderr
+        assert "source 不存在" in (cp.stdout + cp.stderr)
+
+    def test_copy_equal_daily_db_rejected(self, test_artifact_dir):
+        """copy 指向日常 data/web.db: 硬禁令, 返回 2(不要求该文件存在, 不碰 data/)。"""
+        from scripts.adopt_db_copy import adopt_database_copy, _repo_data_web_db
+
+        source = test_artifact_dir / "src.db"
+        _build_unversioned_source(source)
+        daily = _repo_data_web_db()
+        # path_guard 先于依赖契约检查, 以下依赖不会被调用
+        deps = {
+            "verify": _CallCounter(),
+            "compare": _CallCounter(),
+            "stamp": _CallCounter(),
+            "revision": _CallCounter(),
+            "upgrade": _CallCounter(),
+            "smoke": _CallCounter(),
+        }
+        result = adopt_database_copy(source, daily, "0001", deps)
+        assert result.code == 2
+        assert result.failed_stage == "path_guard"
+        assert "日常库" in result.stages[0].detail

@@ -59,20 +59,58 @@ def _repo_data_web_db() -> Path:
 
 
 def _guard_paths(source: Path, backup_copy: Path) -> "str | None":
-    """路径护栏: 返回失败原因字符串或 None(通过)。"""
-    if source == backup_copy:
-        return "source 与 backup_copy 指向同一文件, 拒绝接管"
+    """路径护栏: 返回失败原因字符串或 None(通过)。
+
+    copy 不得是日常 data/web.db(硬禁令, 先于存在性检查, 不要求该文件存在);
+    source 与 backup_copy 必须存在且为普通文件; 二者不得指向同一文件。
+    """
     if backup_copy == _repo_data_web_db():
         return f"拒绝接管目标等于日常库: {_repo_data_web_db()}"
+    if not source.exists():
+        return f"source 不存在: {source}"
+    if not backup_copy.exists():
+        return f"backup_copy 不存在: {backup_copy}"
+    if not source.is_file():
+        return f"source 不是普通文件: {source}"
+    if not backup_copy.is_file():
+        return f"backup_copy 不是普通文件: {backup_copy}"
+    if source == backup_copy:
+        return "source 与 backup_copy 指向同一文件, 拒绝接管"
     return None
+
+
+def _is_explicit_path(raw: str) -> bool:
+    """CLI 原始参数必须是绝对文件路径或 sqlite:/// URL, 拒绝相对路径。
+
+    R7-09: 不得先 resolve 后接受——相对路径在 resolve 后可能落到任意 cwd, 偏离
+    "显式绝对路径" 要求。"""
+    if raw.startswith("sqlite:///"):
+        return True
+    return Path(raw).is_absolute()
+
+
+def _revision_is_valid(revision: str) -> bool:
+    """revision 必须能用 ScriptDirectory 解析为迁移图中的合法 revision。"""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    migrations_dir = Path(__file__).resolve().parent.parent / "migrations"
+    cfg = Config()
+    cfg.set_main_option("script_location", str(migrations_dir))
+    try:
+        ScriptDirectory.from_config(cfg).get_revision(revision)
+        return True
+    except Exception:
+        return False
 
 
 def adopt_database_copy(source, backup_copy, revision, dependencies) -> AdoptionResult:
     """固定状态机接管编排。
 
     dependencies 提供键 verify/compare/stamp/revision/upgrade/smoke, 每个为无参
-    可调用: 返回空 list=成功, 非空 list=差异(失败), 抛异常=失败。任一阶段失败
-    立即停止并返回非 0 code 与 failed_stage。
+    可调用: 返回 None 或空 list=成功, 非空 list=差异(失败), 抛异常=失败。任一阶段失败
+    立即停止并返回非 0 code 与 failed_stage。依赖契约(六个键存在且 callable、返回值
+    仅接受 None/list[str])在执行前校验, 违例转译为结构化失败(R7-09)。
     """
     result = AdoptionResult()
     src = Path(source).resolve()
@@ -92,9 +130,28 @@ def adopt_database_copy(source, backup_copy, revision, dependencies) -> Adoption
         result.code = 2
         return result
 
+    # 依赖契约: 六个键必须存在且 callable, 违例为结构化失败(R7-09)
+    expected_keys = [k for _, k in STAGES]
+    for key in expected_keys:
+        if key not in dependencies:
+            result.stages.append(
+                StageResult("dependency_contract", "failed", f"缺少 dependency 键: {key}")
+            )
+            result.failed_stage = "dependency_contract"
+            result.code = 2
+            return result
+        if not callable(dependencies[key]):
+            result.stages.append(
+                StageResult("dependency_contract", "failed", f"dependency 键 {key} 不可调用")
+            )
+            result.failed_stage = "dependency_contract"
+            result.code = 2
+            return result
+
     for stage_name, dep_key in STAGES:
-        dep = dependencies[dep_key]
+        # 依赖查找放进异常转译边界(R7-09: 缺键/不可调用已在上面拦截, 此处仅兜底)
         try:
+            dep = dependencies[dep_key]
             report = dep()
         except Exception as exc:  # 不捕获后继续: 立即停
             result.stages.append(
@@ -103,12 +160,25 @@ def adopt_database_copy(source, backup_copy, revision, dependencies) -> Adoption
             result.failed_stage = stage_name
             result.code = 1
             return result
-        if isinstance(report, list) and report:
+        # 返回值只接受 None 或 list[str]; 其他类型视为非法, 形成结构化失败
+        if report is None or (isinstance(report, list) and not report):
+            result.stages.append(StageResult(stage_name, "passed"))
+        elif isinstance(report, list):
             result.stages.append(StageResult(stage_name, "failed", "; ".join(report)))
             result.failed_stage = stage_name
             result.code = 1
             return result
-        result.stages.append(StageResult(stage_name, "passed"))
+        else:
+            result.stages.append(
+                StageResult(
+                    stage_name,
+                    "failed",
+                    f"阶段返回类型非法: {type(report).__name__}, 仅接受 None 或 list[str]",
+                )
+            )
+            result.failed_stage = stage_name
+            result.code = 1
+            return result
 
     return result
 
@@ -172,8 +242,11 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
     def _current_revision() -> "str | None":
         """程序化读取副本当前 revision(不依赖 command.current 的打印副作用)。"""
         eng = create_engine(f"sqlite:///{backup_copy.as_posix()}")
-        with eng.connect() as conn:
-            return MigrationContext.configure(conn).get_current_revision()
+        try:
+            with eng.connect() as conn:
+                return MigrationContext.configure(conn).get_current_revision()
+        finally:
+            eng.dispose()
 
     def _upgrade():
         command.upgrade(_cfg(), "head")
@@ -235,6 +308,19 @@ def main() -> int:
         help="副本 stamp 后的目标 revision(默认 0001)",
     )
     args = parser.parse_args()
+
+    # 输入护栏: CLI 原始参数必须是绝对路径或 sqlite:/// URL, 拒绝相对路径(R7-09)
+    for label, raw in (("--source", args.source), ("--backup-copy", args.backup_copy)):
+        if not _is_explicit_path(raw):
+            print(
+                f"[FAIL] {label} 必须是绝对路径或 sqlite:/// URL, 拒绝相对路径: {raw}",
+                file=sys.stderr,
+            )
+            return 2
+    # revision 必须能用 ScriptDirectory 解析为迁移图中的合法 revision(R7-09)
+    if not _revision_is_valid(args.revision):
+        print(f"[FAIL] 无效 revision(不在迁移图中): {args.revision}", file=sys.stderr)
+        return 2
 
     source = _resolve_arg(args.source)
     backup_copy = _resolve_arg(args.backup_copy)
