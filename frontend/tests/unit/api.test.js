@@ -7,6 +7,7 @@ import {
   screenBondsIntraday,
   saveFactors,
   getRatingCatalog,
+  getCbIndexDaily,
 } from '../../src/api/index.js';
 import { syncIndex } from '../../src/api/dataManagement.js';
 
@@ -61,5 +62,30 @@ describe('API 层请求边界', () => {
     const cfg = seen[0];
     expect(cfg.method).toBe('get');
     expect(cfg.url).toBe('/cb-list/factors/ratings');
+  });
+
+  it('getCbIndexDaily 使用 GET /cb-index/daily 且解包 r.data', async () => {
+    const seen = capture();
+    // 返回体含 data 字段, 单测验证 .then(r => r.data) 解包
+    api.defaults.adapter = async (config) => {
+      seen.push(config);
+      return {
+        data: [{ trade_date: '2026-09-09', median_price: 132.5, avg_ytm: -8.25, count: 400 }],
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      };
+    };
+    const rows = await getCbIndexDaily();
+    // 只发一个请求
+    expect(seen.length).toBe(1);
+    const cfg = seen[0];
+    expect(cfg.method).toBe('get');
+    expect(cfg.url).toBe('/cb-index/daily');
+    // 解包后直接是数组(等于服务端返回的 data)
+    expect(Array.isArray(rows)).toBe(true);
+    expect(rows[0].trade_date).toBe('2026-09-09');
+    expect(rows[0].avg_ytm).toBe(-8.25);
   });
 });

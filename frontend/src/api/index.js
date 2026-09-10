@@ -5,6 +5,10 @@ const api = axios.create({
   timeout: 15000,
 });
 
+// 可转债等权指数日频(全量, 后端按 trade_date 降序)
+export const getCbIndexDaily = () =>
+  api.get('/cb-index/daily').then((r) => r.data);
+
 // 可转债全量快照
 export const getCbListLatest = (params = {}) =>
   api.get('/cb-list/latest', { params }).then((r) => r.data);
