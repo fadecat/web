@@ -49,7 +49,7 @@ def compute_equity_bond(
           "date": 最新交易日, "pe": ..., "cn_10y_bond_yield": ...,
           "spread": {"current", "percentiles", "average_5y"},
           "ratio":   {"current", "percentiles", "average_5y"},
-          "series": [{"date", "spread", "ratio"}, ...]   # 仅 include_series=True
+          "series": [{"date", "spread", "ratio", "cn_10y_bond_yield"}, ...]  # 仅 include_series=True
         }
         样本不足 20 天返回 None。
     """
@@ -61,7 +61,14 @@ def compute_equity_bond(
         if pe is None or pe <= 0 or y is None or y <= 0:
             continue
         ep = 100.0 / pe
-        series.append({"date": d, "spread": round(ep - y, 4), "ratio": round(ep / y, 4)})
+        series.append(
+            {
+                "date": d,
+                "spread": round(ep - y, 4),
+                "ratio": round(ep / y, 4),
+                "cn_10y_bond_yield": y,
+            }
+        )
 
     if len(series) < _MIN_SAMPLES:
         return None
