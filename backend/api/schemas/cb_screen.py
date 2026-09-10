@@ -16,6 +16,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.services.cb_factors import FACTOR_CATALOG_BY_FIELD
+from backend.services.cb_template_migration import TEMPLATE_NAME_MAX_CHARS
 
 
 def _reject_non_finite(v: float | None) -> float | None:
@@ -332,6 +333,11 @@ class _ConditionsTemplateBase(BaseModel):
         if not v:
             label = "模板 id" if info.field_name == "id" else "模板名"
             raise ValueError(f"{label}不能为空白")
+        if info.field_name == "name" and len(v) > TEMPLATE_NAME_MAX_CHARS:
+            # §2.3: 名称 trim 后 1~40 Unicode 字符
+            raise ValueError(
+                f"模板名 trim 后不能超过 {TEMPLATE_NAME_MAX_CHARS} 个字符(当前 {len(v)})"
+            )
         return v
 
     @model_validator(mode="after")
@@ -406,4 +412,15 @@ class SelectionConfigModel(BaseModel):
             raise ValueError(f"模板 id 必须唯一, 重复: {dupes}")
         if self.active_id not in ids:
             raise ValueError(f"active_id 必须指向存在的模板, 收到: {self.active_id}")
+        return self
+
+    @model_validator(mode="after")
+    def _names_unique_casefold(self) -> "SelectionConfigModel":
+        # §2.3: 后端用 casefold() 检查集合内重复(trim 已由字段校验完成)
+        folded = [t.name.casefold() for t in self.templates]
+        if len(set(folded)) != len(folded):
+            dupes = sorted(
+                {t.name for t, f in zip(self.templates, folded) if folded.count(f) > 1}
+            )
+            raise ValueError(f"模板名(忽略大小写)不能重复: {dupes}")
         return self

@@ -103,9 +103,10 @@ class TestR3Contracts:
         # 文件内容
         on_disk = json.loads(tmp_factors.read_text(encoding="utf-8"))
         assert on_disk["templates"][0]["ratings"] == []
-        # 再次 GET 一致
+        # 再次 GET 一致(V3 形态: 不限评级 = 无 rating_cd 条件, 不回旧七档)
         r2 = contract_client.get(f"{BASE}/factors")
-        assert r2.json()["templates"][0]["ratings"] == []
+        migrated = r2.json()["templates"][0]
+        assert not [c for c in migrated["conditions"] if c["field"] == "rating_cd"]
 
     def test_null_ratings_rejected(self, contract_client, tmp_factors):
         """R3-02: null ratings 按合同返回 422(不是静默转 [] 并触发旧迁移)。"""
@@ -154,7 +155,12 @@ class TestR3Contracts:
         assert first["templates"][0]["ratings"] == second["templates"][0]["ratings"]
 
     def test_legacy_get_response_can_be_posted_as_current_config(self, contract_client, tmp_factors):
-        """R4-01: GET 旧配置 → 原样 POST 完整往返, 响应/磁盘均不含迁移字段。"""
+        """R4-01(修订到 V3): GET 旧配置 → 原样 POST(V3+revision)完整往返。
+
+        排除语义反例保持: excluded_ratings=["AA"] 经 GET 迁移为
+        rating_cd in 条件(不含 AA, missing=exclude 语义), POST 后落盘
+        V3 且不含旧字段 excluded_ratings。
+        """
         legacy = {
             "version": 1, "active_id": "t1",
             "templates": [_tmpl(ratings=None, excluded_ratings=["AA"])],
@@ -164,14 +170,24 @@ class TestR3Contracts:
         loaded = contract_client.get(f"{BASE}/factors")
         assert loaded.status_code == 200
         template = loaded.json()["templates"][0]
-        assert template["ratings"] == ["A", "A+", "A-", "AA+", "AA-", "AAA"]
+        rating_cond = next(
+            c for c in template["conditions"] if c["field"] == "rating_cd"
+        )
+        assert rating_cond["op"] == "in"
+        assert rating_cond["value"] == ["A", "A+", "A-", "AA+", "AA-", "AAA"]
+        assert rating_cond["missing"] == "exclude"  # 旧白名单连缺失评级一起排除
         assert "excluded_ratings" not in template
 
         saved = contract_client.post(f"{BASE}/factors", json=loaded.json())
         assert saved.status_code == 200
         on_disk = json.loads(tmp_factors.read_text(encoding="utf-8"))
+        assert on_disk["version"] == 3
         assert "excluded_ratings" not in on_disk["templates"][0]
-        assert on_disk["templates"][0]["ratings"] == template["ratings"]
+        disk_rating_cond = next(
+            c for c in on_disk["templates"][0]["conditions"]
+            if c["field"] == "rating_cd"
+        )
+        assert disk_rating_cond == rating_cond  # 评级语义逐字段保持
 
 
 class TestReadConfigLegacy:

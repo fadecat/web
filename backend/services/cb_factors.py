@@ -11,7 +11,10 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -274,32 +277,180 @@ def _normalize_templates(data: dict) -> dict:
     return normalized
 
 
-def read_config() -> dict:
-    """读取策略模板配置;文件不存在或损坏时回退到默认配置。"""
-    if FACTORS_PATH.exists():
+# ---------------------------------------------------------------------------
+# 配置读写(V3, 方案 §5.3): revision / 进程内锁 / 独占备份 / 原子替换
+# ---------------------------------------------------------------------------
+
+# 单进程并发边界: RLock 只保证一个后端进程内的多标签/多用户互斥(§5.3)。
+# 部署前须核对 service 启动命令为单 worker; 多 worker 需先引入跨进程文件锁。
+CONFIG_LOCK = threading.RLock()
+
+# 无文件时的固定 revision 值(§5.3-2)
+MISSING_REVISION = "missing"
+
+
+class ConfigUnreadableError(Exception):
+    """配置文件存在但无法使用: JSON 损坏或版本不支持(§5.3-6, HTTP 503)。"""
+
+
+class ConfigConflictError(Exception):
+    """保存 revision 与磁盘当前不一致(§5.3-3, HTTP 409 CONFIG_CONFLICT)。"""
+
+    def __init__(self, current_revision: str) -> None:
+        super().__init__("配置已被其他窗口修改(revision 不匹配), 请重新加载后重试")
+        self.current_revision = current_revision
+
+
+def _sha256_hex(raw: bytes) -> str:
+    """revision = 磁盘原始字节 SHA256(§5.3-2), 不写入配置正文。"""
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _parse_config_bytes(raw: bytes) -> dict:
+    """磁盘字节 → 配置 dict。V3 原样; V1/V2 走旧归一; 损坏/未知版本抛错。"""
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ConfigUnreadableError(f"配置文件不是有效 JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigUnreadableError("配置文件顶层必须是 JSON 对象")
+    version = data.get("version")
+    if version == 3:
+        return data
+    if version in (1, 2, None):
+        return _normalize_templates(data)
+    raise ConfigUnreadableError(f"不支持的配置版本: {version!r}")
+
+
+def load_current_config() -> tuple[str, dict | None]:
+    """读取磁盘当前配置, 返回 (revision, 配置)。
+
+    - 无文件: (MISSING_REVISION, None) — 默认配置由调用方决定;
+    - V3: (sha256, 原样); V1/V2: (sha256, _normalize_templates 归一后),
+      V3 迁移由调用方执行(§5.3-1: 只内存迁移);
+    - JSON 损坏/版本不支持: raise ConfigUnreadableError(不静默回默认, R9)。
+    """
+    with CONFIG_LOCK:
+        if not FACTORS_PATH.exists():
+            return MISSING_REVISION, None
+        raw = FACTORS_PATH.read_bytes()
+        return _sha256_hex(raw), _parse_config_bytes(raw)
+
+
+def default_config_normalized() -> dict:
+    """默认配置(三低 V2)的归一副本 — 由调用方决定是否迁移到 V3。"""
+    return _normalize_templates(DEFAULT_CONFIG)
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """同目录唯一临时文件写入 + fsync + os.replace 原子替换(§5.3-5)。
+
+    Windows 上替换前必须关闭句柄(with 块保证); 任何失败保留原文件并清理
+    本次临时文件, 不产生半写状态。
+    """
+    tmp_path = path.parent / f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
         try:
-            with open(FACTORS_PATH, encoding="utf-8") as f:
-                return _normalize_templates(json.load(f))
-        except Exception:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
             pass
+        raise
+
+
+def _backup_before_first_v3(previous_raw: bytes) -> str:
+    """首次 V3 落盘前, 独占创建旧文件完整备份 factors.pre-v3.<hash12>.json(§5.3-4)。
+
+    备份名取旧文件字节的 SHA256 前 12 位; 已存在则验证内容逐字节相同。
+    返回备份文件名。
+    """
+    digest = _sha256_hex(previous_raw)
+    backup_path = FACTORS_PATH.parent / f"factors.pre-v3.{digest[:12]}.json"
+    backup_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        if backup_path.read_bytes() != previous_raw:
+            raise ConfigUnreadableError(
+                f"备份文件已存在但内容与旧配置不一致: {backup_path.name}"
+            ) from None
+        return backup_path.name
+    with os.fdopen(fd, "wb") as f:
+        f.write(previous_raw)
+        f.flush()
+        os.fsync(f.fileno())
+    return backup_path.name
+
+
+def save_config_v3(config: dict, expected_revision: str) -> dict:
+    """V3 整份保存(§5.3): 锁内比对 revision → 首次备份 → 原子替换。
+
+    必须在 SelectionConfigModel 校验通过后调用。revision 不写入配置正文。
+    返回 {"data": 存储正文, "revision": 写入后磁盘字节的 SHA256}。
+    """
+    with CONFIG_LOCK:
+        if FACTORS_PATH.exists():
+            current_raw = FACTORS_PATH.read_bytes()
+            current_revision = _sha256_hex(current_raw)
+            current = _parse_config_bytes(current_raw)
+        else:
+            current_raw, current_revision, current = None, MISSING_REVISION, None
+        if current_revision != expected_revision:
+            raise ConfigConflictError(current_revision)
+        if current is not None and current.get("version") != 3:
+            _backup_before_first_v3(current_raw)
+        stored: dict[str, Any] = {
+            "version": 3,
+            "active_id": config.get("active_id"),
+            "templates": config.get("templates", []),
+        }
+        stored["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        payload = json.dumps(stored, ensure_ascii=False, indent=2).encode("utf-8")
+        _atomic_write_bytes(FACTORS_PATH, payload)
+        return {"data": stored, "revision": _sha256_hex(payload)}
+
+
+def read_config() -> dict:
+    """读取策略模板配置(任意版本归一形态)。
+
+    R9 修订: 文件不存在才回退默认配置; 存在但 JSON 损坏/版本不支持时抛
+    ConfigUnreadableError(不再静默回默认掩盖原模板丢失, §5.3-6)。
+    """
+    if FACTORS_PATH.exists():
+        return _parse_config_bytes(FACTORS_PATH.read_bytes())
     return _normalize_templates(DEFAULT_CONFIG)
 
 
 def write_config(data: dict) -> dict:
-    """写策略模板配置到 data/factors.json,返回规范化后的配置。"""
+    """写策略模板配置到 data/factors.json,返回规范化后的配置(原子替换)。"""
     normalized = _normalize_templates(data)
-    FACTORS_PATH.parent.mkdir(parents=True, exist_ok=True)
     normalized["updated_at"] = datetime.now().isoformat(timespec="seconds")
-    with open(FACTORS_PATH, "w", encoding="utf-8") as f:
-        json.dump(normalized, f, ensure_ascii=False, indent=2)
+    FACTORS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(normalized, ensure_ascii=False, indent=2).encode("utf-8")
+    with CONFIG_LOCK:
+        _atomic_write_bytes(FACTORS_PATH, payload)
     return normalized
 
 
 def get_active_template() -> dict | None:
-    """读取当前 active 模板;无则返回第一个模板或 None。"""
-    cfg = read_config()
-    active_id = cfg.get("active_id")
-    templates = cfg.get("templates", [])
+    """读取当前 active 模板(V3 形态; §5.3-1 只内存迁移, 不改磁盘)。
+
+    磁盘任意版本 → 内存迁移到 V3 后取 active_id 指向的模板, 无则首个。
+    文件不存在用默认配置; 损坏/版本不支持抛 ConfigUnreadableError。
+    """
+    from backend.services.cb_template_migration import migrate_config_to_v3
+
+    _, cfg = load_current_config()
+    if cfg is None:
+        cfg = _normalize_templates(DEFAULT_CONFIG)
+    migrated = migrate_config_to_v3(cfg)
+    active_id = migrated.get("active_id")
+    templates = migrated.get("templates", [])
     for tmpl in templates:
         if tmpl.get("id") == active_id:
             return tmpl

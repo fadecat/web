@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from backend.api.schemas.cb_screen import (
     FactorsConfigModel,
     IntradayFilterQuery,
+    SelectionConfigModel,
     normalize_ratings,
 )
 from backend.models.database import get_db
@@ -33,10 +34,15 @@ from backend.services.cb_blacklist_store import (
 )
 from backend.services.cb_factors import (
     FACTOR_CATALOG,
+    ConfigConflictError,
+    ConfigUnreadableError,
+    default_config_normalized,
     get_active_template,
-    read_config,
+    load_current_config,
+    save_config_v3,
     write_config,
 )
+from backend.services.cb_template_migration import migrate_config_to_v3
 from backend.services.cb_intraday import screen_bonds_intraday
 from backend.services.cb_screen import screen_bonds, screen_bonds_live
 
@@ -64,30 +70,114 @@ def get_ratings_catalog(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
 
 @router.get("/cb-list/factors")
 def get_factors() -> dict[str, Any]:
-    """返回当前策略模板配置。"""
-    return read_config()
+    """返回 V3 模板配置 + revision + 每模板迁移问题(§5.3-1/§6.2)。
 
-
-@router.post("/cb-list/factors")
-def save_factors(body: dict[str, Any]) -> dict[str, Any]:
-    """保存策略模板配置到 data/factors.json。
-
-    P2-R02/R3-02: 先经 FactorsConfigModel 结构校验, 再把**校验后的模型输出**
-    (model_dump, 含缺省 ratings=[])交给 write_config——不能把原始 body 传下去,
-    否则缺省/null 评级会被旧迁移函数识别成旧配置补成七档。
-
-    合同:
-    - ratings 缺省/[] = 不限; null/错误类型/空串/归一后重复 = 422
-    - 旧字段 excluded_ratings 仅在读取旧文件时迁移, 新 POST 出现即 422
+    旧版本磁盘文件只在内存迁移, 不改磁盘; 无文件时迁移默认配置。
+    JSON 损坏/版本不支持 → 503 CONFIG_UNREADABLE, 绝不静默回默认(R9)。
     """
+    try:
+        revision, config = load_current_config()
+    except ConfigUnreadableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "CONFIG_UNREADABLE", "message": str(exc)},
+        )
+    if config is None:
+        config = default_config_normalized()
+    migrated = migrate_config_to_v3(config)
+    return {**migrated, "revision": revision}
+
+
+def _validation_error_detail(exc: ValidationError) -> dict[str, Any]:
+    """V3 校验错误 → {code/message/path} 结构(§4.3, path 如 templates.0.conditions.2.value)。"""
+    errors = [
+        {
+            "code": str(e.get("type", "value_error")),
+            "message": str(e.get("msg", "输入非法")),
+            "path": ".".join(str(p) for p in e.get("loc", ())),
+        }
+        for e in exc.errors()
+    ]
+    first = errors[0]
+    return {
+        "code": "INVALID_CONFIG",
+        "message": first["message"],
+        "path": first["path"],
+        "errors": errors,
+    }
+
+
+def _save_factors_v3(body: dict[str, Any]) -> dict[str, Any]:
+    """V3 整份保存(§5.3): 强校验 → 锁内 revision 比对 → 备份 → 原子写。"""
+    try:
+        validated = SelectionConfigModel.model_validate(body)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=_validation_error_detail(exc))
+    try:
+        outcome = save_config_v3(validated.model_dump(), validated.revision)
+    except ConfigConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CONFIG_CONFLICT",
+                "message": str(exc),
+                "current_revision": exc.current_revision,
+            },
+        )
+    except ConfigUnreadableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "CONFIG_UNREADABLE", "message": str(exc)},
+        )
+    return {"ok": True, "data": {**outcome["data"], "revision": outcome["revision"]}}
+
+
+def _save_factors_legacy(body: dict[str, Any]) -> dict[str, Any]:
+    """V1/V2 旧客户端兼容保存(§5.3-7)。
+
+    仅当磁盘仍为 V1/V2 或不存在时兼容; 磁盘已升级 V3 后, 旧客户端(不携带
+    revision)写入返回 409 CLIENT_UPGRADE_REQUIRED, 防止旧结构覆盖新配置。
+    """
+    try:
+        _, current = load_current_config()
+    except ConfigUnreadableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "CONFIG_UNREADABLE", "message": str(exc)},
+        )
+    if current is not None and current.get("version") == 3:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CLIENT_UPGRADE_REQUIRED",
+                "message": "配置已升级到 V3, 旧版客户端需升级后携带 revision 保存",
+            },
+        )
     try:
         validated = FactorsConfigModel.model_validate(body)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors()[0].get("msg", "配置结构非法"))
     validated_data = validated.model_dump()
-    # 透传字段(extra)在 model_dump 后仍在; 顶层 active_id 已由模型字段承载
     normalized = write_config(validated_data)
     return {"ok": True, "data": normalized}
+
+
+@router.post("/cb-list/factors")
+def save_factors(body: dict[str, Any]) -> dict[str, Any]:
+    """保存策略模板配置(版本化整份保存, §5.3/§6.2)。
+
+    - body.version == 3: V3 路径 — SelectionConfigModel 强校验(模板 id 唯一/
+      active_id 存在/名称 trim 1~40 且 casefold 不重), revision 必填并与磁盘
+      比对(409 CONFIG_CONFLICT), 首次落盘前独占备份, 原子替换;
+      响应 {"ok": true, "data": {..., "revision": 新revision}}。
+    - 其他(V1/V2 旧客户端): 走旧 FactorsConfigModel 校验与旧合同
+      (ratings 缺省/[] = 不限; null/错误类型/空串/归一后重复 = 422;
+      excluded_ratings 仅在读取旧文件时迁移, 新 POST 出现即 422),
+      磁盘已是 V3 时返回 409 CLIENT_UPGRADE_REQUIRED。
+    """
+    if isinstance(body, dict) and body.get("version") == 3:
+        return _save_factors_v3(body)
+    return _save_factors_legacy(body)
 
 
 def _load_rows(db: Session) -> list[CbDailySnapshot]:
