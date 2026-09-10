@@ -17,6 +17,8 @@ verify_restore / compare_schema / alembic stamp / upgrade / smoke 接上。
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -138,7 +140,6 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
     from backend.models import app_setting, data_status, valuation  # noqa: F401
 
     from scripts.check_db_baseline import compare_schema
-    from scripts.smoke_db_copy import run_smoke
     from scripts.verify_db_restore import verify_restore
 
     migrations_dir = Path(__file__).resolve().parent.parent / "migrations"
@@ -185,7 +186,33 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
         return []
 
     def _smoke():
-        run_smoke(backup_copy)
+        """在绑定副本的全新子进程中隔离冒烟, 不碰父进程 DATABASE_URL 指向的库(R7-01)。
+
+        子进程 env 强制 DATABASE_URL=副本、SCHEDULER_ENABLED=false、PYTHONUTF8=1,
+        不污染父进程环境; 子进程用 -X utf8 进一步保证 UTF-8。失败(非 0 或缺少 [PASS])
+        抛 RuntimeError 并附子进程 stderr 尾部, 由状态机转译为结构化失败结果。
+        """
+        child_env = dict(os.environ)
+        child_env["DATABASE_URL"] = f"sqlite:///{backup_copy.as_posix()}"
+        child_env["SCHEDULER_ENABLED"] = "false"
+        child_env["PYTHONUTF8"] = "1"
+        # 以字节捕获: 子进程经 -X utf8 输出 UTF-8, 外层可能是 GBK(PYTHONIOENCODING),
+        # 按字节读取可避免父子进程编码不一致导致的解码崩溃(R7-03 同类问题)。
+        proc = subprocess.run(
+            [sys.executable, "-X", "utf8", "-m", "scripts.smoke_db_copy",
+             "--database", str(backup_copy)],
+            cwd=str(Path(__file__).resolve().parent.parent),
+            check=False,
+            capture_output=True,
+            timeout=60,
+            env=child_env,
+        )
+        if proc.returncode != 0 or b"[PASS]" not in (proc.stdout or b""):
+            tail = b"\n".join((proc.stderr or b"").strip().splitlines()[-10:])
+            raise RuntimeError(
+                f"隔离冒烟子进程失败(rc={proc.returncode}):\n"
+                f"{tail.decode('utf-8', errors='replace')}"
+            )
         return []
 
     return {

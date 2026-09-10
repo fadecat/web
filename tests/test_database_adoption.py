@@ -1,14 +1,19 @@
 # -*- coding: utf-8 -*-
-"""完整副本接管链测试(Task 5, R6-03/R6-04).
+"""完整副本接管链测试(Task 5, R6-03/R6-04; Task 2 R7-01 隔离反例).
 
 happy path: 调用真实 adopt_database_copy(verify/compare/stamp/revision/
-upgrade/smoke 全真实), 最终状态必须为 smoke_passed, 数据与版本号正确落库。
+upgrade/smoke 全真实, smoke 为绑定副本的子进程), 最终状态必须为 smoke_passed,
+数据与版本号正确落库; 父进程 DATABASE_URL 指向的 unrelated 哨兵完全不变。
 漂移库: 真实编排入口在 schema_verified 阶段失败, stamp/upgrade/smoke 0 次调用。
 另覆盖状态机全部失败分支: 任一阶段失败 → 后续依赖 0 次调用、返回非零且含阶段名。
 """
 from __future__ import annotations
 
+import hashlib
+import os
 import sqlite3
+import subprocess
+import sys
 from contextlib import closing
 from pathlib import Path
 
@@ -19,6 +24,9 @@ from backend.models.database import Base
 from backend.models import app_setting, data_status, valuation  # noqa: F401
 
 from scripts.backup_db import backup
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 def _build_unversioned_source(db_path: Path) -> None:
     """构造未 stamp 的 ORM 结构库, 含一行业务数据。"""
@@ -32,36 +40,105 @@ def _build_unversioned_source(db_path: Path) -> None:
     engine.dispose()
 
 
+def _snapshot(db_path: Path) -> "tuple[str, float, tuple]":
+    """快照(字节哈希, mtime, 排序表集合), 用于证明库未被接管冒烟改写。"""
+    with closing(sqlite3.connect(db_path)) as conn:
+        tables = tuple(sorted(
+            r[0] for r in conn.execute(
+                "select name from sqlite_master where type='table'"
+            )
+        ))
+    return (
+        hashlib.sha256(db_path.read_bytes()).hexdigest(),
+        round(db_path.stat().st_mtime, 3),
+        tables,
+    )
+
+
 class TestDatabaseAdoption:
     def test_unversioned_database_copy_can_be_adopted(self, test_artifact_dir):
-        """完整接管链: 调用真实 adopt_database_copy(真实 verify/compare/stamp/
-        upgrade/smoke), 最终状态必须为 smoke_passed, 且数据/版本号正确落库。"""
+        """完整接管链: 真实 build_dependencies()(含子进程 smoke)跑通;
+        unrelated 哨兵(父进程 DATABASE_URL 指向的库)完全不变, copy 达到 0001, 副本
+        数据/版本号正确落库。"""
         source = test_artifact_dir / "source.db"
         backup_copy = test_artifact_dir / "backup.db"
         _build_unversioned_source(source)
         backup(source, backup_copy)
 
+        # 哨兵: 与业务无关的库, 接管前快照字节/mtime/表集合
+        unrelated = test_artifact_dir / "unrelated.db"
+        with closing(sqlite3.connect(unrelated)) as conn:
+            conn.execute("create table sentinel_marker (id integer primary key)")
+            conn.commit()
+        before = _snapshot(unrelated)
+
+        # 父进程 DATABASE_URL 指向 unrelated: 若 smoke 仍进全局 lifespan, unrelated 会被改写
+        os.environ["DATABASE_URL"] = f"sqlite:///{unrelated.as_posix()}"
+        os.environ["SCHEDULER_ENABLED"] = "false"
+
         from scripts.adopt_db_copy import adopt_database_copy, build_dependencies
-        from scripts.smoke_db_copy import run_smoke
 
+        # 真实 build_dependencies: smoke 为绑定副本的子进程, 不再手工覆盖
         deps = build_dependencies(source, backup_copy, "0001")
-
-        # 真实冒烟: 断言副本的 app_setting[smtp_host] 被应用读取(证明请求用副本)
-        def _smoke():
-            run_smoke(backup_copy, expect_key="smtp_host", expect_value="example.invalid")
-            return []
-
-        deps["smoke"] = _smoke
 
         result = adopt_database_copy(source, backup_copy, "0001", deps)
         assert result.code == 0, [f"{s.name}:{s.status}:{s.detail}" for s in result.stages]
         assert result.failed_stage is None
         assert result.stages[-1].name == "smoke_passed"
 
+        # unrelated 必须完全未变(证明子进程 smoke 不继承父进程 DATABASE_URL)
+        after = _snapshot(unrelated)
+        assert after == before, f"unrelated 被接管冒烟改写: {before} -> {after}"
+
         with closing(sqlite3.connect(backup_copy)) as conn:
             assert conn.execute(
                 "select value from app_setting where key='smtp_host'"
             ).fetchone() == ("example.invalid",)
+            assert conn.execute("select version_num from alembic_version").fetchone() == ("0001",)
+
+    def test_adopt_module_cli_leaves_unrelated_untouched(self, test_artifact_dir):
+        """R7-01: 真实模块 adopt CLI 的 smoke 必须放进绑定副本的全新子进程,
+        不碰父进程 DATABASE_URL 指向的 unrelated 库。
+
+        先失败反例: 修复前 adopt 在父进程调用 run_smoke(), 进入全局 backend lifespan,
+        把 init_db 打到全局 DATABASE_URL(=unrelated)上, unrelated 会被改写; 修复后
+        子进程 smoke 只绑定副本, unrelated 字节/mtime/表集合完全不变。
+        """
+        source = test_artifact_dir / "source.db"
+        backup_copy = test_artifact_dir / "backup.db"
+        _build_unversioned_source(source)
+        backup(source, backup_copy)
+
+        # 哨兵: 与业务无关的库, 接管前快照
+        unrelated = test_artifact_dir / "unrelated.db"
+        with closing(sqlite3.connect(unrelated)) as conn:
+            conn.execute("create table sentinel_marker (id integer primary key)")
+            conn.commit()
+        before = _snapshot(unrelated)
+
+        # 父进程 DATABASE_URL 指向 unrelated
+        env = dict(os.environ)
+        env["DATABASE_URL"] = f"sqlite:///{unrelated.as_posix()}"
+        env["SCHEDULER_ENABLED"] = "false"
+        cp = subprocess.run(
+            [sys.executable, "-m", "scripts.adopt_db_copy",
+             "--source", str(source), "--backup-copy", str(backup_copy), "--revision", "0001"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+            env=env,
+        )
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        assert "smoke_passed" in cp.stdout, cp.stdout
+
+        # unrelated 必须完全未变
+        after = _snapshot(unrelated)
+        assert after == before, f"unrelated 被接管冒烟改写: {before} -> {after}"
+
+        # copy 应达到 0001
+        with closing(sqlite3.connect(backup_copy)) as conn:
             assert conn.execute("select version_num from alembic_version").fetchone() == ("0001",)
 
     def test_drifted_database_never_calls_stamp(self, test_artifact_dir):
