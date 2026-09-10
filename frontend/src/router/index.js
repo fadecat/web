@@ -11,6 +11,12 @@ const routes = [
         redirect: '/cb-list',
       },
       {
+        path: 'cb-market',
+        name: 'cb-market',
+        component: () => import('../pages/CbMarket.vue'),
+        meta: { title: '转债市场', group: '转债' },
+      },
+      {
         path: 'cb-list',
         name: 'cb-list',
         component: () => import('../pages/Bonds.vue'),
