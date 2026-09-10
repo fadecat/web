@@ -92,3 +92,10 @@ cf3f6d0 docs: reverify database adoption gates     <-- 起点
 - [x] 后端、前端、build、diff check 和临时副本运维演练全部退出 0
 
 **结论: Phase 5.2 门禁全部通过, Phase 5 重新裁决为达标, 可进入 Phase 6 共享状态架构设计。**
+
+### 第八轮复核更正（2026-09-10）
+
+上一结论作废。`:48`—`:57` 的真实运维演练在 `schema_verified` 阶段退出 1，不能勾选
+`:92` 的“全部退出 0”，也不能据此放行 Phase 5。当前 HEAD 为
+`3c0d7927a46a92b60623337381d3aca252c459c3`；受管解释器实际 `sys.version` 为
+`3.13.14`。跨平台 no-clobber 发布、完整三库 happy path 和验收证据转入 Phase 5.3。

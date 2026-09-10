@@ -84,9 +84,13 @@ def _is_explicit_path(raw: str) -> bool:
 
     R7-09: 不得先 resolve 后接受——相对路径在 resolve 后可能落到任意 cwd, 偏离
     "显式绝对路径" 要求。"""
-    if raw.startswith("sqlite:///"):
-        return True
-    return Path(raw).is_absolute()
+    try:
+        value = os.fspath(raw)
+    except TypeError:
+        return False
+    if value.startswith("sqlite:///"):
+        value = value[len("sqlite:///"):]
+    return Path(value).is_absolute()
 
 
 def _revision_is_valid(revision: str) -> bool:
@@ -113,8 +117,15 @@ def adopt_database_copy(source, backup_copy, revision, dependencies) -> Adoption
     仅接受 None/list[str])在执行前校验, 违例转译为结构化失败(R7-09)。
     """
     result = AdoptionResult()
-    src = Path(source).resolve()
-    dst = Path(backup_copy).resolve()
+    if not _is_explicit_path(source) or not _is_explicit_path(backup_copy):
+        result.stages.append(
+            StageResult("path_guard", "failed", "source 与 backup_copy 必须是绝对路径")
+        )
+        result.failed_stage = "path_guard"
+        result.code = 2
+        return result
+    src = _resolve_arg(os.fspath(source))
+    dst = _resolve_arg(os.fspath(backup_copy))
 
     # 路径护栏(不计入业务阶段, 但失败同样返回非 0)
     guard_reason = _guard_paths(src, dst)
@@ -163,8 +174,15 @@ def adopt_database_copy(source, backup_copy, revision, dependencies) -> Adoption
         # 返回值只接受 None 或 list[str]; 其他类型视为非法, 形成结构化失败
         if report is None or (isinstance(report, list) and not report):
             result.stages.append(StageResult(stage_name, "passed"))
-        elif isinstance(report, list):
+        elif isinstance(report, list) and all(isinstance(item, str) for item in report):
             result.stages.append(StageResult(stage_name, "failed", "; ".join(report)))
+            result.failed_stage = stage_name
+            result.code = 1
+            return result
+        elif isinstance(report, list):
+            result.stages.append(
+                StageResult(stage_name, "failed", "阶段返回类型非法: 仅接受 list[str]")
+            )
             result.failed_stage = stage_name
             result.code = 1
             return result

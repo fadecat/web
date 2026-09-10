@@ -6,12 +6,12 @@
 
 配置加载时机: backend.config.settings 与 backend.models.database.engine 在 import
 时固化。本脚本在 import 任何 backend.* 之前设置 DATABASE_URL / SCHEDULER_ENABLED,
-确保全局 engine 也指向副本; 同时 run_smoke 用依赖覆盖(get_db)把会话绑定到副本,
-双重保证即使在已导入 backend 的测试进程里也能读取正确副本。
+确保全局 engine 也指向副本；真实 smoke 通过全局 engine、SessionLocal 和 settings
+路由验证读取命中该副本。
 
 用法:
-    python scripts/smoke_db_copy.py --database D:/path/to/backups/web.<ts>.db
-    python scripts/smoke_db_copy.py --database <copy> \
+    python -m scripts.smoke_db_copy --database D:/path/to/backups/web.20260910_120000_000000.db
+    python -m scripts.smoke_db_copy --database D:/path/to/backups/copy.db \
         --expect-key smtp_host --expect-value example.invalid
 """
 from __future__ import annotations

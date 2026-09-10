@@ -71,14 +71,17 @@ def backup(src: Path, dst: Path) -> None:
     except FileExistsError:
         raise FileExistsError(f"拒绝覆盖已有文件: {dst}")
     os.close(fd)  # 占位已建立, 立即交还 fd 给 SQLite
-    src_con = sqlite3.connect(f"file:{src.as_posix()}?mode=ro", uri=True)
+    src_con = None
+    dst_con = None
     try:
+        src_con = sqlite3.connect(f"file:{src.as_posix()}?mode=ro", uri=True)
         dst_con = sqlite3.connect(dst)
         try:
             with dst_con:
                 src_con.backup(dst_con)
         finally:
             dst_con.close()
+            dst_con = None
     except Exception as backup_err:
         # backup 失败: 删除占位文件, 不让半成品进入 --list
         cleanup_err = None
@@ -94,7 +97,10 @@ def backup(src: Path, dst: Path) -> None:
             )
         raise
     finally:
-        src_con.close()
+        if dst_con is not None:
+            dst_con.close()
+        if src_con is not None:
+            src_con.close()
 
 
 def _remove_if_present(path: Path) -> None:
@@ -106,18 +112,24 @@ def _remove_if_present(path: Path) -> None:
 def _publish(partial: Path, dst: Path) -> None:
     """原子不覆盖发布: partial -> dst。
 
-    使用平台原子 rename 原语: dst 已存在时 os.rename 在 POSIX 与 Windows 均失败
-    (不覆盖), 直接暴露竞争, 让调用方判定(恰一个成功)。任何平台不支持该原语即失败
-    即停, 不回退到会覆盖目标的 os.replace/rename 覆盖语义。
+    使用同目录 hard-link 创建最终目录项: dst 已存在时在 POSIX 与 Windows 均以
+    EEXIST 失败。link 成功即提交, 再删除 partial; 不回退到会覆盖目标的 rename/replace。
     """
     try:
-        os.rename(partial, dst)
+        os.link(partial, dst)
     except FileExistsError:
         raise FileExistsError(f"拒绝覆盖已有备份(并发/重复发布): {dst}")
     except OSError as exc:
         if exc.errno == errno.EEXIST:
             raise FileExistsError(f"拒绝覆盖已有备份(并发/重复发布): {dst}") from exc
         raise
+    try:
+        partial.unlink()
+    except OSError as exc:
+        try:
+            print(f"[WARN] 备份已发布, partial 清理失败: {partial}: {exc}", file=sys.stderr)
+        except (OSError, UnicodeError):
+            pass
 
 
 def _resolve_source(raw: str) -> Path:
@@ -158,13 +170,11 @@ def do_backup(source: str, destination_dir: Path | None = None) -> int:
         print(f"[FAIL] 备份写入失败(未生成最终备份): {write_err}", file=sys.stderr)
         return 1
 
-    # 测试注入: 在 partial 上做额外表/内容篡改反例
-    if _POST_WRITE_HOOK is not None:
-        _POST_WRITE_HOOK(partial)
-
     # B. 完整后置校验(表集合双向相等 + 每表行数 + 内容摘要, 复用 verify_restore)
     #    失败点: 表统计 / integrity / 内容摘要
     try:
+        if _POST_WRITE_HOOK is not None:
+            _POST_WRITE_HOOK(partial)
         differences = verify_restore(src, partial)
     except Exception as verify_err:
         try:
@@ -186,9 +196,22 @@ def do_backup(source: str, destination_dir: Path | None = None) -> int:
         print("[FAIL] 备份副本不可依赖, 已清理临时文件(未发布最终 .db)", file=sys.stderr)
         return 1
 
-    # C. 校验全部通过 → 发布前钩子(测试可在此阻塞观察 partial 窗口)
-    if _PRE_PUBLISH_HOOK is not None:
-        _PRE_PUBLISH_HOOK()
+    # C. 冻结发布后输出所需信息, 发布后不再读库或 stat
+    try:
+        src_counts = _table_counts(src)
+        dst_counts = _table_counts(partial)
+        partial_size = partial.stat().st_size
+        dst_display = str(dst.resolve())
+        if _PRE_PUBLISH_HOOK is not None:
+            _PRE_PUBLISH_HOOK()
+    except Exception as pre_publish_err:
+        try:
+            _remove_if_present(partial)
+        except OSError as cl_err:
+            print(f"[FAIL] 发布前校验失败且 partial 清理失败: {partial}: {cl_err}", file=sys.stderr)
+            return 1
+        print(f"[FAIL] 发布前准备失败(未发布): {pre_publish_err}", file=sys.stderr)
+        return 1
 
     # D. 原子不覆盖发布(最终发布失败点)
     try:
@@ -210,12 +233,14 @@ def do_backup(source: str, destination_dir: Path | None = None) -> int:
         print(f"[FAIL] 发布失败(未生成最终备份): {pub_err}", file=sys.stderr)
         return 1
 
-    # E. 仅发布成功后打印完成
-    src_counts = _table_counts(src)
-    dst_counts = _table_counts(dst)
-    print(f"[PASS] 备份完成: {dst.resolve()} ({dst.stat().st_size:,} 字节)")
-    print(f"[PASS] 源库表数: {len(src_counts)} | 备份表数: {len(dst_counts)}")
-    print(f"[PASS] integrity_check: ok | 表集合/行数/内容摘要一致")
+    # E. 仅发布成功后打印完成; 仅使用发布前冻结的数据
+    try:
+        print(f"[PASS] 备份完成: {dst_display} ({partial_size:,} 字节)")
+        print(f"[PASS] 源库表数: {len(src_counts)} | 备份表数: {len(dst_counts)}")
+        print(f"[PASS] integrity_check: ok | 表集合/行数/内容摘要一致")
+    except (OSError, UnicodeError):
+        # 最终目录项已经提交；终端/管道输出失败不得把成功备份报告为失败。
+        pass
     return 0
 
 

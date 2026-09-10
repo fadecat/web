@@ -398,6 +398,19 @@ class TestAdoptionOrchestration:
         for key in ("stamp", "revision", "upgrade", "smoke"):
             assert deps[key].calls == 0, key
 
+    def test_non_string_difference_members_fail_structured(self, test_artifact_dir):
+        source, backup_copy = self._source_and_copy(test_artifact_dir)
+        bad = _CallCounter(returns=[1])
+        deps = self._make_deps(verify=bad)
+        from scripts.adopt_db_copy import adopt_database_copy
+
+        result = adopt_database_copy(source, backup_copy, "0001", deps)
+
+        assert result.code != 0
+        assert result.failed_stage == "backup_verified"
+        assert "list[str]" in result.stages[0].detail
+        assert bad.calls == 1
+
 
 class TestAdoptionCliInput:
     """Task 4 / R7-09: CLI 输入护栏(相对路径 / 无效 revision / 不存在文件 / 日常库)。
@@ -436,6 +449,26 @@ class TestAdoptionCliInput:
         cp = self._run([
             "--source", str(source),
             "--backup-copy", "relative_copy.db",
+            "--revision", "0001",
+        ])
+        assert cp.returncode == 2, cp.stdout + cp.stderr
+        assert "相对路径" in (cp.stdout + cp.stderr)
+
+    def test_relative_sqlite_url_source_rejected(self, test_artifact_dir):
+        cp = self._run([
+            "--source", "sqlite:///relative_source.db",
+            "--backup-copy", str(test_artifact_dir / "copy.db"),
+            "--revision", "0001",
+        ])
+        assert cp.returncode == 2, cp.stdout + cp.stderr
+        assert "相对路径" in (cp.stdout + cp.stderr)
+
+    def test_relative_sqlite_url_copy_rejected(self, test_artifact_dir):
+        source = test_artifact_dir / "src.db"
+        _build_unversioned_source(source)
+        cp = self._run([
+            "--source", str(source),
+            "--backup-copy", "sqlite:///relative_copy.db",
             "--revision", "0001",
         ])
         assert cp.returncode == 2, cp.stdout + cp.stderr

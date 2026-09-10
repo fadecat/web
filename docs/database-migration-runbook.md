@@ -13,7 +13,8 @@
 
 - Python 3.11+(项目当前用受管 3.13)。
 - 依赖含 `alembic>=1.14.0,<2.0.0`。
-- 所有命令**必须显式传 `-x database_url=...`**(占位符/缺失即报错, 防误触日常库)。
+- Alembic 命令使用 `-x database_url=...`；`scripts.backup_db`、`scripts.adopt_db_copy` 和
+  `scripts.smoke_db_copy` 使用各自的显式参数，禁止混用参数契约。
 
 ## 2. 固定顺序(已有库接管)
 
@@ -40,7 +41,17 @@
 > 操作员**禁止跳过 compare 直接 stamp**, 也无需手工逐条执行状态机命令。
 
 ```powershell
-& 'C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe' -m scripts.adopt_db_copy --source D:/path/to/web.db --backup-copy D:/path/to/backups/web.<ts>.db --revision 0001
+# 1) 停止写入并创建一致性备份
+$source = 'D:/path/to/web.db'
+$backupDir = 'D:/path/to/backups'
+$backupOutput = python -m scripts.backup_db --source $source --destination-dir $backupDir
+if ($LASTEXITCODE -ne 0) { throw 'backup 失败，禁止继续接管' }
+$match = $backupOutput | Select-String '^\[PASS\] 备份完成: (.+) \('
+if (-not $match) { throw '无法从 backup 输出取得副本路径' }
+$copy = $match.Matches[0].Groups[1].Value
+# 2) 使用上一步 [PASS] 输出中的最终 .db 路径执行唯一接管入口
+python -m scripts.adopt_db_copy --source $source --backup-copy $copy --revision 0001
+if ($LASTEXITCODE -ne 0) { throw 'adopt 失败，必须丢弃副本并从新备份重试' }
 ```
 
 固定状态机(不可跳步, 任一阶段失败立即停止并返回非 0):
@@ -57,10 +68,12 @@
 
 产物记录: 每次运行把命令、各阶段 [PASS]/[FAIL] 输出与最终退出码记入操作日志。
 护栏: 拒绝 backup_copy 等于日常 `data/web.db`, 拒绝 source 与 backup_copy 同文件。
-冒烟可单独执行:
+冒烟命令只用于接管失败后的副本诊断，不构成另一条接管流程。诊断失败后必须丢弃
+该副本，从新备份重新执行完整接管链：
 
 ```powershell
-& 'C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe' -m scripts.smoke_db_copy --database D:/path/to/backups/web.<ts>.db --expect-key smtp_host --expect-value <明文值>
+$expectValue = 'example.invalid'
+python -m scripts.smoke_db_copy --database $copy --expect-key smtp_host --expect-value $expectValue
 ```
 
 ## 3. 新空库初始化

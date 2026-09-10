@@ -12,6 +12,7 @@ import sqlite3
 import threading
 import time
 from contextlib import closing
+from pathlib import Path
 
 import pytest
 
@@ -510,6 +511,73 @@ class TestPartialPublish:
         # partial / sidecar 必须清理
         assert not list(out.glob("*.partial")), "失败必须清理 partial"
 
+    def test_public_backup_source_connect_failure_cleans_destination(self, test_artifact_dir, monkeypatch):
+        source = test_artifact_dir / "src.db"
+        _make_source(source, rows=1)
+        dst = test_artifact_dir / "explicit.db"
+        original = sqlite3.connect
+
+        def fail_source(*args, **kwargs):
+            dsn = str(args[0]) if args else str(kwargs.get("database", ""))
+            if "mode=ro" in dsn:
+                raise sqlite3.OperationalError("injected source connect failure")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(sqlite3, "connect", fail_source)
+        with pytest.raises(sqlite3.OperationalError):
+            backup(source, dst)
+        assert not dst.exists()
+
+    def test_publish_has_no_fallible_reads_after_commit(self, test_artifact_dir, monkeypatch):
+        source = test_artifact_dir / "src.db"
+        _make_source(source, rows=1)
+        out = test_artifact_dir / "out"
+        out.mkdir()
+        calls = []
+
+        def counts(path):
+            calls.append(Path(path))
+            if list(out.glob("*.db")):
+                raise OSError("table counts must be before publish")
+            return {"sample": 1}
+
+        monkeypatch.setattr(backup_db, "_table_counts", counts)
+        assert do_backup(str(source), out) == 0
+        assert len(calls) == 2
+
+    def test_output_failure_after_commit_does_not_report_backup_failure(
+        self, test_artifact_dir, monkeypatch
+    ):
+        source = test_artifact_dir / "src.db"
+        _make_source(source, rows=1)
+        out = test_artifact_dir / "out"
+        out.mkdir()
+
+        def fail_output(*args, **kwargs):
+            raise UnicodeEncodeError("ascii", "备份", 0, 1, "injected")
+
+        monkeypatch.setattr("builtins.print", fail_output)
+        assert do_backup(str(source), out) == 0
+        assert len(list(out.glob("*.db"))) == 1
+
+    @pytest.mark.parametrize("hook_name", ["_POST_WRITE_HOOK", "_PRE_PUBLISH_HOOK"])
+    def test_hook_failure_cleans_partial_and_final(
+        self, test_artifact_dir, monkeypatch, hook_name
+    ):
+        source = test_artifact_dir / "src.db"
+        _make_source(source, rows=1)
+        out = test_artifact_dir / "out"
+        out.mkdir()
+
+        def fail_hook(*args):
+            raise RuntimeError("injected hook failure")
+
+        monkeypatch.setattr(backup_db, hook_name, fail_hook)
+        assert do_backup(str(source), out) != 0
+        assert not list(out.glob("*.db"))
+        assert not list(out.glob("*.partial"))
+        assert not list(out.glob("*.partial-*"))
+
     def test_cleanup_failure_not_swallowed(self, test_artifact_dir, monkeypatch):
         """校验失败且 partial 清理抛错: 必须返回非零并报告, 不得声称成功(R7-06)。"""
         from pathlib import Path as _Path
@@ -604,6 +672,40 @@ class TestAtomicPublish:
         backup(source, partial)  # 写入合法 partial
         with pytest.raises(FileExistsError):
             _publish(partial, dst)
+        assert dst.read_bytes() == b"preexisting"
+
+    def test_publish_preserves_complete_partial_bytes(self, test_artifact_dir):
+        partial = test_artifact_dir / "candidate.partial"
+        dst = test_artifact_dir / "final.db"
+        partial.write_bytes(b"candidate-bytes")
+
+        _publish(partial, dst)
+
+        assert dst.read_bytes() == b"candidate-bytes"
+        assert not partial.exists()
+
+    def test_committed_publish_ignores_cleanup_warning_output_failure(
+        self, test_artifact_dir, monkeypatch
+    ):
+        partial = test_artifact_dir / "candidate.partial"
+        dst = test_artifact_dir / "final.db"
+        partial.write_bytes(b"candidate-bytes")
+        original_unlink = Path.unlink
+
+        def fail_partial_unlink(path, *args, **kwargs):
+            if path == partial:
+                raise OSError("injected partial cleanup failure")
+            return original_unlink(path, *args, **kwargs)
+
+        def fail_warning(*args, **kwargs):
+            raise UnicodeEncodeError("ascii", "告警", 0, 1, "injected")
+
+        monkeypatch.setattr(Path, "unlink", fail_partial_unlink)
+        monkeypatch.setattr("builtins.print", fail_warning)
+
+        _publish(partial, dst)
+
+        assert dst.read_bytes() == b"candidate-bytes"
 
     def test_concurrent_publish_same_dst_only_one_succeeds(self, test_artifact_dir):
         """并发发布同一 dst: 恰好一个成功, 另一个抛 FileExistsError(R7-05 并发原语)。"""
