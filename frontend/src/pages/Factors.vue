@@ -273,19 +273,9 @@ const activeScoreCount = computed(
           <template #title><b class="sec-title">全局过滤条件</b></template>
 
           <div class="filter-row">
-            <span class="filter-label">排除强赎状态：</span>
-            <el-checkbox-group v-model="currentTmpl.excluded_redeem_icons">
-              <el-checkbox value="R">已公告强赎</el-checkbox>
-              <el-checkbox value="O">公告要强赎</el-checkbox>
-              <el-checkbox value="B">已满足强赎条件</el-checkbox>
-              <el-checkbox value="G">公告不强赎</el-checkbox>
-            </el-checkbox-group>
-          </div>
-
-          <div class="filter-row">
-            <span class="filter-label">距强赎触发安全天数：</span>
+            <span class="filter-label">至少还需触发天数：</span>
             <el-input-number v-model="currentTmpl.redeem_safe_days" :min="-1" :max="30" size="small" @change="dirty = true" />
-            <span class="unit">天（-1 = 不限制）</span>
+            <span class="unit">天（-1 = 不限制；只作用于计数中状态）</span>
           </div>
 
           <div class="filter-row">
