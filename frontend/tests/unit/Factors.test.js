@@ -16,7 +16,7 @@ beforeEach(()=>{
 async function page(){const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:Factors}]});await router.push('/');await router.isReady();const w=mount(Factors,{global:{plugins:[ElementPlus,router]}});await flushPromises();return w;}
 describe('转债选债完整页面',()=>{
  it('initially executes V3 once and renders actual industry and yield values',async()=>{
-  const w=await page();expect(api.screenBonds).toHaveBeenCalledTimes(1);expect(api.screenBonds.mock.calls[0]).toEqual([{...t,schema_version:3},'db']);
+  const w=await page();expect(api.screenBonds).toHaveBeenCalledTimes(1);expect(api.screenBonds.mock.calls[0]).toEqual([{...t,schema_version:3},'live']);
   expect(w.text()).toContain('银行');expect(w.text()).toContain('110.00');expect(w.text()).toContain('10.00%');expect(w.text()).toContain('符合条件');
   expect(w.text()).toContain('市净率');expect(w.text()).toContain('到期赎回价');w.unmount();
  });

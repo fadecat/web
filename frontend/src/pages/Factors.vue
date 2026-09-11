@@ -9,7 +9,7 @@ import SelectionResults from '../components/selection/SelectionResults.vue';
 
 const ws=useSelectionWorkspace(api);
 const {current,templates,editingId,saved,source,dirty,anyDirty,result,stale,pending,running,saving,errors}=ws;
-const loading=ref(true),loadError=ref(''),catalog=ref([]),ratings=ref([]),industries=ref([]),editorOpen=ref(true);
+const loading=ref(true),loadError=ref(''),catalog=ref([]),ratings=ref([]),industries=ref([]),editorOpen=ref(false);
 const blacklistOpen=ref(false),blacklist=ref([]),blacklistCode=ref(''),blacklistBusy=ref(false);
 const currentRunning=computed(()=>!!running.value[editingId.value]);
 async function action(fn){try{return await fn();}catch(e){if(e!=='cancel'&&e!=='close')ElMessage.error(errorText(e));}}

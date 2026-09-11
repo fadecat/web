@@ -3,8 +3,8 @@ import { ref, computed, watch } from 'vue';
 const props=defineProps({result:Object,stale:Boolean,name:String});
 const emit=defineEmits(['blacklist']);
 const view=ref('all'),search=ref(''),page=ref(1),size=ref(50),sort=ref({prop:'rank',order:'ascending'});
-const columns=[['rank','排名',65],['code','代码',100],['name','名称',110],['industry_name','细分行业',140],['rating','评级',75],['price','当前价格',100],['redeem_price','到期赎回价',115],['simple_maturity_yield_pct','简单到期收益率',150],['dblow','双低',90],['premium_rt','溢价率',100],['curr_iss_amt','剩余规模(亿)',115],['convert_value','转股价值',110],['year_left','剩余年限',100],['pb','市净率',90],['redeem','强赎状态',240],['total_score','得分',90]];
-const numberFields=new Set(['price','redeem_price','simple_maturity_yield_pct','dblow','premium_rt','curr_iss_amt','convert_value','year_left','pb','total_score']);
+const columns=[['rank','排名',65],['code','代码',100],['name','名称',110],['industry_name','细分行业',140],['rating','评级',75],['price','当前价格',100],['sprice','正股价',100],['redeem_price','到期赎回价',115],['simple_maturity_yield_pct','简单到期收益率',150],['dblow','双低',90],['premium_rt','溢价率',100],['curr_iss_amt','剩余规模(亿)',115],['convert_value','转股价值',110],['year_left','剩余年限',100],['pb','市净率',90],['redeem','强赎状态',240],['total_score','得分',90]];
+const numberFields=new Set(['price','sprice','redeem_price','simple_maturity_yield_pct','dblow','premium_rt','curr_iss_amt','convert_value','year_left','pb','total_score']);
 function display(row,field){const v=row[field];if(v==null||v==='')return field==='rating'?'无评级':'—';return numberFields.has(field)?`${Number(v).toFixed(2)}${['simple_maturity_yield_pct','premium_rt'].includes(field)?'%':''}`:v;}
 const rows=computed(()=>{
  let a=view.value==='excluded'?props.result.excluded_rows||[]:props.result.rows||[];

@@ -7,7 +7,7 @@ const canonical = value => Array.isArray(value) ? value.map(canonical) : value &
 export const signature = t => JSON.stringify(canonical([t?.conditions, t?.strategy_factors, t?.target_count, t?.hold_tolerance, t?.migration_issues]));
 export const uid = () => (globalThis.crypto?.randomUUID?.() ?? `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`);
 export function useSelectionWorkspace(api) {
-  const saved = ref(null), drafts = ref({}), editingId = ref(''), source = ref('db');
+  const saved = ref(null), drafts = ref({}), editingId = ref(''), source = ref('live');
   const results = ref({}), running = ref({}), saving = ref(false), errors = ref({});
   let requests = {};
   const current = computed(() => drafts.value[editingId.value]);

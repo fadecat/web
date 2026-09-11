@@ -324,6 +324,7 @@ def _to_dto(
         "industry_is_fallback": bool(info.get("industry_is_fallback", False)),
         "price": price,
         "change_rt": finite_number(c.get("increase_rt")),
+        "sprice": finite_number(c.get("sprice")),
         "dblow": finite_number(c.get("dblow")),
         "premium_rt": finite_number(c.get("premium_rt")),
         "curr_iss_amt": finite_number(c.get("curr_iss_amt")),
