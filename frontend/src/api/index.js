@@ -16,6 +16,10 @@ export const getCbListLatest = (params = {}) =>
 export const getCbListHistory = (bondId) =>
   api.get('/cb-list/history', { params: { bond_id: bondId } }).then((r) => r.data);
 
+// 股票高股息快照(某交易日全量, 默认最新; 按股息率降序 null 沉底)
+export const getStockDividendSnapshot = (params = {}) =>
+  api.get('/stock-dividend/latest', { params }).then((r) => r.data);
+
 // 评级目录(唯一事实源): 规范等级+快照发现的未知值, 含 {value,label,order,is_missing}
 export const getRatingCatalog = () =>
   api.get('/cb-list/factors/ratings', { timeout: 15000 }).then((r) => r.data);

@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.api.routes import app_settings, cb_index, cb_list, cb_screen, data_management, data_status, health, style_rotation, valuation
+from backend.api.routes import app_settings, cb_index, cb_list, cb_screen, data_management, data_status, health, stock_dividend, style_rotation, valuation
 from backend.config import settings
 from backend.models.database import init_db
 from backend.scheduler import start_scheduler, stop_scheduler
@@ -58,6 +58,7 @@ def create_app() -> FastAPI:
     app.include_router(style_rotation.router, prefix=prefix, tags=["style-rotation"])
     app.include_router(cb_index.router, prefix=prefix, tags=["cb-index"])
     app.include_router(cb_list.router, prefix=prefix, tags=["cb-list"])
+    app.include_router(stock_dividend.router, prefix=prefix, tags=["stock-dividend"])
     app.include_router(cb_screen.router, prefix=prefix, tags=["cb-screen"])
     app.include_router(data_status.router, prefix=prefix, tags=["data-status"])
     app.include_router(data_management.router, prefix=prefix, tags=["data-management"])

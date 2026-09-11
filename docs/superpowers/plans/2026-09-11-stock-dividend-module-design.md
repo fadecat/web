@@ -145,11 +145,28 @@ class StockDividendDaily(Base):
   value 前缀: 一级2位/二级4位/三级6位, 子=父前缀)。
 - 无独立树刷新任务(月度刷新内嵌在日任务里)。
 
-## 6. API 与前端(P2, 暂缓)
+## 6. API 与前端(P2, 2026-09-12 交付)
 
-筛选交互(条件形态/是否模板化)、路由设计、菜单入口 —— **待 P2 单独讨论**,
-本文不锁定。数据侧就绪后随时可加。字段目录(`/fields` 类接口)建议随 P2 一起
-做(筛选器需要), 数据源可直接读表头+实测样本生成。
+「暂缓」状态结束, P2 已实施并部署。要点(完整方案见会话计划
+`magical-swimming-flurry.md`, 已按用户评审意见修正):
+
+- **复刻范围**: 完全复刻集思录股息率排行页的筛选与列展示, 视觉用本仓库风格
+  (Element Plus + 现有页面惯例)。**会员占位列不复刻** —— 波动率(stdevry)/
+  质押比例(pledge_rt) 非会员账号恒为 'buy' 无数据, 直接不渲染列; 其余有意义的
+  列全保留不漏, 筛选逻辑与集思录一致(两字段本来就不是筛选控件, 不受影响)。
+  API 载荷仍全量 47 键(数据保真, 供后续差异化使用)。
+- **只看最新交易日**(无日期切换), 菜单新建「股票」分组 +「高股息」项。
+- 后端: `GET /api/stock-dividend/latest?trade_date=`(薄路由 + 查询服务,
+  股息率降序 null 沉底, stock_id tie-break), 10 项契约测试。
+- 前端: `utils/stockDividend.mjs` 纯函数(25 列配置/筛选/行业树/排序/色阶) +
+  `pages/StockDividend.vue`(三态/骨架/reqToken + 13 阈值筛选区 + 宽表 + 分页)。
+- 渲染语义均从保存的 jisilu 页面源码逐项对齐: 温度四档色阶
+  (<25 青/<50 绿/<75 橙/≥75 红, 负值显示'—'但参与筛选排序)、aft_dividend
+  黄底强调、pb_flag='Y' 灰色口径 tooltip、margin_flg='R' 橙色 R 上标、
+  audit_info 红色警示、代码列外链 `https://www.jisilu.cn/data/stock/{id}`。
+- 测试: node 34 项(抓出并修复 sortRows null 方向翻转、buildIndustryTree
+  children 未挂接两个真 bug) + vitest 11 项(真 mount, 含渲染冒烟:
+  无会员占位列断言) + 后端全量基线持平(524 passed)。
 
 ## 7. 回测能力与边界
 

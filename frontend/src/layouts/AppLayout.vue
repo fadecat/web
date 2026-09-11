@@ -11,6 +11,12 @@ const isMobile = () => window.innerWidth < 768;
 
 const menus = [
   {
+    group: '股票',
+    items: [
+      { path: '/stock-dividend', title: '高股息', icon: '💰' },
+    ],
+  },
+  {
     group: '可转债',
     items: [
       { path: '/cb-market', title: '转债市场', icon: '📈' },

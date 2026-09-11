@@ -42,6 +42,13 @@ const routes = [
         component: () => import('../pages/Rotation.vue'),
         meta: { title: '风格轮动', group: '市场' },
       },
+      // 股票高股息快照: 最新交易日全量, 筛选/排序本地完成
+      {
+        path: 'stock-dividend',
+        name: 'stock-dividend',
+        component: () => import('../pages/StockDividend.vue'),
+        meta: { title: '高股息', group: '股票' },
+      },
       {
         path: 'status',
         name: 'status',
