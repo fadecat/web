@@ -5,7 +5,7 @@ export const clone = value => JSON.parse(JSON.stringify(value));
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 export const signature = t => JSON.stringify(canonical([t?.conditions, t?.strategy_factors, t?.target_count, t?.hold_tolerance, t?.migration_issues]));
-export const uid = () => crypto.randomUUID();
+export const uid = () => (globalThis.crypto?.randomUUID?.() ?? `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`);
 export function useSelectionWorkspace(api) {
   const saved = ref(null), drafts = ref({}), editingId = ref(''), source = ref('db');
   const results = ref({}), running = ref({}), saving = ref(false), errors = ref({});
