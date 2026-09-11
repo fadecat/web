@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.models.data_status import TaskRunLog
+from backend.models.jisilu_stock import StockDividendDaily
 from backend.models.valuation import (
     CbDailySnapshot,
     CbIndexDaily,
@@ -32,6 +33,7 @@ JOBS: dict[str, dict[str, str]] = {
     "cb_redeem_daily": {"name": "强赎列表", "schedule": "交易日 15:03"},
     "cb_index_daily": {"name": "转债等权指数", "schedule": "交易日 15:04"},
     "cb_list_daily": {"name": "转债全量快照", "schedule": "交易日 15:06"},
+    "stock_dividend_daily": {"name": "高股息股票快照", "schedule": "交易日 15:08"},
     "style_rotation_daily": {"name": "指数日线（腾讯）", "schedule": "交易日 22:03"},
     "valuation_daily": {"name": "估值截面(易方达分位/股息率 + 东财国债)", "schedule": "每天 22:06"},
     "index_eod_daily": {"name": "指数收盘价（易方达）", "schedule": "每天 22:09"},
@@ -195,11 +197,12 @@ def get_dataset_freshness(db: Session) -> list[dict]:
         )
     )
 
-    # 5-7) 转债类表 —— 单实体, 条目按「天数」计
+    # 5-8) 快照类表 —— 单实体, 条目按「天数」计
     for name, model in (
         ("转债全量快照", CbDailySnapshot),
         ("强赎列表", CbRedeemDaily),
         ("转债等权指数", CbIndexDaily),
+        ("高股息股票快照", StockDividendDaily),
     ):
         latest, first, days = db.execute(
             select(

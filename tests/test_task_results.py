@@ -11,6 +11,7 @@ from backend.tasks import (
     cb_list_tasks,
     cb_redeem_tasks,
     index_eod_tasks,
+    stock_dividend_tasks,
     style_rotation_tasks,
     valuation_tasks,
 )
@@ -30,6 +31,7 @@ def _uni_index(code, name="创成长", **ds_kwargs):
         (cb_list_tasks, "run_cb_list_daily"),
         (cb_index_tasks, "run_cb_index_daily"),
         (cb_redeem_tasks, "run_cb_redeem_daily"),
+        (stock_dividend_tasks, "run_stock_dividend_daily"),
     ],
 )
 def test_market_snapshot_tasks_report_non_trading_day_as_skipped(monkeypatch, module, func_name):

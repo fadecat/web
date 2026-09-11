@@ -236,7 +236,7 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
     from sqlalchemy import create_engine
 
     from backend.models.database import Base
-    from backend.models import app_setting, data_status, valuation  # noqa: F401
+    from backend.models import app_setting, data_status, jisilu_stock, valuation  # noqa: F401
 
     from scripts.check_db_baseline import compare_schema
     from scripts.verify_db_restore import verify_restore

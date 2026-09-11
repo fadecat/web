@@ -22,6 +22,7 @@ from typing import Any
 from sqlalchemy import distinct, select
 from sqlalchemy.orm import Session
 
+from backend.models.jisilu_stock import StockDividendDaily
 from backend.models.valuation import (
     CbDailySnapshot,
     CbIndexDaily,
@@ -83,6 +84,13 @@ DAILY_TABLE_REGISTRY: list[dict[str, Any]] = [
         "name": "转债强赎列表",
         "model": CbRedeemDaily,
         "entity_attr": None,
+        "date_attr": "trade_date",
+        "mode": "global",
+    },
+    {
+        "name": "高股息股票快照",
+        "model": StockDividendDaily,
+        "entity_attr": None,  # 成分随市值门槛进出,按全表交易日扫描
         "date_attr": "trade_date",
         "mode": "global",
     },

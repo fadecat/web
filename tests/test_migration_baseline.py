@@ -16,12 +16,13 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect
 
 from backend.models.database import Base
-from backend.models import app_setting, data_status, valuation  # noqa: F401
+from backend.models import app_setting, data_status, jisilu_stock, valuation  # noqa: F401
 
 EXPECTED_TABLES = {
     "app_setting", "task_run_log", "index_valuation_snapshot",
     "index_dividend_yield", "cn_bond_yield", "index_daily_quote",
     "cb_index_daily", "cb_daily_snapshot", "cb_redeem_daily", "cb_blacklist",
+    "stock_dividend_daily",
 }
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"

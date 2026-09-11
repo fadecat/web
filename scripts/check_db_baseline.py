@@ -121,7 +121,7 @@ def main() -> int:
     if not args.database_url.startswith("sqlite:///"):
         parser.error("本阶段只允许显式 SQLite URL")
     from backend.models.database import Base
-    from backend.models import app_setting, data_status, valuation  # noqa: F401
+    from backend.models import app_setting, data_status, jisilu_stock, valuation  # noqa: F401
 
     differences = compare_schema(args.database_url, Base.metadata)
     for difference in differences:

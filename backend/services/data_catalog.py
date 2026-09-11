@@ -52,6 +52,7 @@ def catalog():
         "转债全量快照": {"": ("转债全量快照", Policy("jisilu", "cb_list_daily", 15, 30))},
         "强赎列表": {"": ("强赎列表", Policy("jisilu", "cb_redeem_daily", 15, 30))},
         "转债等权指数": {"": ("转债等权指数", Policy("jisilu", "cb_index_daily", 15, 30))},
+        "高股息股票快照": {"": ("高股息股票快照", Policy("jisilu", "stock_dividend_daily", 15, 30))},
     }
 
 

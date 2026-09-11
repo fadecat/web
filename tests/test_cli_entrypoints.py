@@ -18,7 +18,7 @@ from sqlalchemy import create_engine
 
 from backend.models.app_setting import AppSetting
 from backend.models.database import Base
-from backend.models import app_setting, data_status, valuation  # noqa: F401
+from backend.models import app_setting, data_status, jisilu_stock, valuation  # noqa: F401
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PY = sys.executable

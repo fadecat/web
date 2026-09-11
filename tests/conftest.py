@@ -63,7 +63,7 @@ def _block_external_network(monkeypatch):
 def db():
     """内存 SQLite 会话(每次独立, 建全量表结构); yield/finally 保证关闭。"""
     # 确保全部模型已注册到 metadata(生产由 init_db 的延迟导入负责)
-    from backend.models import app_setting, data_status, valuation  # noqa: F401
+    from backend.models import app_setting, data_status, jisilu_stock, valuation  # noqa: F401
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(bind=engine)
@@ -170,7 +170,7 @@ def contract_client(thread_safe_engine, startup_spies, contract_db_state):
     from fastapi.testclient import TestClient
 
     from backend.main import app
-    from backend.models import app_setting, data_status, valuation  # noqa: F401
+    from backend.models import app_setting, data_status, jisilu_stock, valuation  # noqa: F401
     from backend.models.database import Base, get_db
 
     Base.metadata.create_all(bind=thread_safe_engine)

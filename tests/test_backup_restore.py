@@ -147,7 +147,7 @@ class TestRestoreVerifier:
         from sqlalchemy import create_engine
 
         from backend.models.database import Base
-        from backend.models import app_setting, data_status, valuation  # noqa: F401
+        from backend.models import app_setting, data_status, jisilu_stock, valuation  # noqa: F401
 
         source = test_artifact_dir / "src.db"
         backup_copy = test_artifact_dir / "bak.db"

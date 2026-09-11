@@ -3,6 +3,9 @@
 Revision ID: 0001
 Revises:
 
+2026-09-11: 基线随 stock_dividend_daily(集思录高股息快照)模型加入而更新,
+与 ORM create_all 产物保持等价(过渡状态: 生产建表走 init_db, 本基线供
+adopt_db_copy 接管链 stamp/upgrade 使用)。
 """
 from typing import Sequence, Union
 
@@ -217,6 +220,66 @@ def upgrade() -> None:
     with op.batch_alter_table('index_valuation_snapshot', schema=None) as batch_op:
         batch_op.create_index('ix_valuation_idx_date', ['index_code', 'trade_date'], unique=False)
 
+    op.create_table('stock_dividend_daily',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('trade_date', sa.Date(), nullable=False, comment='交易日'),
+    sa.Column('created_at', sa.DateTime(), nullable=False, comment='落库时间'),
+    sa.Column('stock_id', sa.String(length=16), nullable=False, comment='股票代码'),
+    sa.Column('stock_nm', sa.String(length=64), nullable=True, comment='股票名称'),
+    sa.Column('sw_cd', sa.String(length=16), nullable=True, comment='申万行业代码'),
+    sa.Column('industry', sa.String(length=16), nullable=True, comment='行业(实测恒空)'),
+    sa.Column('industry2', sa.String(length=16), nullable=True, comment='行业2(实测恒空)'),
+    sa.Column('industry_nm', sa.String(length=64), nullable=True, comment='三级行业名'),
+    sa.Column('industry_nm2', sa.String(length=128), nullable=True, comment='行业路径名'),
+    sa.Column('province', sa.String(length=32), nullable=True, comment='省份'),
+    sa.Column('price', sa.Float(), nullable=True, comment='现价'),
+    sa.Column('pre_close', sa.Float(), nullable=True, comment='昨收价'),
+    sa.Column('increase_rt', sa.Float(), nullable=True, comment='涨跌幅(%)'),
+    sa.Column('volume', sa.Float(), nullable=True, comment='成交量(手)'),
+    sa.Column('adj_rt', sa.Float(), nullable=True, comment='复权因子'),
+    sa.Column('price_5year', sa.Float(), nullable=True, comment='5年均价'),
+    sa.Column('total_value', sa.Float(), nullable=True, comment='总市值(亿)'),
+    sa.Column('float_value', sa.Float(), nullable=True, comment='流通市值(亿)'),
+    sa.Column('shares', sa.Float(), nullable=True, comment='总股本(亿股)'),
+    sa.Column('pe', sa.Float(), nullable=True, comment='PE-TTM'),
+    sa.Column('pb', sa.Float(), nullable=True, comment='PB'),
+    sa.Column('roe', sa.Float(), nullable=True, comment='ROE(%)'),
+    sa.Column('roe_average', sa.Float(), nullable=True, comment='ROE均值(%)'),
+    sa.Column('pe_temperature', sa.Float(), nullable=True, comment='PE温度'),
+    sa.Column('pb_temperature', sa.Float(), nullable=True, comment='PB温度'),
+    sa.Column('dividend_rate', sa.Float(), nullable=True, comment='股息率(%)'),
+    sa.Column('dividend_rate2', sa.Float(), nullable=True, comment='股息率2(%)'),
+    sa.Column('dividend_rate5', sa.Float(), nullable=True, comment='5年股息率(%)'),
+    sa.Column('dividend_rate_average', sa.Float(), nullable=True, comment='股息率均值(%)'),
+    sa.Column('dividend_rate_base', sa.Float(), nullable=True, comment='基础股息率(%)'),
+    sa.Column('accu_dividend', sa.Float(), nullable=True, comment='累计股息(元)'),
+    sa.Column('aft_dividend', sa.Float(), nullable=True, comment='除权股息率(%)'),
+    sa.Column('debt_rate', sa.Float(), nullable=True, comment='资产负债率(%)'),
+    sa.Column('int_debt_rate', sa.Float(), nullable=True, comment='有息负债率(%)'),
+    sa.Column('pledge_rt', sa.Float(), nullable=True, comment='质押比例(%)'),
+    sa.Column('eps_growth', sa.Float(), nullable=True, comment='EPS增长(%)'),
+    sa.Column('eps_growth_ttm', sa.Float(), nullable=True, comment='EPS增长TTM(%)'),
+    sa.Column('revenue_average', sa.Float(), nullable=True, comment='营收均值(%)'),
+    sa.Column('profit_average', sa.Float(), nullable=True, comment='利润均值(%)'),
+    sa.Column('cashflow_average', sa.Float(), nullable=True, comment='现金流均值(%)'),
+    sa.Column('ipo_date', sa.String(length=32), nullable=True, comment='上市日期'),
+    sa.Column('last_dt', sa.String(length=32), nullable=True, comment='行情日期(停牌股较旧)'),
+    sa.Column('last_time', sa.String(length=32), nullable=True, comment='行情时间'),
+    sa.Column('audit_info', sa.String(), nullable=True, comment='审计信息'),
+    sa.Column('active_flg', sa.String(length=8), nullable=True, comment='活跃标志'),
+    sa.Column('margin_flg', sa.String(length=8), nullable=True, comment='两融标志'),
+    sa.Column('pb_flag', sa.String(length=8), nullable=True, comment='PB标志'),
+    sa.Column('stdevry', sa.String(), nullable=True, comment='波动率(实测偶为徽标串, 存原样)'),
+    sa.Column('owned', sa.Integer(), nullable=True, comment='自选标志'),
+    sa.Column('holded', sa.Integer(), nullable=True, comment='持仓标志'),
+    sa.Column('raw_json', sa.String(), nullable=True, comment='原始 cell JSON'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('stock_id', 'trade_date', name='uq_stock_dividend_id_date')
+    )
+    with op.batch_alter_table('stock_dividend_daily', schema=None) as batch_op:
+        batch_op.create_index('ix_stock_dividend_date', ['trade_date'], unique=False)
+        batch_op.create_index('ix_stock_dividend_sw_cd', ['sw_cd'], unique=False)
+
     op.create_table('task_run_log',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('job_id', sa.String(length=32), nullable=False, comment='任务ID,如 valuation_daily'),
@@ -241,6 +304,11 @@ def downgrade() -> None:
         batch_op.drop_index('ix_task_run_job_started')
 
     op.drop_table('task_run_log')
+    with op.batch_alter_table('stock_dividend_daily', schema=None) as batch_op:
+        batch_op.drop_index('ix_stock_dividend_sw_cd')
+        batch_op.drop_index('ix_stock_dividend_date')
+
+    op.drop_table('stock_dividend_daily')
     with op.batch_alter_table('index_valuation_snapshot', schema=None) as batch_op:
         batch_op.drop_index('ix_valuation_idx_date')
 

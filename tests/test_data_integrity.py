@@ -87,7 +87,7 @@ class TestScanAllTables:
 
         report = scan_all_daily_tables(db)
         names = [t["name"] for t in report["tables"]]
-        assert len(names) == 7
+        assert len(names) == 8
         assert report["total_gaps"] == 0
 
         quote_table = next(t for t in report["tables"] if t["name"] == "指数日线(风格轮动)")

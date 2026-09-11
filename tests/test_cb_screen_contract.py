@@ -118,7 +118,7 @@ class TestIntradayAccepted:
         # 直接往测试内存库写黑名单, 验证查询时自动剔除
         from sqlalchemy.orm import sessionmaker
 
-        from backend.models import app_setting, data_status, valuation  # noqa: F401
+        from backend.models import app_setting, data_status, jisilu_stock, valuation  # noqa: F401
         from backend.models.database import Base
         from backend.services.cb_blacklist_store import add_to_blacklist
 

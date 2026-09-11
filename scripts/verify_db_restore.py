@@ -265,7 +265,7 @@ def main() -> int:
     args = parser.parse_args()
 
     from backend.models.database import Base
-    from backend.models import app_setting, data_status, valuation  # noqa: F401
+    from backend.models import app_setting, data_status, jisilu_stock, valuation  # noqa: F401
 
     differences = verify_restore(
         _path(args.source),

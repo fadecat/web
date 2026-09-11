@@ -10,6 +10,7 @@ from backend.tasks.cb_index_tasks import run_cb_index_daily
 from backend.tasks.cb_list_tasks import run_cb_list_daily
 from backend.tasks.cb_redeem_tasks import run_cb_redeem_daily
 from backend.tasks.index_eod_tasks import run_index_eod_daily
+from backend.tasks.stock_dividend_tasks import run_stock_dividend_daily
 from backend.tasks.style_rotation_tasks import run_style_rotation_daily
 from backend.tasks.valuation_tasks import run_valuation_daily
 
@@ -22,6 +23,7 @@ DAILY_JOBS: list[tuple[str, object, str, int, int]] = [
     ("cb_redeem_daily", run_cb_redeem_daily, "可转债强赎列表抓取", 15, 3),
     ("cb_index_daily", run_cb_index_daily, "可转债等权指数日频抓取", 15, 4),
     ("cb_list_daily", run_cb_list_daily, "可转债全量快照抓取", 15, 6),
+    ("stock_dividend_daily", run_stock_dividend_daily, "高股息股票快照抓取", 15, 8),
     ("style_rotation_daily", run_style_rotation_daily, "指数日线（腾讯）抓取", 22, 3),
     ("valuation_daily", run_valuation_daily, "估值板块日频抓取", 22, 6),
     ("index_eod_daily", run_index_eod_daily, "指数收盘价（易方达）抓取", 22, 9),
