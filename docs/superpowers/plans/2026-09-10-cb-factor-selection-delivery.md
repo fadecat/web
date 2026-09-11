@@ -117,4 +117,151 @@ def enrich_cell(cell: dict[str, Any], redeem_cell: dict[str, Any] | None = None)
 - 目录事实源:`FACTOR_CATALOG_BY_FIELD[field]` 取 `type/operators/scorable/allow_negative/label`;T3 迁移 redemption safe days 时用 `negative="include"` + `missing="include"`;ytm_rt 已从目录移除,迁移特殊处理见方案 §5.2。
 - V3 模型输出 `model_dump()` 可直接喂 `evaluate_conditions`(测试即此用法);旧 `FactorsConfigModel`/`StrategyTemplateModel` 未动,T3 磁盘升级 V3 后的 V2 客户端兼容(§5.3 第 7 条)仍走旧模型。
 
+---
+
+# 批次2 交付记录(T3 模板迁移与文件保存 / T4 统一执行与数据质量)
+
+> 实施者:批次2 agent(迁移与执行)。基线:批次1 结束提交 `51f9fa9`(即 `36c8c17` + T0~T2 三个提交)。本批次只做 T3/T4,提交:`6a9f9a0`(T3)、`6f4f9f3`(T4)。
+
+## T3:模板迁移、重命名与文件保存
+
+### 实际签名与结构
+
+- **`backend/services/cb_template_migration.py`(新建)**:
+  - `migrate_config_to_v3(config: dict) -> dict`:纯函数,深拷贝入参,零磁盘 IO;version=3 输入原样深拷贝返回(幂等不动点);V1/V2 逐模板 `_migrate_template`;
+  - `TEMPLATE_NAME_MAX_CHARS = 40`;条件生成顺序固定保证确定性:exclusion_rules 派生条件(文件顺序) → `rating_cd in`(missing="exclude",旧白名单连缺失评级一起排除) → `redeem_icons not_any`(缺省 R/O/B;显式 [] = 不生成;非法标记 archived 留痕) → `redeem_remain_days gt`(missing="include"+negative="include",仅 safe_days≥0 时生成) → `listed_days gte`(仅 >0) → `code not_in`(归一 6 位去重) → `stock_is_st eq false` 收尾;条件 id "c1".."cN";
+  - §5.2 ytm_rt:条件与评分都产生 `replaced_metric` 问题(id 前缀 "legacy-yield-",replacement_field=simple_maturity_yield_pct),enabled→status=pending(阻塞执行),停用→archived;
+  - `unmappable_rule`(未知字段/运算符/非数字阈值):启用 pending、停用 archived;`invalid_value_dropped`(负阈值/非法枚举/非正权重重置为 1/超界参数夹取/无法归一代码)一律 archived;`duplicate_scoring_dropped`(重复/不可评分评分字段保留首个);未知模板键 `unknown_field_dropped`(fields 列表);
+  - 名称 trim → 超 40 截断(`name_truncated`)→ 重名按文件顺序追加"(迁移N)"(`duplicate_name_renamed`,casefold 判重);缺失/重复 id 生成稳定迁移 ID `migrated-<文件序号>`(冲突追加 `-k`);active_id 悬空重置为首个模板(`active_id_reset`);
+  - 问题收集器 `_IssueSink`:id 前缀按类独立计数,保证 issue id 稳定且跨类不冲突。
+- **`backend/services/cb_factors.py`(§5.3)**:
+  - `CONFIG_LOCK = threading.RLock`(单进程并发边界);`MISSING_REVISION = "missing"`;
+  - `load_current_config() -> (revision, config|None)`:revision=磁盘原始字节 SHA256;无文件返回 (missing, None);V1/V2 归一,V3 原样;坏文件/未知版本抛 `ConfigUnreadableError`(**R9 修订:read_config 不再静默回默认**);
+  - `save_config_v3(config, expected_revision)`:锁内重读比对(不一致抛 `ConfigConflictError(current_revision)`)→ 磁盘非 V3 时 `_backup_before_first_v3`(独占 `O_CREAT|O_EXCL` 创建 `factors.pre-v3.<旧文件hash12>.json`,已存在则验证逐字节相同)→ 组装 `{version:3, active_id, templates, updated_at}`(revision 不入正文)→ `_atomic_write_bytes`(同目录唯一临时文件+fsync+`os.replace`,失败保留原文件并清理临时文件)→ 返回 `{"data", "revision"(新字节 SHA256)}`;
+  - `write_config` 改原子替换;`get_active_template` V3 感知(懒加载迁移,只内存)。
+- **`backend/api/schemas/cb_screen.py`**:`SelectionTemplateModel`/`_ConditionsTemplateBase` 名称 trim 后 ≤40(`TEMPLATE_NAME_MAX_CHARS`);`SelectionConfigModel._names_unique_casefold`(归一重名 422,列出重复名);旧 `StrategyTemplateModel`/`FactorsConfigModel` 与评级语义反例原样保留。
+- **`backend/api/routes/cb_screen.py`**:
+  - GET /cb-list/factors:load → 无文件用归一默认 → `migrate_config_to_v3` → `{**v3, "revision"}`;坏文件 503 `{"code":"CONFIG_UNREADABLE"}`;**GET 不写磁盘不产生备份**;
+  - POST 版本分发:`body.version == 3` → `_save_factors_v3`(SelectionConfigModel 强校验 → 422 detail `{code:"INVALID_CONFIG", message, path, errors:[{code,message,path}]}`,path 由 `exc.errors()[i]["loc"]` join;`ConfigConflictError` → 409 `CONFIG_CONFLICT` + current_revision;响应 `{ok:true, data:{..., revision}}`);否则 `_save_factors_legacy`(磁盘已 V3 → 409 `CLIENT_UPGRADE_REQUIRED`;旧 FactorsConfigModel 校验,422 detail 保持旧字符串外形;评级语义反例不回归)。
+
+### 测试
+
+`tests/test_cb_selection_templates.py`(新建,33 用例)覆盖方案 T3 必测:迁移两次完全一致+幂等不动点+入参零污染+零磁盘 IO;ytm 条件/评分 pending(停用 archived);双标签同 revision 一胜一 409(且冲突请求不改磁盘);`os.replace` 失败(monkeypatch)原文件字节不变+临时文件清理;坏 JSON/未知版本 503 不回默认;首次备份逐字节一致且二次保存不重复备份;重命名只改 name;带空格同名重命名零实质变动;空白名/41 字符/归一重名 422 且文件不变;revision 缺失/未知顶层字段/重复 id/active_id 悬空 422;旧客户端兼容(空盘/V2 盘可存,V3 盘 409,ratings:"AAA" 反例保持)。
+`tests/test_cb_factors_contract.py` 两处断言按方案授权修订到 V3 字段:GET→POST 往返改断 `rating_cd in` 条件逐字段保持(excluded_ratings=["AA"] 反例语义不变);不限评级改断"无 rating_cd 条件"。**评级语义反例(test_string_rating_not_split_to_chars 等 10 项)全部原样保留且通过。**
+
+### T3 指定验证(真实运行)
+
+命令:`python -m pytest tests/test_cb_selection_templates.py tests/test_cb_factors_contract.py -q -p no:cacheprovider`
+结果:**56 passed**,退出码 0。
+附加回归(+screen 合同+条件引擎+metrics):**153 passed**,退出码 0。
+
+### T3 提交事故与修复(如实记录)
+
+首次 T3 提交时 `git commit` 把预存的 3 个已暂存删除(Bonds.vue、filterValidation.{js,test.mjs})一并带入(9 files changed)——与 T0 批次记录的坑完全相同。已即时修复:`git reset --soft HEAD~1` 回退后改用 **pathspec 提交**(`git commit -m ... -- <显式文件列表>`,新文件先显式 `git add`),最终提交 `6a9f9a0` 恰好 6 个本批次文件;3 个预存删除保持已暂存状态、AppLayout/CbMarket/router 保持未暂存,移交形态与批次1 交接一致。**后续批次提交务必用 pathspec 或先清理暂存区。**
+
+## T4:接通统一执行和数据质量合同
+
+### 实际签名与结构
+
+- **`backend/services/cb_screen.py`(重写为 V3 统一管线,§6.1)**:
+  - `screen_bonds(rows, template, redeem_map=None, *, as_of_date=None, blacklist_ids=None, trade_date=None, redeem_trade_date=None, redeem_loaded=True, redeem_unusable=False, warnings=None)`;`screen_bonds_live(records, template, redeem_cells=None, *, as_of_date=None, blacklist_ids=None, warnings=None)`;业务输入相同则结果相同(DB/live 共用 `_run_pipeline`);
+  - 管线:`_enrich_rows`(dict 输入归一副本,ORM 行走 `_row_to_cell`;`enrich_cell` 写 redeem_price/简单收益率,再写 redeem_remain_days(仅同日强赎快照,覆盖 raw_json 残留)与 listed_days(以 as_of_date 为基准,**不读系统当天**)) → `_apply_filters`(黑名单+`evaluate_conditions`,每行只进一个列表、原因可合并) → `_score_and_order`(排名线性打分,同分按代码升序;总分降序→双低升序 None 最后→代码升序;无启用评分因子=filter_only,双低升序) → 入选标记 → `_to_dto`;
+  - `RedeemDataUnavailableError`:模板依赖 `{simple_maturity_yield_pct, redeem_price}`(启用条件或评分)且全市场收益输入全部缺失时抛出(§3.2,路由映射 503);`redeem_unusable=True` 时服务内强制丢弃 redeem_map(严格同日);
+  - DTO 新增:`industry_code`(原始 sw_cd,筛选匹配口径)/`industry_name/level/mapped_code/is_fallback`(映射结果)/`simple_maturity_yield_pct`;保留旧键(price/dblow/premium_rt/curr_iss_amt/convert_value/year_left/pb/rating/redeem_price/redeem_gap/redeem/change_rt/industry_name/total_score);excluded_rows 带 `exclude_reasons`(七键结构数组);`format_redeem_status` 的 None 计数与空串同口径(旧入口共用,展示修正);
+  - 响应新增 `selection_mode("scored"|"filter_only")` 与 `meta`(§6.2 九键);filter_only 时 selected/holdable 全 False、selected_count/buffer_count/top_n/keep_n=0、total_score=null;`blacklisted_count` 与其他原因重叠、不从 total 二次扣减;`total_all = total_filtered + total_excluded`。
+- **`backend/services/industry.py`**:新增 `static_catalog_entries()`(by_code 全目录,source="catalog")与 `discovered_catalog_entry(sw_cd)`(快照发现码:回退命中标注 fallback+名称,完全未知 name=None 保留选项,source="snapshot");不触网。
+- **`backend/api/routes/cb_screen.py`**:
+  - `_load_redeem_map(db, as_of_date)` 重写:取 `max(trade_date) ≤ D` 的最近强赎快照 R,**纳入 redeem_price 列**;返回 ({bond_id: cell}, R);
+  - `_validate_run_template`:`SelectionRunModel.model_validate` → 422 `{code:"INVALID_CONFIG",message,path,errors}`(**校验先于任何数据源调用**);migration_issues 含 status=pending → 409 `{"code":"TEMPLATE_REVIEW_REQUIRED", issues}`;
+  - POST /cb-list/screen:db 路径 `_execute_db_screen`(D=最新快照日;无快照 200+`meta.data_status="no_snapshot"`,区别于 0 只符合;R 严格同日;R≠D 或缺失时 redeem_loaded=False+警告含 D/R 日期);live 路径 `fetch_live_snapshot` 失败 502;空强赎列表=赎回数据不可用(§3.2 统一提示,不虚构原因);live `trade_date=None` 不冒充交易日,`fetched_at`=东八区固定偏移 `+08:00` ISO 时间;两路径均挂黑名单;
+  - GET /cb-list/screen/active:`get_active_template`(V3 迁移内存态)→ 同一校验/pending 拒绝/同一引擎;配置损坏 503 CONFIG_UNREADABLE;响应带 template_id/template_name;
+  - GET /cb-list/factors/industries:静态目录+`distinct(sw_cd)` 快照发现合并,按 industry_code 升序;
+  - 旧入口未动:GET intraday 与 blacklist* 端点行为不变(`test_cb_screen_contract.py` 13 项全过)。
+- **`backend/api/schemas/cb_screen.py`**:`SelectionRunModel` 增加 `migration_issues: list[dict] = []`(pending 随模板平铺携带,供路由拒绝)。
+- **`frontend/src/api/index.js`**:仅追加 `getIndustryCatalog()`(6 行,唯一前端改动,无 UI 改动)。
+
+### 测试
+
+`tests/test_cb_selection_api.py`(新建,11 用例,真实 ORM 数据+隔离内存库):方案 T4 全部 9 个必测名称(`test_db_live_same_input_same_selection`/`test_db_redeem_price_loaded_from_orm`/`test_pending_legacy_yield_cannot_run`/`test_active_applies_blacklist`/`test_no_snapshot_distinct_from_no_matches`/`test_redeem_unavailable_fails_dependent_template`/`test_redeem_date_mismatch_is_visible`/`test_selection_counts_partition_all_rows`/`test_filter_only_has_no_false_selected_badges`)+HTTP 层非法请求 422 且抓取 0 次(批次1 遗留项按交接要求提升到 HTTP 层)+行业目录合并(760201 catalog/610101 fallback→610100 水泥/999999 未映射)。固定验收数据 A/B/C 与方案一致:简单收益率 gte 0 只保留 A(10%),B 因 -12 排除、C 因赎回价缺失排除;C 在不配该条件时出现在符合结果;A 拉黑后排除且原因 rule_id=global_blacklist 可见。
+
+### T4 指定验证(真实运行)
+
+命令:`python -m pytest tests/test_cb_selection_api.py tests/test_cb_selection_conditions.py tests/test_queries.py tests/test_cb_screen_contract.py -q -p no:cacheprovider`
+结果:**117 passed**,退出码 0。
+全量回归:`python -m pytest tests -q -p no:cacheprovider` → **474 passed, 3 failed, 5 errors**,失败/错误全部为 T0 记录的既有基线(test_app_operations_scripts 2 failed+1 error、test_migration_baseline::test_wrong_nullable_reported、test_cli_entrypoints 4 PermissionError),本批次零新增失败。
+
+### ECS 进程模型核实(§5.3 前置条件,只读)
+
+`ssh aliyun-ecs "systemctl cat webapp"` 实测:`ExecStart=/opt/webapp/venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8000`,**无 --workers 参数 = 单 worker 进程**,`CONFIG_LOCK` 进程内互斥的部署前提成立。未改动任何线上配置。
+
+### 偏离与实现说明(T4)
+
+1. **503 判定口径**:方案"全市场收益率输入均无效"实现为"全量输入行 simple_maturity_yield_pct 全为 None 且模板启用收益率/赎回价条件或评分";`redeem_remain_days` 条件不计入依赖(迁移语义 missing=include,缺数据时优雅放行,不构成假空结果风险)。部分债缺赎回价按 §3.2 单债缺失+计数警告处理,不 503。
+2. **strict 同日在服务层强制**:`screen_bonds(redeem_unusable=True)` 内部丢弃 redeem_map,而非依赖路由传空——路由层错误不会导致跨日数据混入。
+3. **live 路径黑名单**:GET/POST 的 live 执行同样查库挂黑名单(§6.3"所有新模板执行入口"),命中进 excluded_rows 并计入 blacklisted_count。
+4. **industry_code 的 DTO 字段语义**:行 DTO 的 `industry_code` 恒为原始 sw_cd(即使映射未收录),映射产物放 `industry_name/level/mapped_code/is_fallback`——支撑前端把结果行原始码合并进选项(§6.2)。
+5. **东八区用固定偏移** `timezone(timedelta(hours=8))`:中国无夏令时,且不依赖 Windows/容器的 tzdata 可用性。
+6. **旧 V2 硬编码引擎函数移除**(check_exclusion_rules/filter_cb/three_low_strategy/_screen_cell_rows 等):方案 §6.1 明确新路径不再执行旧硬编码条件,且全仓无其他调用方;`format_redeem_status`/`_row_to_cell` 保留(cb_intraday 共用)。
+
+## 批次2 交接要点(给批次3 前端 agent)
+
+### 执行响应形状(POST /cb-list/screen 与 GET /cb-list/screen/active,200 时)
+
+```json
+{
+  "total_all": 3, "total_filtered": 1, "total_excluded": 2,
+  "top_n": 10, "keep_n": 10, "selected_count": 1, "buffer_count": 0,
+  "selection_mode": "scored",
+  "template_id": "yield-only", "template_name": "简单收益率筛选",
+  "rows": [{
+    "rank": 1, "selected": true, "holdable": true,
+    "code": "110001", "name": "A债",
+    "industry_code": "760201", "industry_name": "环保设备Ⅲ",
+    "industry_level": 3, "industry_mapped_code": "760201", "industry_is_fallback": false,
+    "price": 100.0, "change_rt": null, "dblow": 105.0, "premium_rt": 5.0,
+    "curr_iss_amt": 5.0, "convert_value": null, "year_left": 2.0, "pb": null,
+    "rating": "AA", "redeem_price": 110.0, "simple_maturity_yield_pct": 10.0,
+    "redeem_gap": 10.0, "redeem": "", "total_score": 1.0
+  }],
+  "excluded_rows": [{"...同上字段, rank/selected/holdable 为 null/false, total_score 为 null...",
+    "exclude_reasons": [{"rule_id": "c1", "field": "simple_maturity_yield_pct", "actual": -12.0,
+      "op": "gte", "expected": 0, "reason_code": "value_out_of_range", "message": "..."}]}],
+  "source": "db",
+  "meta": {
+    "data_status": "ready", "trade_date": "2026-09-10", "redeem_trade_date": "2026-09-10",
+    "fetched_at": null, "quote_time": null, "redeem_loaded": true,
+    "missing_yield_count": 1, "blacklisted_count": 0, "warnings": []
+  }
+}
+```
+
+- `selection_mode="filter_only"` 时:rows 按 dblow 升序(None 最后)→代码升序;每行 `selected/holdable=false`、`total_score=null`;顶层 `top_n/keep_n/selected_count/buffer_count=0`——前端不要渲染入选徽标。
+- `data_status="no_snapshot"`:rows/excluded_rows 为空、trade_date=null,与"0 只符合"(ready)区分展示;live 时 `trade_date=null` 只显示 `fetched_at`("抓取于")。
+- 被排除原因:七键结构,`rule_id="global_blacklist"`/`reason_code="blacklisted"` 表示黑名单;`reason_code="missing"` 且 field=simple_maturity_yield_pct 时 message 已说明"无到期赎回价"。
+
+### 错误码合同(执行/保存共用 detail.code)
+
+| HTTP | code | 场景 |
+|---|---|---|
+| 422 | `INVALID_CONFIG` | V3 校验失败;detail={code,message,path,errors[]},path 形如 `templates.0.conditions.2.value` 或 `conditions.0.value`(执行为平铺 loc) |
+| 409 | `CONFIG_CONFLICT` | 保存 revision 不匹配;detail 附 `current_revision`,前端应重新 GET |
+| 409 | `CLIENT_UPGRADE_REQUIRED` | 磁盘已 V3 而旧客户端(无 revision)保存 |
+| 409 | `TEMPLATE_REVIEW_REQUIRED` | 执行/active 模板含 pending 迁移项;detail 附 `issues[]`(id/kind/origin/original/replacement_field/message) |
+| 503 | `REDEEM_DATA_UNAVAILABLE` | 赎回数据不可用 × 模板依赖收益率/赎回价;前端提示改用实时行情 |
+| 503 | `CONFIG_UNREADABLE` | factors.json 损坏/版本不支持,绝不回默认 |
+| 502 | (字符串 detail) | live 上游抓取失败(沿用旧形态) |
+
+- 保存请求:POST /cb-list/factors,`version=3 + revision(GET 返回值) + active_id + templates[]`;模板含 `migration_issues` 字段(可原样回存,不 422)。GET /cb-list/factors 无文件时 revision=`"missing"`,可直接作为首次保存的 revision。
+
+### 行业目录(GET /cb-list/factors/industries,不触网)
+
+条目数组按 industry_code 升序:`{industry_code(原始码,筛选匹配口径), industry_name(未知为 null→显示"未映射 <code>"), industry_level, industry_mapped_code, industry_is_fallback, source("catalog"|"snapshot")}`;选项文字须附原始代码与回退层级(如 "水泥(610101,按申万二级映射)"),前端封装 `getIndustryCatalog()` 已就绪。
+
+### 其他
+
+- 迁移 pending 的模板:执行两入口 409,但保存/回存合法;前端需在模板编辑器提供"确认迁移"交互(改掉 pending 项后保存)。
+- `test_invalid_rule_prevents_fetch` 已在 HTTP 层补齐(tests/test_cb_selection_api.py::TestInvalidInputPreventsFetch),批次1 遗留项关闭。
+- 预存工作区改动(AppLayout.vue/CbMarket.vue/router/index.js 未暂存;Bonds.vue/filterValidation.* 已暂存删除)保持原样未动,属 T7 提交范围。
+
+
 
