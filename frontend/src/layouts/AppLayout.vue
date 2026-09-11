@@ -14,8 +14,7 @@ const menus = [
     group: '可转债',
     items: [
       { path: '/cb-market', title: '转债市场', icon: '📈' },
-      { path: '/cb-list', title: '转债筛选', icon: '💰' },
-      { path: '/factors', title: '选债因子', icon: '⚙️' },
+      { path: '/factors', title: '转债选债', icon: '⚙️' },
     ],
   },
   {

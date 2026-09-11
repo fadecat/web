@@ -8,7 +8,7 @@ const routes = [
     children: [
       {
         path: '',
-        redirect: '/cb-list',
+        redirect: '/factors',
       },
       {
         path: 'cb-market',
@@ -17,17 +17,12 @@ const routes = [
         meta: { title: '转债市场', group: '转债' },
       },
       {
-        path: 'cb-list',
-        name: 'cb-list',
-        component: () => import('../pages/Bonds.vue'),
-        meta: { title: '转债筛选', group: '转债' },
-      },
-      {
         path: 'factors',
         name: 'factors',
         component: () => import('../pages/Factors.vue'),
-        meta: { title: '选债因子', group: '转债' },
+        meta: { title: '转债选债', group: '转债' },
       },
+      { path: 'cb-list', redirect: '/factors' },
       {
         path: 'valuation',
         name: 'valuation',

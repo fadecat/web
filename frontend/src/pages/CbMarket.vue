@@ -169,7 +169,6 @@ onBeforeUnmount(() => {
         <span class="subtitle">日频市场统计</span>
       </div>
       <div class="head-right">
-        <router-link class="link-btn" to="/cb-list">转债筛选</router-link>
         <button
           class="refresh-btn"
           :disabled="loading"
