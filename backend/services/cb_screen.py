@@ -1,26 +1,35 @@
 # -*- coding: utf-8 -*-
-"""可转债筛选打分引擎。
+"""可转债筛选统一执行引擎(V3, 方案 §6.1)。
 
-对齐 v2_cb_rotation 的 jisilu_service.py 核心逻辑:
-- check_exclusion_rules: 数值阈值硬过滤(lt/gt)
-- get_cb_filter_reasons: 强赎 icons 排除 + ST 排除
-- assign_factor_scores: 因子排名打分(线性映射)
-- three_low_strategy: 因子得分求和 + 排序
-- filter_cb: 组合过滤(强赎/ST/阈值/上市天数/排除代码)
+管线固定: 输入规范化(_row_to_cell) → 字段补充(enrich: 赎回价/简单到期
+收益率/强赎剩余天数/上市天数) → 全局黑名单及模板条件(evaluate_conditions)
+→ 评分(排名线性映射) → 入选标记 → DTO。
 
-与 v2 的差异:
-- 数据源从「集思录实时拉取」改为「数据库 CbDailySnapshot 全量快照」
-- 强赎 icons / 正股 ST 从 raw_json 解析(icons、stock_nm 字段已落库)
-- 纯函数设计,入参为行数据,出参为可序列化 dict,不碰 DB
+边界合同(§6.1):
+- 纯函数: 不读数据库、不联网、不按系统当天暗中计算上市时间——上市天数以
+  keyword-only as_of_date 为基准, 由调用方显式传入(DB 路径=快照交易日 D,
+  live 路径=调用时刻的东八区日期);
+- 不在新路径执行旧硬编码条件: ST/评级/安全天数等全部来自模板显式条件;
+- 沿用函数名 screen_bonds / screen_bonds_live, 新增可选 keyword-only
+  as_of_date / blacklist_ids; 业务输入相同则结果相同;
+- 黑名单在所有执行入口生效, 作为排除原因返回(不是从最终 rows 静默删除),
+  blacklisted_count 与其他排除原因可重叠, 不再从 total 中扣除(§6.2);
+- 赎回数据不可用(§3.2 严格同日策略): 赎回相关字段按缺失处理; 模板依赖
+  收益率/赎回价(条件或评分)且全市场输入无效时抛
+  RedeemDataUnavailableError(路由映射 503), 不返回假正常的空结果;
+  与赎回无关的模板继续执行, 只带质量警告。
+
+DB 与 live 共用 _run_pipeline, 仅数据来源与 as_of_date 语义不同。
 """
 from __future__ import annotations
 
 import json
 from datetime import date, datetime
-from typing import Any, Callable
+from typing import Any
 
-from backend.services.cb_factors import build_bond_code_match_set
-from backend.services.industry import industry_name_of
+from backend.services.cb_conditions import evaluate_conditions
+from backend.services.cb_metrics import enrich_cell, finite_number
+from backend.services.industry import industry_info_of
 
 # 强赎图标 → 中文标签
 _REDEEM_LABELS = {
@@ -30,21 +39,19 @@ _REDEEM_LABELS = {
     "G": "公告不强赎",
 }
 
-# 从 DB 行提取字段的映射: 结构化字段直接取,icons 从 raw_json 解析
-# 注意: raw_json 里的值可能是字符串,需统一 parse
+
+class RedeemDataUnavailableError(Exception):
+    """全市场赎回/收益率输入无效, 且模板依赖该数据(§3.2, HTTP 503)。"""
+
+
+# 赎回数据依赖字段(§3.2: 收益率/赎回价条件或评分; redeem_remain_days 的
+# 迁移条件为 missing=include, 缺数据时优雅降级, 不算硬依赖)
+_REDEEM_DEPENDENT_FIELDS = {"simple_maturity_yield_pct", "redeem_price"}
 
 
 def _safe_float(value: Any) -> float | None:
-    """安全转 float,None/空串/'-' 返回 None。"""
-    if value is None:
-        return None
-    text = str(value).strip().replace(",", "")
-    if not text or text == "-":
-        return None
-    try:
-        return float(text)
-    except ValueError:
-        return None
+    """安全转 float,None/空串/'-' 返回 None(保留旧入口兼容)。"""
+    return finite_number(value)
 
 
 def _cell_value(row: Any, field: str) -> Any:
@@ -66,7 +73,7 @@ def _cell_value(row: Any, field: str) -> Any:
 
 
 def _row_to_cell(row: Any) -> dict[str, Any]:
-    """将 DB 行转为 cell dict(兼容 v2 的 row['cell'] 结构)。
+    """将 DB 行转为 cell dict(输入规范化, 管线第 1 步)。
 
     结构化字段直接映射,icons/stock_nm 等未建模字段从 raw_json 补齐。
     """
@@ -98,335 +105,428 @@ def _row_to_cell(row: Any) -> dict[str, Any]:
     return cell
 
 
-# ---------------------------------------------------------------------------
-# 排除规则
-# ---------------------------------------------------------------------------
-
-def check_exclusion_rules(cell: dict[str, Any], rules: list[dict] | None = None) -> list[str]:
-    """检查数值排除规则,返回命中的排除原因列表(空列表=通过)。"""
-    active_rules = [r for r in (rules or []) if r.get("enabled", True)]
-    reasons: list[str] = []
-    for rule in active_rules:
-        raw = cell.get(rule["field"])
-        val = _safe_float(raw)
-        if val is None:
-            continue  # 取不到值则放行(不误排除)
-        try:
-            threshold = float(rule["threshold"])
-        except (TypeError, ValueError):
-            continue
-        op = rule.get("op")
-        if op == "lt" and val < threshold:
-            reasons.append(rule.get("label", rule.get("field", "")))
-        elif op == "gt" and val > threshold:
-            reasons.append(rule.get("label", rule.get("field", "")))
-    return reasons
+def _normalize_bond_code_6(value: Any) -> str:
+    """转债代码归一为 6 位数字码(与条件引擎同口径, 去 .SH/.SZ 后缀)。"""
+    text = str(value or "").strip().upper()
+    for suffix in (".SH", ".SZ"):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+    return text
 
 
-def get_cb_filter_reasons(cell: dict[str, Any], excluded_redeem_icons: list[str] | None = None) -> list[str]:
-    """强赎 icons 排除 + 正股 ST 排除,返回命中原因。"""
-    reasons: list[str] = []
-    icons = cell.get("icons") or {}
-    active_icons = excluded_redeem_icons if excluded_redeem_icons is not None else ["R", "O", "B"]
-    for icon in active_icons:
-        if icon in icons:
-            reasons.append(_REDEEM_LABELS.get(icon, icon))
-    if "ST" in (cell.get("stock_nm") or "").upper():
-        reasons.append("正股含ST或*ST")
-    return reasons
+def _listed_days(list_dt: Any, as_of_date: date | None) -> int | None:
+    """上市至 as_of_date 的自然日天数; 缺日期/解析失败返回 None。
 
-
-def _get_listed_days(list_dt_str: Any) -> int | None:
-    """根据上市日期计算自然日天数。"""
-    if not list_dt_str:
-        return None
-    try:
-        listed = datetime.strptime(str(list_dt_str).strip(), "%Y-%m-%d").date()
-    except (TypeError, ValueError):
-        return None
-    return (date.today() - listed).days
-
-
-# ---------------------------------------------------------------------------
-# 打分
-# ---------------------------------------------------------------------------
-
-def assign_factor_scores(rows: list[dict], field: str, ascending: bool = True, weight: float = 1.0) -> None:
-    """按 field 排名打分,写入 {field}_score。
-
-    ascending=True → 值越小排名越靠前,得分越高
-    排名第 1 得 total×weight,线性递减到第 N 名得 1×weight,无值得 0。
+    不使用系统当天: as_of_date 由调用方显式传入(§6.1)。
     """
-    valid = [
-        (i, row, _safe_float(row["cell"].get(field)))
-        for i, row in enumerate(rows)
-        if _safe_float(row["cell"].get(field)) is not None
-    ]
-    valid.sort(key=lambda x: (x[2] if ascending else -x[2], x[0]))
+    if not list_dt or as_of_date is None:
+        return None
+    text = str(list_dt).strip()[:10]
+    try:
+        listed = datetime.strptime(text, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    return (as_of_date - listed).days
+
+
+# ---------------------------------------------------------------------------
+# 字段补充(管线第 2 步)
+# ---------------------------------------------------------------------------
+
+def _enrich_rows(
+    rows: list[Any],
+    redeem_map: dict[str, dict[str, Any]],
+    as_of_date: date | None,
+) -> list[dict[str, Any]]:
+    """行数据 → [{cell: 补充后的副本}, ...]。
+
+    补充字段: redeem_price / simple_maturity_yield_pct(公共公式),
+    redeem_remain_days(仅取同日强赎快照, 覆盖 raw_json 残留旧值),
+    listed_days(以 as_of_date 为基准)。不原地污染输入行。
+    """
+    cell_rows: list[dict[str, Any]] = []
+    for row in rows:
+        # live 记录已是 cell dict(取归一副本), DB 行走 ORM 规范化
+        if isinstance(row, dict):
+            cell = dict(row)
+        else:
+            cell = _row_to_cell(row)
+        redeem_cell = redeem_map.get(_normalize_bond_code_6(cell.get("bond_id"))) \
+            or redeem_map.get(str(cell.get("bond_id") or "").strip())
+        enriched = enrich_cell(cell, redeem_cell)
+        enriched["redeem_remain_days"] = finite_number(
+            (redeem_cell or {}).get("redeem_remain_days")
+        )
+        enriched["listed_days"] = _listed_days(enriched.get("list_dt"), as_of_date)
+        cell_rows.append({"cell": enriched, "_redeem_cell": redeem_cell})
+    return cell_rows
+
+
+# ---------------------------------------------------------------------------
+# 全局黑名单 + 模板条件(管线第 3 步)
+# ---------------------------------------------------------------------------
+
+def _blacklist_reason(cell: dict[str, Any]) -> dict[str, Any]:
+    """黑名单排除原因(与条件引擎相同的七键结构, §6.3)。"""
+    return {
+        "rule_id": "global_blacklist",
+        "field": "code",
+        "actual": _normalize_bond_code_6(cell.get("bond_id")) or str(cell.get("bond_id") or ""),
+        "op": "not_in",
+        "expected": None,
+        "reason_code": "blacklisted",
+        "message": "命中全局黑名单",
+    }
+
+
+def _apply_filters(
+    cell_rows: list[dict[str, Any]],
+    conditions: list[dict[str, Any]] | None,
+    blacklist_ids: list[str] | set[str] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    """黑名单 + 模板条件。返回 (通过, 被排除, 黑名单命中数)。
+
+    每行只进一个列表; 命中黑名单的行同时满足模板排除条件时原因合并
+    (所有排除债只计一次, 原因可多个, §6.2)。
+    """
+    blacklist = {_normalize_bond_code_6(b) for b in (blacklist_ids or [])}
+    blacklist.discard("")
+    filtered: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    blacklisted_count = 0
+    for row in cell_rows:
+        cell = row["cell"]
+        reasons: list[dict[str, Any]] = []
+        if blacklist and _normalize_bond_code_6(cell.get("bond_id")) in blacklist:
+            reasons.append(_blacklist_reason(cell))
+        reasons.extend(evaluate_conditions(cell, conditions))
+        if reasons:
+            row["_exclude_reasons"] = reasons
+            excluded.append(row)
+            if any(r.get("rule_id") == "global_blacklist" for r in reasons):
+                blacklisted_count += 1
+        else:
+            filtered.append(row)
+    return filtered, excluded, blacklisted_count
+
+
+# ---------------------------------------------------------------------------
+# 评分与入选标记(管线第 4/5 步)
+# ---------------------------------------------------------------------------
+
+def _template_depends_on_redeem(
+    conditions: list[dict[str, Any]] | None,
+    factors: list[dict[str, Any]] | None,
+) -> bool:
+    """模板是否依赖赎回数据(§3.2): 收益率/赎回价的启用条件或评分。"""
+    for cond in conditions or []:
+        if cond.get("enabled", True) and cond.get("field") in _REDEEM_DEPENDENT_FIELDS:
+            return True
+    for factor in factors or []:
+        if factor.get("enabled", True) and factor.get("field") in _REDEEM_DEPENDENT_FIELDS:
+            return True
+    return False
+
+
+def _assign_factor_score(
+    rows: list[dict[str, Any]], field: str, ascending: bool, weight: float
+) -> None:
+    """按 field 排名打分, 写入 {field}_score(确定性: 同分按代码升序)。
+
+    排名第 1 得 total×weight, 线性递减到第 N 名得 1×weight, 无值得 0。
+    """
+    valid: list[tuple[str, float, dict[str, Any]]] = []
+    for row in rows:
+        value = finite_number(row["cell"].get(field))
+        if value is not None:
+            valid.append((str(row["cell"].get("bond_id") or ""), value, row))
+    valid.sort(key=lambda t: (t[1] if ascending else -t[1], t[0]))
 
     total = len(valid)
     score_key = f"{field}_score"
-    for rank, (_, row, _) in enumerate(valid, 1):
+    scored_ids = set()
+    for rank, (_, _, row) in enumerate(valid, 1):
         row[score_key] = (total - rank + 1) * weight
-
-    scored_ids = {id(row) for _, row, _ in valid}
+        scored_ids.add(id(row))
     for row in rows:
         if id(row) not in scored_ids:
             row[score_key] = 0.0
 
 
-def three_low_strategy(rows: list[dict], factors: list[dict] | None = None) -> list[dict]:
-    """三低策略: 各因子打分求和,按总分降序 + 双低升序排序。"""
-    active_factors = [f for f in (factors or []) if f.get("enabled", True)]
-    ranked = list(rows)
+def _score_and_order(
+    filtered: list[dict[str, Any]], factors: list[dict[str, Any]] | None
+) -> bool:
+    """评分 + 排序(原地)。返回是否为评分模式(有启用的评分因子)。
 
-    for factor in active_factors:
-        assign_factor_scores(
-            ranked,
+    评分模式: 总分降序 → 双低升序(None 最后) → 代码升序(稳定性 tiebreak)。
+    filter_only: 双低升序(None 最后) → 代码升序。
+    """
+    enabled = [f for f in (factors or []) if f.get("enabled", True)]
+    for factor in enabled:
+        _assign_factor_score(
+            filtered,
             field=factor["field"],
-            ascending=factor.get("ascending", True),
-            weight=factor.get("weight", 1.0),
+            ascending=bool(factor.get("ascending", True)),
+            weight=float(factor.get("weight") or 1.0),
         )
+    if enabled:
+        for row in filtered:
+            row["total_score"] = sum(
+                row.get(f"{f['field']}_score", 0.0) for f in enabled
+            )
 
-    for row in ranked:
-        row["total_score"] = sum(
-            row.get(f"{f['field']}_score", 0.0) for f in active_factors
-        )
+    def _dblow_key(row: dict[str, Any]) -> float:
+        v = finite_number(row["cell"].get("dblow"))
+        return v if v is not None else float("inf")
 
-    ranked.sort(
-        key=lambda r: (
-            -r["total_score"],
-            _safe_float(r["cell"].get("dblow")) if _safe_float(r["cell"].get("dblow")) is not None else float("inf"),
-        )
-    )
-    return ranked
+    def _code_key(row: dict[str, Any]) -> str:
+        return str(row["cell"].get("bond_id") or "")
 
-
-# ---------------------------------------------------------------------------
-# 过滤组合
-# ---------------------------------------------------------------------------
-
-def filter_cb(
-    rows: list[dict],
-    rules: list[dict] | None = None,
-    excluded_redeem_icons: list[str] | None = None,
-    redeem_safe_days: int | None = None,
-    excluded_bond_codes: list | None = None,
-    min_listing_days: int | None = None,
-    redeem_remain_days_map: dict[str, int] | None = None,
-    ratings: list[str] | None = None,
-) -> tuple[list[dict], list[dict]]:
-    """组合过滤: 强赎/ST + 数值阈值 + 排除代码 + 上市天数 + 强赎临近触发 + 评级筛选。
-
-    redeem_remain_days_map: {bond_id: redeem_remain_days}, 来自 redeem_list 快照,
-    用于 redeem_safe_days 判断(临近强赎触发天数)。
-    ratings: 评级白名单(勾选=保留); 空/None = 不限。
-    抓取层已放开评级(含 BBB/无评级), "NONE" 占位符 = 无评级。
-
-    返回 (通过列表, 被排除列表); 被排除行带 _exclude_reasons 供前端展示原因。
-    """
-    safe_days = int(redeem_safe_days) if redeem_safe_days is not None else -1
-    try:
-        min_days = max(0, int(min_listing_days or 0))
-    except (TypeError, ValueError):
-        min_days = 0
-
-    excluded_set = build_bond_code_match_set(excluded_bond_codes)
-    remain_days_map = redeem_remain_days_map or {}
-    ratings_keep = {
-        "" if str(r).strip().upper() == "NONE" else str(r).strip().upper()
-        for r in (ratings or [])
-        if str(r).strip()
-    }
-
-    result: list[dict] = []
-    excluded_rows: list[dict] = []
-    for row in rows:
-        c = row["cell"]
-        reasons = get_cb_filter_reasons(c, excluded_redeem_icons=excluded_redeem_icons)
-        reasons += check_exclusion_rules(c, rules=rules)
-
-        if excluded_set:
-            current_set = build_bond_code_match_set([c.get("bond_id")])
-            if current_set & excluded_set:
-                reasons.append("命中全局排除代码")
-
-        if safe_days >= 0:
-            remain = remain_days_map.get(c.get("bond_id"))
-            if remain is not None and 0 <= remain <= safe_days:
-                reasons.append(f"临近强赎触发(还需{remain}天)")
-
-        if min_days > 0:
-            listed_days = _get_listed_days(c.get("list_dt"))
-            if listed_days is not None and listed_days < min_days:
-                reasons.append(f"上市未满{min_days}天(仅{listed_days}天)")
-
-        if ratings_keep:
-            rating = str(c.get("rating_cd") or "").strip().upper()
-            if rating not in ratings_keep:
-                reasons.append("评级缺失(已勾选评级白名单)" if not rating else f"评级不符({rating}未勾选)")
-
-        if reasons:
-            row["_exclude_reasons"] = reasons
-            excluded_rows.append(row)
-            continue
-
-        result.append(row)
-
-    return result, excluded_rows
+    if enabled:
+        filtered.sort(key=lambda r: (-r["total_score"], _dblow_key(r), _code_key(r)))
+    else:
+        filtered.sort(key=lambda r: (_dblow_key(r), _code_key(r)))
+    return bool(enabled)
 
 
 # ---------------------------------------------------------------------------
-# 主入口: 打分筛选
+# DTO(管线第 6 步)
 # ---------------------------------------------------------------------------
 
-def _screen_cell_rows(
-    cell_rows: list[dict],
-    template: dict[str, Any],
-    redeem_map: dict[str, dict[str, Any]],
+def _to_dto(
+    row: dict[str, Any],
+    rank: int | None,
+    *,
+    selected: bool,
+    holdable: bool,
+    scored_mode: bool,
 ) -> dict[str, Any]:
-    """对已转成 {cell: {...}} 的行列表执行统一筛选打分(DB 快照与实时共用)。
-
-    cell_rows: [{"cell": cell_dict}, ...]
-    redeem_map: {bond_id: redeem_cell} 用于 redeem_remain_days / redeem_price
-    """
-    remain_days_map = {
-        bid: c.get("redeem_remain_days") for bid, c in redeem_map.items()
+    """cell → 结果 DTO。行业字段按 §3.3: 原始码始终携带, 名称/层级来自映射。"""
+    c = row["cell"]
+    price = finite_number(c.get("price"))
+    redeem_price = finite_number(c.get("redeem_price"))
+    info = industry_info_of(c.get("sw_cd")) or {}
+    industry_code = str(c.get("sw_cd") or "").strip() or None
+    return {
+        "rank": rank,
+        "selected": selected,
+        "holdable": holdable,
+        "code": c.get("bond_id", ""),
+        "name": c.get("bond_nm", ""),
+        "industry_code": industry_code,
+        "industry_name": info.get("industry_name"),
+        "industry_level": info.get("industry_level"),
+        "industry_mapped_code": info.get("industry_mapped_code"),
+        "industry_is_fallback": bool(info.get("industry_is_fallback", False)),
+        "price": price,
+        "change_rt": finite_number(c.get("increase_rt")),
+        "dblow": finite_number(c.get("dblow")),
+        "premium_rt": finite_number(c.get("premium_rt")),
+        "curr_iss_amt": finite_number(c.get("curr_iss_amt")),
+        "convert_value": finite_number(c.get("convert_value")),
+        "year_left": finite_number(c.get("year_left")),
+        "pb": finite_number(c.get("pb")),
+        "rating": c.get("rating_cd", ""),
+        "redeem_price": redeem_price,
+        "simple_maturity_yield_pct": finite_number(c.get("simple_maturity_yield_pct")),
+        # 保本价差 = 到期赎回价 - 现价, 正数越大保本垫越厚(负数=现价已高于赎回价)
+        "redeem_gap": (
+            round(redeem_price - price, 3)
+            if redeem_price is not None and price is not None
+            else None
+        ),
+        "redeem": format_redeem_status(c, row.get("_redeem_cell")),
+        "total_score": row.get("total_score") if scored_mode else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# 统一管线
+# ---------------------------------------------------------------------------
+
+def _run_pipeline(
+    cell_rows: list[dict[str, Any]],
+    template: dict[str, Any],
+    *,
+    blacklist_ids: list[str] | set[str] | None,
+    trade_date: str | None,
+    redeem_trade_date: str | None,
+    redeem_loaded: bool,
+    redeem_unusable: bool,
+    base_warnings: list[str] | None,
+) -> dict[str, Any]:
+    """统一筛选打分管线上半段之后的全部步骤, 返回可序列化结果(§6.2)。"""
+    warnings = list(base_warnings or [])
+    conditions = template.get("conditions") or []
+    factors = template.get("strategy_factors") or []
+    target = max(1, min(50, int(template.get("target_count") or 10)))
+    tol = max(0, min(20, int(template.get("hold_tolerance") or 0)))
+    keep_n = target + tol
     total_all = len(cell_rows)
 
-    # 过滤(返回通过 + 被排除两列, 被排除行带 _exclude_reasons)
-    filtered, excluded_rows = filter_cb(
-        cell_rows,
-        rules=template.get("exclusion_rules"),
-        excluded_redeem_icons=template.get("excluded_redeem_icons"),
-        redeem_safe_days=template.get("redeem_safe_days"),
-        excluded_bond_codes=template.get("excluded_bond_codes"),
-        min_listing_days=template.get("min_listing_days"),
-        redeem_remain_days_map=remain_days_map,
-        ratings=template.get("ratings"),
+    # 收益率缺失计数(全量输入, 单债缺失是质量问题不是失败, §3.2)
+    missing_yield_count = sum(
+        1 for r in cell_rows if r["cell"].get("simple_maturity_yield_pct") is None
     )
+    if redeem_unusable:
+        warnings.append("赎回数据不可用: 赎回价/简单到期收益率/强赎剩余天数按缺失处理")
+    elif missing_yield_count:
+        warnings.append(
+            f"{missing_yield_count} 只转债缺少到期赎回价, 简单到期收益率为空"
+        )
 
-    # 打分排序(仅对通过排除的债)
-    ranked = three_low_strategy(filtered, factors=template.get("strategy_factors"))
+    # 模板依赖收益率/赎回价且全市场输入无效 → 明确失败, 不返回假空结果(§3.2)
+    if (
+        total_all
+        and missing_yield_count == total_all
+        and _template_depends_on_redeem(conditions, factors)
+    ):
+        raise RedeemDataUnavailableError(
+            "全市场赎回数据不可用, 模板依赖简单到期收益率/赎回价, 无法执行;"
+            " 请检查强赎快照或改用实时行情"
+        )
 
-    # 不截断: 全部打分结果返回, 由 selected/holdable 标记区间
-    target = int(template.get("target_count") or 10)
-    tol = max(0, int(template.get("hold_tolerance") or 0))
-    keep_n = target + tol
+    filtered, excluded_rows, blacklisted_count = _apply_filters(
+        cell_rows, conditions, blacklist_ids
+    )
+    scored_mode = _score_and_order(filtered, factors)
 
-    def _make(row: dict, i: int | None) -> dict[str, Any]:
-        c = row["cell"]
-        price = _safe_float(c.get("price"))
-        redeem_price = _safe_float((redeem_map.get(c.get("bond_id")) or {}).get("redeem_price"))
-        return {
-            "rank": i,
-            "selected": i is not None and i <= target,
-            "holdable": i is not None and i <= keep_n,
-            "code": c.get("bond_id", ""),
-            "name": c.get("bond_nm", ""),
-            "industry_name": industry_name_of(c.get("sw_cd")),
-            "price": price,
-            "change_rt": _safe_float(c.get("increase_rt")),
-            "dblow": _safe_float(c.get("dblow")),
-            "premium_rt": _safe_float(c.get("premium_rt")),
-            "curr_iss_amt": _safe_float(c.get("curr_iss_amt")),
-            "convert_value": _safe_float(c.get("convert_value")),
-            "year_left": _safe_float(c.get("year_left")),
-            "pb": _safe_float(c.get("pb")),
-            "ytm_rt": _safe_float(c.get("ytm_rt")),
-            "rating": c.get("rating_cd", ""),
-            "redeem_price": redeem_price,
-            # 保本价差 = 到期赎回价 - 现价, 正数越大保本垫越厚(负数=现价已高于赎回价)
-            "redeem_gap": (
-                round(redeem_price - price, 3)
-                if redeem_price is not None and price is not None
-                else None
-            ),
-            "redeem": format_redeem_status(c, redeem_map.get(c.get("bond_id"))),
-            "total_score": row.get("total_score", 0.0),
-        }
+    rows_out: list[dict[str, Any]] = []
+    for i, row in enumerate(filtered, 1):
+        rows_out.append(_to_dto(
+            row, i,
+            selected=bool(scored_mode and i <= target),
+            holdable=bool(scored_mode and i <= keep_n),
+            scored_mode=scored_mode,
+        ))
+    excluded_out = [
+        _to_dto(row, None, selected=False, holdable=False, scored_mode=False)
+        | {"exclude_reasons": row.get("_exclude_reasons", [])}
+        for row in excluded_rows
+    ]
 
-    result_rows: list[dict] = []
-    for i, row in enumerate(ranked, 1):
-        result_rows.append(_make(row, i))
-
-    excluded_out = [_make(row, None) | {"exclude_reasons": row.get("_exclude_reasons", [])}
-                    for row in excluded_rows]
-
-    # 实际入选数(可能小于目标: 通过排除的债不够), 与 top_n(目标值)区分;
-    # 实际容差缓冲数 = 入选之外仍在容差区间内的债(同样可能小于配置差值)
-    selected_count = sum(1 for r in result_rows if r["selected"])
-    buffer_count = sum(1 for r in result_rows if r["holdable"] and not r["selected"])
+    selected_count = sum(1 for r in rows_out if r["selected"])
+    buffer_count = sum(1 for r in rows_out if r["holdable"] and not r["selected"])
 
     return {
         "total_all": total_all,
         "total_filtered": len(filtered),
         "total_excluded": len(excluded_out),
-        "top_n": target,
-        "keep_n": keep_n,
+        "top_n": target if scored_mode else 0,
+        "keep_n": keep_n if scored_mode else 0,
         "selected_count": selected_count,
         "buffer_count": buffer_count,
-        "rows": result_rows,
+        "selection_mode": "scored" if scored_mode else "filter_only",
+        "rows": rows_out,
         "excluded_rows": excluded_out,
+        "meta": {
+            "data_status": "ready",
+            "trade_date": trade_date,
+            "redeem_trade_date": redeem_trade_date,
+            "fetched_at": None,
+            "quote_time": None,
+            "redeem_loaded": redeem_loaded,
+            "missing_yield_count": missing_yield_count,
+            "blacklisted_count": blacklisted_count,
+            "warnings": warnings,
+        },
     }
 
+
+# ---------------------------------------------------------------------------
+# 主入口(沿用函数名, 新增 keyword-only as_of_date / blacklist_ids)
+# ---------------------------------------------------------------------------
 
 def screen_bonds(
     rows: list[Any],
     template: dict[str, Any],
     redeem_map: dict[str, dict[str, Any]] | None = None,
+    *,
+    as_of_date: date | None = None,
+    blacklist_ids: list[str] | set[str] | None = None,
+    trade_date: str | None = None,
+    redeem_trade_date: str | None = None,
+    redeem_loaded: bool = True,
+    redeem_unusable: bool = False,
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     """对 DB 行列表执行完整筛选打分,返回可序列化结果。
 
     参数:
         rows: CbDailySnapshot ORM 对象列表
-        template: 策略模板配置(dict)
-        redeem_map: {bond_id: redeem_cell}, 来自 CbRedeemDaily 快照, 可选
-
-    返回:
-        {total_all, total_filtered, total_excluded, top_n, keep_n, rows, excluded_rows}
+        template: V3 模板配置(dict, 已通过 SelectionRunModel 校验)
+        redeem_map: {bond_id: redeem_cell}, 来自 CbRedeemDaily 同日快照
+        as_of_date: 上市天数计算的基准日(DB 路径=快照交易日 D)
+        blacklist_ids: 全局黑名单代码集合(§6.3)
+        trade_date / redeem_trade_date: 报告进 meta 的快照日期(ISO 字符串)
+        redeem_loaded: 强赎快照是否可用(严格同日策略下 R≠D 记 False)
+        redeem_unusable: 本轮赎回字段是否一律按缺失处理(R 不存在或 R≠D)
+        warnings: 调用方注入的质量警告(如跨日强赎快照说明)
     """
+    if redeem_unusable:
+        # §3.2 严格同日策略: R 不存在或 R≠D 时不用跨日强赎数据冒充同日,
+        # 赎回相关字段一律按缺失处理(redeem_trade_date 仍由 meta 如实报告)
+        redeem_map = {}
     redeem_map = redeem_map or {}
-    cell_rows = [{"cell": _row_to_cell(r)} for r in rows]
-    return _screen_cell_rows(cell_rows, template, redeem_map)
+    cell_rows = _enrich_rows(rows, redeem_map, as_of_date)
+    return _run_pipeline(
+        cell_rows, template,
+        blacklist_ids=blacklist_ids,
+        trade_date=trade_date,
+        redeem_trade_date=redeem_trade_date,
+        redeem_loaded=redeem_loaded,
+        redeem_unusable=redeem_unusable,
+        base_warnings=warnings,
+    )
 
 
 def screen_bonds_live(
     records: list[dict[str, Any]],
     template: dict[str, Any],
     redeem_cells: list[dict[str, Any]] | None = None,
+    *,
+    as_of_date: date | None = None,
+    blacklist_ids: list[str] | set[str] | None = None,
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     """对实时集思录记录执行同一套筛选打分引擎(不落库)。
 
-    records: fetch_cb_list() 返回的集思录 cell 列表(64 字段, 含 rating_cd/icons/stock_nm)
-    template: 与 screen_bonds 相同的策略模板
-    redeem_cells: fetch_redeem_list() 返回的强赎 cell 列表, 可选
-
-    与 screen_bonds 共用 _screen_cell_rows, 打分/过滤口径完全一致,
-    仅数据源不同(实时 vs DB 快照)。
+    records: fetch_cb_list() 返回的集思录 cell 列表
+    redeem_cells: fetch_redeem_list() 返回的强赎 cell 列表, 可选;
+      空列表按 §3.2 视为"赎回数据不可用"(gateway 以空列表表达降级,
+      不区分成功空集与失败, 统一提示, 不虚构失败原因)。
+    as_of_date: 上市天数计算基准(live 路径由路由显式传东八区当天)。
+    实时无法确认交易日期: meta.trade_date=None, 不用当天日期冒充交易日。
     """
     redeem_map: dict[str, dict[str, Any]] = {}
     for cell in redeem_cells or []:
-        bid = str(cell.get("bond_id") or "").strip()
+        bid = _normalize_bond_code_6(cell.get("bond_id"))
         if bid:
             redeem_map[bid] = cell
-
-    # 实时记录已是集思录 cell dict, 直接包成 {cell: ...}
-    cell_rows = [{"cell": rec} for rec in records]
-    return _screen_cell_rows(cell_rows, template, redeem_map)
+    redeem_unusable = not redeem_map
+    cell_rows = _enrich_rows(records, redeem_map, as_of_date)
+    return _run_pipeline(
+        cell_rows, template,
+        blacklist_ids=blacklist_ids,
+        trade_date=None,
+        redeem_trade_date=None,
+        redeem_loaded=not redeem_unusable,
+        redeem_unusable=redeem_unusable,
+        base_warnings=warnings,
+    )
 
 
 def format_redeem_status(bond_cell: dict[str, Any], redeem_cell: dict[str, Any] | None) -> str:
-    """格式化强赎状态(对齐 v2)。
+    """格式化强赎状态(对齐 v2; 旧入口 cb_intraday 共用)。
 
     优先用 redeem_cell 的精确计数, fallback 到 bond_cell 的 icons 标记。
     """
     if redeem_cell:
         icon = redeem_cell.get("redeem_icon")
-        real = redeem_cell.get("redeem_real_days", "")
-        need = redeem_cell.get("redeem_count_days", "")
-        total = redeem_cell.get("redeem_total_days", "")
+        # None 与 "" 同样视为缺失(ORM 快照列 NULL 与实时源空串同口径)
+        real = redeem_cell.get("redeem_real_days") or ""
+        need = redeem_cell.get("redeem_count_days") or ""
+        total = redeem_cell.get("redeem_total_days") or ""
         count_str = f"{real}/{need} | {total}" if (real != "" and need != "") else ""
 
         if icon == "R":
@@ -445,3 +545,12 @@ def format_redeem_status(bond_cell: dict[str, Any], redeem_cell: dict[str, Any] 
         if icon in icons:
             return _REDEEM_LABELS.get(icon, icon)
     return ""
+
+
+# 因子目录重导出(向后兼容旧 import 路径; 目录唯一事实源在 cb_factors)
+__all__ = [
+    "RedeemDataUnavailableError",
+    "screen_bonds",
+    "screen_bonds_live",
+    "format_redeem_status",
+]

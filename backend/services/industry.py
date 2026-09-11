@@ -91,3 +91,63 @@ def industry_name_of(sw_cd: Optional[str]) -> Optional[str]:
     """
     info = industry_info_of(sw_cd)
     return info["industry_name"] if info else None
+
+
+# ---------------------------------------------------------------------------
+# 行业目录(方案 §3.3/§6.2): 静态映射 + 本地快照发现, 不触网
+# ---------------------------------------------------------------------------
+
+def static_catalog_entries() -> list[dict]:
+    """静态申万映射目录: 每个收录原始码一条目录项(§3.3)。
+
+    条目结构(与 industry_info_of 对齐, 另加 source 标记来源):
+    {industry_code, industry_name, industry_level, industry_mapped_code,
+     industry_is_fallback, source}
+    静态目录条目 source="catalog", 无回退(精确收录)。
+    """
+    by_code = _load_by_code()
+    out: list[dict] = []
+    for code in sorted(by_code):
+        entry = by_code[code]
+        name = entry.get("name")
+        if not name:
+            continue
+        level = entry.get("level")
+        out.append({
+            "industry_code": code,
+            "industry_name": str(name).strip(),
+            "industry_level": int(level) if level is not None else None,
+            "industry_mapped_code": code,
+            "industry_is_fallback": False,
+            "source": "catalog",
+        })
+    return out
+
+
+def discovered_catalog_entry(sw_cd: str) -> dict:
+    """快照发现的未收录原始码 → 目录项(不触网)。
+
+    - 回退命中(如 610101 → 610100 水泥): 给出名称并 industry_is_fallback=True,
+      前端选项文字须附回退层级, 防止多个原始码回退同名时误选;
+    - 完全未知: name/level 为 None("未映射"由前端渲染), 目录仍保留该原始码,
+      筛选匹配原始码(§3.3)。
+    """
+    code = str(sw_cd or "").strip()
+    info = industry_info_of(code)
+    if info is not None:
+        return {
+            "industry_code": code,
+            "industry_name": info["industry_name"],
+            "industry_level": info["industry_level"],
+            "industry_mapped_code": info["industry_mapped_code"],
+            "industry_is_fallback": bool(info["industry_is_fallback"]),
+            "source": "snapshot",
+        }
+    return {
+        "industry_code": code,
+        "industry_name": None,
+        "industry_level": None,
+        "industry_mapped_code": code,
+        "industry_is_fallback": False,
+        "source": "snapshot",
+    }

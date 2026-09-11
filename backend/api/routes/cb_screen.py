@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -22,6 +23,7 @@ from backend.api.schemas.cb_screen import (
     FactorsConfigModel,
     IntradayFilterQuery,
     SelectionConfigModel,
+    SelectionRunModel,
     normalize_ratings,
 )
 from backend.models.database import get_db
@@ -44,7 +46,11 @@ from backend.services.cb_factors import (
 )
 from backend.services.cb_template_migration import migrate_config_to_v3
 from backend.services.cb_intraday import screen_bonds_intraday
-from backend.services.cb_screen import screen_bonds, screen_bonds_live
+from backend.services.cb_screen import (
+    RedeemDataUnavailableError,
+    screen_bonds,
+    screen_bonds_live,
+)
 
 router = APIRouter()
 
@@ -180,26 +186,32 @@ def save_factors(body: dict[str, Any]) -> dict[str, Any]:
     return _save_factors_legacy(body)
 
 
-def _load_rows(db: Session) -> list[CbDailySnapshot]:
-    """加载最新交易日的全量转债快照。"""
+def _load_rows(db: Session) -> tuple[list[CbDailySnapshot], Any]:
+    """加载最新交易日 D 的全量转债快照, 返回 (rows, D); 无快照返回 ([], None)。"""
     latest = db.query(func.max(CbDailySnapshot.trade_date)).scalar()
     if not latest:
-        return []
-    return db.query(CbDailySnapshot).filter(
+        return [], None
+    rows = db.query(CbDailySnapshot).filter(
         CbDailySnapshot.trade_date == latest
     ).all()
+    return rows, latest
 
 
-def _load_redeem_map(db: Session) -> dict[str, dict[str, Any]]:
-    """加载最新交易日的强赎列表快照, 返回 {bond_id: cell dict}。
+def _load_redeem_map(db: Session, as_of_date: Any) -> tuple[dict[str, dict[str, Any]], Any]:
+    """加载不晚于 as_of_date(D) 的最近强赎快照 R(§3.2), 返回 ({bond_id: cell}, R)。
 
-    若 redeem 快照不存在, 返回空 dict(不影响筛选, 仅 redeem_safe_days 不生效)。
+    必须纳入 redeem_price(简单到期收益率的唯一合法赎回价来源, 不得用
+    force_redeem_price 替代)。R 不存在返回 ({}, None)。
     """
     from backend.models.valuation import CbRedeemDaily
 
-    latest = db.query(func.max(CbRedeemDaily.trade_date)).scalar()
+    if as_of_date is None:
+        return {}, None
+    latest = db.query(func.max(CbRedeemDaily.trade_date)).filter(
+        CbRedeemDaily.trade_date <= as_of_date
+    ).scalar()
     if not latest:
-        return {}
+        return {}, None
     rows = db.query(CbRedeemDaily).filter(
         CbRedeemDaily.trade_date == latest
     ).all()
@@ -211,57 +223,205 @@ def _load_redeem_map(db: Session) -> dict[str, dict[str, Any]]:
             "redeem_real_days": r.redeem_real_days,
             "redeem_count_days": r.redeem_count_days,
             "redeem_total_days": r.redeem_total_days,
+            "redeem_price": r.redeem_price,
         }
+    return result, latest
+
+
+# 东八区固定偏移(中国无夏令时; 不依赖系统 tzdata, Windows/容器行为一致)
+_TZ_CN = timezone(timedelta(hours=8), name="Asia/Shanghai")
+
+
+def _cn_now() -> datetime:
+    return datetime.now(_TZ_CN)
+
+
+def _validate_run_template(body: dict[str, Any]) -> dict[str, Any]:
+    """执行请求强校验(先校验再抓取, §4.3) + 迁移 pending 拒绝(§5.2)。"""
+    try:
+        validated = SelectionRunModel.model_validate(body)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=_validation_error_detail(exc))
+    template = validated.model_dump()
+    pending = [
+        issue for issue in (template.get("migration_issues") or [])
+        if isinstance(issue, dict) and issue.get("status") == "pending"
+    ]
+    if pending:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "TEMPLATE_REVIEW_REQUIRED",
+                "message": "模板存在待确认的迁移项(如旧集思录收益率 ytm_rt),"
+                           " 请先在模板编辑中确认后再执行",
+                "issues": pending,
+            },
+        )
+    return template
+
+
+def _no_snapshot_result(template: dict[str, Any], source: str) -> dict[str, Any]:
+    """DB 无转债快照: 200 + meta.data_status=no_snapshot, 区别于 0 只符合(§3.2)。"""
+    return {
+        "total_all": 0,
+        "total_filtered": 0,
+        "total_excluded": 0,
+        "top_n": 0,
+        "keep_n": 0,
+        "selected_count": 0,
+        "buffer_count": 0,
+        "selection_mode": (
+            "scored" if any(
+                f.get("enabled", True) for f in (template.get("strategy_factors") or [])
+            ) else "filter_only"
+        ),
+        "rows": [],
+        "excluded_rows": [],
+        "source": source,
+        "template_id": template.get("id"),
+        "template_name": template.get("name"),
+        "meta": {
+            "data_status": "no_snapshot",
+            "trade_date": None,
+            "redeem_trade_date": None,
+            "fetched_at": None,
+            "quote_time": None,
+            "redeem_loaded": False,
+            "missing_yield_count": 0,
+            "blacklisted_count": 0,
+            "warnings": [],
+        },
+    }
+
+
+def _execute_db_screen(db: Session, template: dict[str, Any]) -> dict[str, Any]:
+    """DB 路径执行(§3.2): D=最新转债快照日, R=不晚于 D 的最近强赎快照日。
+
+    严格同日策略: R 不存在或 R≠D 时本轮赎回字段一律按缺失处理(redeem_loaded
+    =False), 返回 D、R 与警告; 模板依赖收益率/赎回价时由服务层抛
+    RedeemDataUnavailableError → 503。
+    """
+    rows, trade_date = _load_rows(db)
+    if trade_date is None:
+        return _no_snapshot_result(template, source="db")
+
+    redeem_map, redeem_date = _load_redeem_map(db, trade_date)
+    warnings: list[str] = []
+    redeem_unusable = redeem_date != trade_date
+    if redeem_date is None:
+        warnings.append("无强赎快照: 赎回价/简单到期收益率缺失")
+    elif redeem_date != trade_date:
+        warnings.append(
+            f"强赎快照({redeem_date.isoformat()})早于行情快照({trade_date.isoformat()}), "
+            "按严格同日策略本轮赎回字段按缺失处理; 可改用实时行情"
+        )
+    try:
+        result = screen_bonds(
+            rows, template,
+            redeem_map=redeem_map,
+            as_of_date=trade_date,
+            blacklist_ids=get_blacklist_ids(db),
+            trade_date=trade_date.isoformat(),
+            redeem_trade_date=redeem_date.isoformat() if redeem_date else None,
+            redeem_loaded=(redeem_date == trade_date),
+            redeem_unusable=redeem_unusable,
+            warnings=warnings,
+        )
+    except RedeemDataUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "REDEEM_DATA_UNAVAILABLE", "message": str(exc)},
+        )
+    result["source"] = "db"
+    result["template_id"] = template.get("id")
+    result["template_name"] = template.get("name")
     return result
 
 
 @router.post("/cb-list/screen")
 def screen(body: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any]:
-    """按传入模板配置筛选打分。
+    """按传入模板配置筛选打分(V3, §6.2)。
 
-    模板结构对齐 v2_cb_rotation(见 cb_factors.py DEFAULT_CONFIG)。
-    body 可含 "source": "db"(默认, 读最新交易日快照) 或 "live"(实时拉集思录, 不落库)。
+    保留平铺模板+source 请求形状, 模板携带 schema_version=3, 不要求先保存。
+    执行顺序: 先强校验(失败 422 且不触发任何数据源), 再按 source 取数:
+    - db: 最新交易日快照 + 同日强赎快照(严格同日) + 黑名单;
+    - live: 实时拉集思录(强赎列表空 → 赎回数据不可用), trade_date 不冒充。
+    迁移 pending 模板 409 TEMPLATE_REVIEW_REQUIRED; 上游失败 502;
+    全市场赎回输入无效且模板依赖 503 REDEEM_DATA_UNAVAILABLE;
+    DB 无快照 200 + meta.data_status=no_snapshot。
     """
-    source = str(body.get("source") or "db").strip().lower()
+    template = _validate_run_template(body)
 
-    if source == "live":
-        # 实时: 拉集思录 → 同一套打分引擎(不落库)
+    if template.get("source") == "live":
         try:
             from backend.services.queries.live import fetch_live_snapshot
 
             records, redeem_cells = fetch_live_snapshot()
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"实时数据拉取失败: {exc}")
-        result = screen_bonds_live(records, body, redeem_cells=redeem_cells)
+        try:
+            result = screen_bonds_live(
+                records, template,
+                redeem_cells=redeem_cells,
+                as_of_date=_cn_now().date(),
+                blacklist_ids=get_blacklist_ids(db),
+            )
+        except RedeemDataUnavailableError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "REDEEM_DATA_UNAVAILABLE", "message": str(exc)},
+            )
+        result["meta"]["fetched_at"] = _cn_now().isoformat(timespec="seconds")
         result["source"] = "live"
+        result["template_id"] = template.get("id")
+        result["template_name"] = template.get("name")
         return result
 
-    rows = _load_rows(db)
-    if not rows:
-        return {"total_all": 0, "total_filtered": 0, "total_excluded": 0, "top_n": 0, "keep_n": 0, "rows": [], "excluded_rows": [], "source": "db"}
-
-    redeem_map = _load_redeem_map(db)
-    result = screen_bonds(rows, body, redeem_map=redeem_map)
-    result["source"] = "db"
-    return result
+    return _execute_db_screen(db, template)
 
 
 @router.get("/cb-list/screen/active")
 def screen_active(db: Session = Depends(get_db)) -> dict[str, Any]:
-    """按当前 active 模板筛选打分。"""
-    tmpl = get_active_template()
+    """按当前 active 模板筛选打分(V3, §6.2): 与 run 同一校验、同一引擎。
+
+    配置文件损坏 → 503 CONFIG_UNREADABLE; 模板迁移 pending → 409
+    TEMPLATE_REVIEW_REQUIRED; 黑名单生效并作为排除原因返回。
+    """
+    try:
+        tmpl = get_active_template()
+    except ConfigUnreadableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "CONFIG_UNREADABLE", "message": str(exc)},
+        )
     if tmpl is None:
         raise HTTPException(status_code=400, detail="未找到可用因子模板")
 
-    rows = _load_rows(db)
-    if not rows:
-        return {"total_all": 0, "total_filtered": 0, "top_n": 0, "keep_n": 0, "rows": []}
+    template = _validate_run_template({**tmpl, "schema_version": 3, "source": "db"})
+    return _execute_db_screen(db, template)
 
-    redeem_map = _load_redeem_map(db)
-    result = screen_bonds(rows, tmpl, redeem_map=redeem_map)
-    result["template_id"] = tmpl.get("id")
-    result["template_name"] = tmpl.get("name")
-    return result
+
+@router.get("/cb-list/factors/industries")
+def get_industries(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    """行业目录(§3.3/§6.2): 静态申万映射 + 本地快照发现原始码, 不触网。
+
+    条目: {industry_code(原始码), industry_name, industry_level,
+    industry_mapped_code, industry_is_fallback, source(catalog|snapshot)}。
+    快照中发现而静态目录未收录的原始码: 回退命中标注 fallback;
+    完全未知保留选项(name 为 None, 前端显示"未映射 <code>"), 筛选永远
+    匹配原始码。
+    """
+    from sqlalchemy import distinct
+
+    from backend.services.industry import discovered_catalog_entry, static_catalog_entries
+
+    entries = {e["industry_code"]: e for e in static_catalog_entries()}
+    for (code,) in db.query(distinct(CbDailySnapshot.sw_cd)).all():
+        code = str(code or "").strip()
+        if not code or code in entries:
+            continue
+        entries[code] = discovered_catalog_entry(code)
+    return sorted(entries.values(), key=lambda e: e["industry_code"])
 
 
 @router.get("/cb-list/screen/intraday")

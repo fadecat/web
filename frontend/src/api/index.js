@@ -24,6 +24,12 @@ export const getRatingCatalog = () =>
 export const getFactorCatalog = () =>
   api.get('/cb-list/factors/catalog').then((r) => r.data);
 
+// 行业目录(转债选债 V3): 静态申万映射 + 本地快照发现原始码, 不触网;
+// 条目 {industry_code, industry_name, industry_level, industry_mapped_code,
+// industry_is_fallback, source}
+export const getIndustryCatalog = () =>
+  api.get('/cb-list/factors/industries').then((r) => r.data);
+
 export const getFactors = () =>
   api.get('/cb-list/factors').then((r) => r.data);
 

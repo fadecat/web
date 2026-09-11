@@ -358,10 +358,13 @@ class SelectionRunModel(_ConditionsTemplateBase):
     """V3 执行请求(§6.2: 保留平铺模板+source 形状, 顶层 schema_version=3)。
 
     执行前先校验再抓取: 校验失败时任何数据源都不应被调用。
+    migration_issues 随模板平铺携带(迁移产物回存形状); 路由检查到
+    status=pending 的条目时以 409 TEMPLATE_REVIEW_REQUIRED 拒绝执行(§5.2)。
     """
 
     schema_version: Annotated[int, Field(strict=True)]
     source: Literal["db", "live"] = "db"
+    migration_issues: list[dict[str, Any]] = Field(default_factory=list)
 
     @field_validator("schema_version")
     @classmethod
