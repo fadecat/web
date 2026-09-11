@@ -66,6 +66,7 @@ def _run_ps_without_pipes(*args: str) -> subprocess.CompletedProcess[str]:
             stdout=stdout,
             stderr=stderr,
             text=True,
+            env={**os.environ, "APP_RUNTIME_DIR": str(artifact_dir / "runtime")},
             timeout=30,
             check=False,
         )

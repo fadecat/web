@@ -9,7 +9,7 @@ import SelectionResults from '../components/selection/SelectionResults.vue';
 
 const ws=useSelectionWorkspace(api);
 const {current,templates,editingId,saved,source,dirty,anyDirty,result,stale,pending,running,saving,errors}=ws;
-const loading=ref(true),loadError=ref(''),catalog=ref([]),ratings=ref([]),industries=ref([]),editorOpen=ref(true),drawer=ref(false),narrow=ref(window.innerWidth<1200);
+const loading=ref(true),loadError=ref(''),catalog=ref([]),ratings=ref([]),industries=ref([]),editorOpen=ref(true);
 const blacklistOpen=ref(false),blacklist=ref([]),blacklistCode=ref(''),blacklistBusy=ref(false);
 const currentRunning=computed(()=>!!running.value[editingId.value]);
 async function action(fn){try{return await fn();}catch(e){if(e!=='cancel'&&e!=='close')ElMessage.error(errorText(e));}}
@@ -29,10 +29,9 @@ async function openBlacklist(){blacklistOpen.value=true;await action(loadBlackli
 async function addBlacklist(row){await action(async()=>{await ElMessageBox.confirm(`将 ${row.name||row.code} 加入所有模板共用的黑名单？`,'加入黑名单');await api.addBlacklist({bond_id:row.code,bond_nm:row.name});ws.invalidate();if(blacklistOpen.value)await loadBlacklist();});}
 async function addCode(){const code=blacklistCode.value.trim().toUpperCase().replace(/\.(SH|SZ)$/,'');if(!/^\d{6}$/.test(code)){ElMessage.warning('请输入六位转债代码');return;}await addBlacklist({code});blacklistCode.value='';}
 async function removeBlacklisted(row){await action(async()=>{await api.removeBlacklist(row.bond_id);ws.invalidate();await loadBlacklist();});}
-function resize(){narrow.value=window.innerWidth<1200;}
 function beforeUnload(e){if(anyDirty.value){e.preventDefault();e.returnValue='';}}
-onMounted(()=>{window.addEventListener('resize',resize);window.addEventListener('beforeunload',beforeUnload);load();});
-onBeforeUnmount(()=>{window.removeEventListener('resize',resize);window.removeEventListener('beforeunload',beforeUnload);});
+onMounted(()=>{window.addEventListener('beforeunload',beforeUnload);load();});
+onBeforeUnmount(()=>{window.removeEventListener('beforeunload',beforeUnload);});
 onBeforeRouteLeave(async()=>{if(!anyDirty.value)return true;try{await ElMessageBox.confirm('尚有模板草稿未保存，离开将丢失修改。','离开页面');return true;}catch{return false;}});
 </script>
 <template>
@@ -53,22 +52,21 @@ onBeforeRouteLeave(async()=>{if(!anyDirty.value)return true;try{await ElMessageB
    <div class="toolbar actions">
     <el-tag :type="dirty?'warning':'success'">{{dirty?'当前草稿未保存':'当前模板已保存'}}</el-tag>
     <el-radio-group v-model="source"><el-radio-button value="db">数据库快照</el-radio-button><el-radio-button value="live">实时行情</el-radio-button></el-radio-group>
-    <el-button @click="narrow?drawer=true:editorOpen=!editorOpen">{{!narrow&&editorOpen?'收起配置':'配置条件'}}</el-button>
+    <el-button @click="editorOpen=!editorOpen">{{editorOpen?'收起配置':'配置条件'}}</el-button>
     <el-button :disabled="!dirty||saving" :loading="saving" @click="save">保存模板</el-button>
     <el-button type="primary" :disabled="pending||currentRunning" :loading="currentRunning" @click="action(ws.run)">执行筛选</el-button>
    </div>
-   <el-alert v-if="pending" title="当前模板有待确认的旧规则，请展开配置并处理后执行" type="warning" :closable="false"/>
+   <el-alert v-if="pending" title="当前模板有待确认的旧规则，请打开配置条件并处理后执行" type="warning" :closable="false"/>
    <el-alert v-if="errors[editingId]" :title="errors[editingId]" type="error" :closable="false"/>
-   <div class="content" :class="{expanded:editorOpen&&!narrow}">
-    <FactorEditor v-if="editorOpen&&!narrow" :template="current" :catalog="catalog" :ratings="ratings" :industries="industries" @patch="ws.patch"/>
+   <div class="content">
+    <FactorEditor v-if="editorOpen" :template="current" :catalog="catalog" :ratings="ratings" :industries="industries" @patch="ws.patch"/>
     <SelectionResults v-if="result" :result="result" :name="current.name" :stale="stale" @blacklist="addBlacklist"/>
     <el-empty v-else :description="pending?'处理迁移规则后执行筛选':'点击执行筛选查看结果'"/>
    </div>
-   <el-drawer v-model="drawer" title="因子配置" :size="'min(100%, 480px)'" destroy-on-close><FactorEditor :template="current" :catalog="catalog" :ratings="ratings" :industries="industries" @patch="ws.patch"/><template #footer><el-button @click="drawer=false">完成配置</el-button><el-button type="primary" :disabled="pending||currentRunning" @click="action(ws.run);drawer=false">执行筛选</el-button></template></el-drawer>
   </template>
   <el-drawer v-model="blacklistOpen" title="全局黑名单 · 对所有模板生效" size="min(100%, 540px)"><div v-loading="blacklistBusy"><div class="toolbar"><el-input v-model="blacklistCode" placeholder="六位代码"/><el-button @click="addCode">添加</el-button></div><el-table :data="blacklist"><el-table-column prop="bond_id" label="代码"/><el-table-column prop="bond_nm" label="名称"/><el-table-column label="操作"><template #default="{row}"><el-button text @click="removeBlacklisted(row)">移除</el-button></template></el-table-column></el-table></div></el-drawer>
  </div>
 </template>
 <style scoped>
-.workspace{min-width:0}.workspace h2{font-size:20px;margin:0 0 18px}.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}.toolbar>.el-select{width:260px}.toolbar>.el-input{width:220px}.actions{padding:12px;background:#fff;border:1px solid #e4e7ed;border-radius:8px}.content{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin-top:16px;min-width:0}.content.expanded{grid-template-columns:320px minmax(0,1fr);align-items:start}.el-alert{margin:10px 0}@media(max-width:767px){.toolbar>.el-select{width:100%}.toolbar{gap:6px}.actions>.el-radio-group{width:100%}}
+.workspace{min-width:0}.workspace h2{font-size:20px;margin:0 0 18px}.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}.toolbar>.el-select{width:260px}.toolbar>.el-input{width:220px}.actions{padding:12px;background:#fff;border:1px solid #e4e7ed;border-radius:8px}.content{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin-top:16px;min-width:0}.el-alert{margin:10px 0}@media(max-width:767px){.toolbar>.el-select{width:100%}.toolbar{gap:6px}.actions>.el-radio-group{width:100%}}
 </style>

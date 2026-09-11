@@ -21,7 +21,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = (Split-Path -Parent $PSScriptRoot)
-$RuntimeDir = Join-Path $RepoRoot '.runtime'
+$RuntimeDir = if ($env:APP_RUNTIME_DIR) { [IO.Path]::GetFullPath($env:APP_RUNTIME_DIR) } else { Join-Path $RepoRoot '.runtime' }
 
 function Fail([string]$Message, [int]$Code = 2) {
     [Console]::Error.WriteLine("ERROR: $Message")

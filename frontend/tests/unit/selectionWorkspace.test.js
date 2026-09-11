@@ -7,6 +7,12 @@ const setup = async (overrides={}) => {
  const ws=useSelectionWorkspace(api); await ws.load(); return {ws,api};
 };
 describe('V3 workspace',()=>{
+ it('does not mark results stale when saving only reorders condition keys',async()=>{
+  const {ws}=await setup({saveFactors:async c=>({data:{...c,templates:c.templates.map(t=>({...t,conditions:t.conditions.map(rule=>Object.fromEntries(Object.entries(rule).reverse()))}))}})});
+  ws.patch({conditions:[{id:'x',enabled:true,field:'price',op:'gte',value:100,missing:'exclude',negative:'compare'}]});
+  await ws.run();await ws.save();expect(ws.stale.value).toBe(false);
+  ws.patch({conditions:[{...ws.current.value.conditions[0],value:101}]});expect(ws.stale.value).toBe(true);
+ });
  it('saves only current draft and preserves another template draft',async()=>{
   const {ws,api}=await setup(); ws.patch({name:'edited A'}); ws.editingId.value='b'; ws.patch({name:'edited B'}); await ws.save();
   expect(api.saveFactors.mock.calls[0][0].templates.map(t=>t.name)).toEqual(['a','edited B']);
