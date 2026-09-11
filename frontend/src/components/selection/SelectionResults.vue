@@ -24,7 +24,7 @@ const reasons=row=>(row.exclude_reasons||[]).map(r=>typeof r==='string'?r:r.mess
   <el-alert v-if="stale" title="条件或数据源已修改，当前为上次结果，请重新筛选" type="warning" :closable="false"/>
   <el-alert v-if="result.meta?.data_status==='no_snapshot'" title="尚无行情快照，请前往数据管理同步或改用实时行情" type="info" :closable="false"/>
   <el-alert v-for="w in result.meta?.warnings||[]" :key="w" :title="w" type="warning" :closable="false"/>
-  <p class="meta">行情日期 {{ result.meta?.trade_date||'未确认' }} · 赎回日期 {{ result.meta?.redeem_trade_date||'未确认' }}<span v-if="result.meta?.fetched_at"> · 请求时间 {{ result.meta.fetched_at }}</span></p>
+  <p class="meta">行情日期 {{ result.meta?.trade_date || (result.source==='live' ? '实时' : '未确认') }} · 赎回日期 {{ result.meta?.redeem_trade_date || (result.source==='live' ? '实时' : '未确认') }}<span v-if="result.meta?.fetched_at"> · 请求时间 {{ result.meta.fetched_at }}</span></p>
   <p>{{ result.total_all }} 只全量 / {{ result.total_filtered }} 只符合 / {{ result.total_excluded }} 只排除 <span v-if="result.selection_mode==='scored'"> / {{ result.selected_count }} 只入选 / {{ result.buffer_count }} 只容差保留</span></p>
   <div class="tools"><el-radio-group v-model="view"><el-radio-button value="all">全部符合</el-radio-button><el-radio-button v-if="result.selection_mode==='scored'" value="selected">入选</el-radio-button><el-radio-button value="excluded">排除明细</el-radio-button></el-radio-group><el-input v-model="search" placeholder="当前结果内查找代码/名称" clearable/><el-button @click="sort={prop:'rank',order:'ascending'}">恢复默认排序</el-button></div>
   <el-table :data="paged" stripe max-height="620" @sort-change="sort=$event.prop&&$event.order?$event:{prop:'rank',order:'ascending'}">
