@@ -391,6 +391,30 @@ def _migrate_template(
     }
 
 
+def _migrate_redeem_semantics(config: dict[str, Any]) -> dict[str, Any]:
+    """将旧图标条件移入待确认记录，避免隐藏过滤。"""
+    for template in config.get("templates", []):
+        kept = []
+        issues = template.setdefault("migration_issues", [])
+        for condition in template.get("conditions", []):
+            field = condition.get("field")
+            if field == "redeem_icons":
+                issues.append({"id": "redeem-semantics-" + str(condition.get("id")),
+                               "kind": "redeem_semantics", "status": "pending" if condition.get("enabled", True) else "archived",
+                               "message": "旧强赎图标混合公告强赎与临近到期；请添加业务状态条件并确认，或删除旧规则。",
+                               "original": copy.deepcopy(condition)})
+            elif field == "redeem_remain_days":
+                values = condition.get("value") if isinstance(condition.get("value"), list) else [condition.get("value")]
+                if any(isinstance(v, (int, float)) and v < 0 for v in values):
+                    issues.append({"id": "redeem-days-" + str(condition.get("id")), "kind": "redeem_semantics", "status": "pending", "message": "旧负数强赎天数阈值需要重新配置。", "original": copy.deepcopy(condition)})
+                else:
+                    kept.append({**condition, "field": "trigger_days_remaining", "negative": "compare"})
+            else:
+                kept.append(condition)
+        template["conditions"] = kept
+    return config
+
+
 def migrate_config_to_v3(config: dict[str, Any]) -> dict[str, Any]:
     """任意版本模板配置 → V3。深拷贝入参, 确定性、幂等、零磁盘 IO(§5.1)。
 
@@ -401,7 +425,7 @@ def migrate_config_to_v3(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(config, dict):
         raise TypeError("模板配置必须是 JSON 对象")
     if config.get("version") == 3:
-        return copy.deepcopy(config)
+        return _migrate_redeem_semantics(copy.deepcopy(config))
 
     templates_in = config.get("templates") or []
     used_ids: set[str] = set()
@@ -431,4 +455,4 @@ def migrate_config_to_v3(config: dict[str, Any]) -> dict[str, Any]:
     if "updated_at" in config:
         result["updated_at"] = config["updated_at"]
     result["templates"] = templates_out
-    return result
+    return _migrate_redeem_semantics(result)

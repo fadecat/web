@@ -189,9 +189,9 @@ class TestMigrationPure:
         migrated = migrate_config_to_v3(
             {"version": 2, "active_id": "t1", "templates": [_legacy_template()]}
         )["templates"][0]
-        safe = _find_condition(migrated, "redeem_remain_days")
+        safe = _find_condition(migrated, "trigger_days_remaining")
         assert safe["op"] == "gt" and safe["value"] == 2
-        assert safe["missing"] == "include" and safe["negative"] == "include"
+        assert safe["missing"] == "include" and safe["negative"] == "compare"
         assert _find_condition(migrated, "listed_days") is None  # 0 不生成
 
         migrated2 = migrate_config_to_v3({"version": 2, "active_id": "t1", "templates": [
@@ -207,7 +207,9 @@ class TestMigrationPure:
         migrated = migrate_config_to_v3({"version": 2, "active_id": "t1", "templates": [
             _legacy_template(excluded_redeem_icons=None),
         ]})["templates"][0]
-        assert _find_condition(migrated, "redeem_icons")["value"] == ["R", "O", "B"]
+        assert _find_condition(migrated, "redeem_icons") is None
+        assert _issues_of(migrated, "redeem_semantics")[0]["original"]["value"] == ["R", "O", "B"]
+        assert _issues_of(migrated, "redeem_semantics")[0]["status"] == "pending"
 
         migrated2 = migrate_config_to_v3({"version": 2, "active_id": "t1", "templates": [
             _legacy_template(excluded_redeem_icons=[]),
@@ -217,7 +219,7 @@ class TestMigrationPure:
         migrated3 = migrate_config_to_v3({"version": 2, "active_id": "t1", "templates": [
             _legacy_template(excluded_redeem_icons=["R", "X"]),
         ]})["templates"][0]
-        assert _find_condition(migrated3, "redeem_icons")["value"] == ["R"]
+        assert _issues_of(migrated3, "redeem_semantics")[0]["original"]["value"] == ["R"]
         assert _issues_of(migrated3, "invalid_value_dropped")
 
     def test_excluded_codes_normalized_and_st_added(self):
@@ -298,7 +300,8 @@ class TestMigrationPure:
         factors = [f["field"] for f in tmpl["strategy_factors"]]
         assert factors == ["dblow", "premium_rt", "curr_iss_amt"]
         # 7 条排除规则 + 评级 + 强赎 + 安全天数 + ST = 11 条
-        assert len(tmpl["conditions"]) == 11
+        assert len(tmpl["conditions"]) == 10  # 旧图标转入待确认记录
+        assert _issues_of(tmpl, "redeem_semantics")
         assert _find_condition(tmpl, "pb")["value"] == 1
         rating = _find_condition(tmpl, "rating_cd")
         assert rating["value"] == ["A", "A+", "A-", "AA", "AA+", "AA-", "AAA"]

@@ -135,6 +135,8 @@ FACTOR_CATALOG: list[dict[str, Any]] = [
     _enum_field("redeem_status_code", "强赎业务状态", "", "basic",
                 operators=["in", "not_in"],
                 description="归一化业务状态；不直接暴露集思录 R/O/B/G 图标"),
+    _num_field("trigger_days_remaining", "至少还需触发天数", "交易日", "basic", scorable=False,
+               description="满足条款至少还需的交易日数，并非实际赎回倒计时；未计数按缺失处理"),
     _enum_field("stock_is_st", "正股ST", "", "stock",
                 operators=["eq"],
                 description="正股名称含 ST/*ST(复用现有识别定义)"),

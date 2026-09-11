@@ -57,9 +57,13 @@ router = APIRouter()
 
 
 @router.get("/cb-list/factors/catalog")
-def get_factor_catalog() -> list[dict[str, str]]:
+def get_factor_catalog() -> list[dict[str, Any]]:
     """返回可用因子字段目录。"""
-    return FACTOR_CATALOG
+    from backend.services.cb_redeem_semantics import STATUS_LABELS
+    return [
+        {**item, **({"options": [{"value": key, "label": label} for key, label in STATUS_LABELS.items() if key != "UNKNOWN"]} if item["field"] == "redeem_status_code" else {})}
+        for item in FACTOR_CATALOG if item["field"] not in {"redeem_icons", "redeem_remain_days"}
+    ]
 
 
 @router.get("/cb-list/factors/ratings")
@@ -254,6 +258,8 @@ def _validate_run_template(body: dict[str, Any]) -> dict[str, Any]:
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=_validation_error_detail(exc))
     template = validated.model_dump()
+    if any(c["field"] in {"redeem_icons", "redeem_remain_days"} for c in template["conditions"]):
+        raise HTTPException(status_code=409, detail={"code": "TEMPLATE_REVIEW_REQUIRED", "message": "旧强赎条件需重新加载并迁移后执行"})
     pending = [
         issue for issue in (template.get("migration_issues") or [])
         if isinstance(issue, dict) and issue.get("status") == "pending"
@@ -367,7 +373,8 @@ def screen(body: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any
         try:
             from backend.services.queries.live import fetch_live_snapshot
 
-            records, redeem_cells = fetch_live_snapshot()
+            snapshot = fetch_live_snapshot()
+            records, redeem_cells = snapshot
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"实时数据拉取失败: {exc}")
         try:
@@ -383,6 +390,9 @@ def screen(body: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any
                 detail={"code": "REDEEM_DATA_UNAVAILABLE", "message": str(exc)},
             )
         result["meta"]["fetched_at"] = _cn_now().isoformat(timespec="seconds")
+        result["meta"]["redeem_fetch_status"] = getattr(snapshot, "redeem_fetch_status", "ok" if redeem_cells else "empty")
+        if result["meta"]["redeem_fetch_status"] == "failed":
+            result["meta"]["warnings"].append("强赎接口抓取失败，请稍后重试或检查数据源登录状态")
         result["source"] = "live"
         result["template_id"] = template.get("id")
         result["template_name"] = template.get("name")

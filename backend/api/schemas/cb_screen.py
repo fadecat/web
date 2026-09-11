@@ -267,6 +267,10 @@ class ConditionModel(BaseModel):
     def _validate_enum_value(self, entry: dict[str, Any]) -> None:
         label = entry["label"]
         items = _require_clean_str_list(self.value, label)
+        if self.field == "redeem_status_code":
+            from backend.services.cb_redeem_semantics import STATUS_LABELS
+            if any(x not in STATUS_LABELS for x in items):
+                raise ValueError("未知强赎业务状态")
         if self.enabled and not items:
             raise ValueError(f"启用的 {self.op} 条件不允许空集合({label})")
         if self.field == "redeem_icons":
@@ -342,6 +346,9 @@ class _ConditionsTemplateBase(BaseModel):
 
     @model_validator(mode="after")
     def _no_duplicate_scoring_fields(self) -> "_ConditionsTemplateBase":
+        ids = [c.id for c in self.conditions]
+        if len(ids) != len(set(ids)):
+            raise ValueError("条件 id 必须唯一")
         fields = [f.field for f in self.strategy_factors if f.enabled]
         if len(set(fields)) != len(fields):
             raise ValueError("同一字段不能重复评分(避免覆盖旧 score_key)")

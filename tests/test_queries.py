@@ -118,9 +118,18 @@ def test_fetch_live_snapshot_redeem_failure_degraded(monkeypatch):
     monkeypatch.setattr(live, "fetch_cb_list", ok_list)
     monkeypatch.setattr(live, "fetch_redeem_list", fail_redeem)
 
-    records, redeem_cells = live.fetch_live_snapshot()
+    snapshot = live.fetch_live_snapshot()
+    records, redeem_cells = snapshot
+    assert snapshot.redeem_fetch_status == "failed"
     assert records == [{"bond_id": "1", "price": "100"}]
     assert redeem_cells == []
+
+
+def test_fetch_live_snapshot_empty_is_not_failure(monkeypatch):
+    from backend.services.queries import live
+    monkeypatch.setattr(live, "fetch_cb_list", lambda: [{"bond_id": "110001"}])
+    monkeypatch.setattr(live, "fetch_redeem_list", lambda: [])
+    assert live.fetch_live_snapshot().redeem_fetch_status == "empty"
 
 
 def test_fetch_live_snapshot_list_failure_raises(monkeypatch):

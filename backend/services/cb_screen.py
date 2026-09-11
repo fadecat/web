@@ -160,6 +160,7 @@ def _enrich_rows(
         enriched["redeem_remain_days"] = finite_number(
             (redeem_cell or {}).get("redeem_remain_days")
         )
+        enriched["trigger_days_remaining"] = enriched["redeem_state"]["trigger_days_remaining"]
         enriched["listed_days"] = _listed_days(enriched.get("list_dt"), as_of_date)
         cell_rows.append({"cell": enriched, "_redeem_cell": redeem_cell})
     return cell_rows
@@ -339,6 +340,7 @@ def _to_dto(
             else None
         ),
         "redeem": format_redeem_status(c, row.get("_redeem_cell")),
+        "redeem_state": c.get("redeem_state"),
         "total_score": row.get("total_score") if scored_mode else None,
     }
 
@@ -527,6 +529,12 @@ def format_redeem_status(bond_cell: dict[str, Any], redeem_cell: dict[str, Any] 
     if redeem_cell:
         state = normalize_redeem_state(redeem_cell)
         label = state["status_label"]
+        if state["status_code"] == "MONITORING":
+            return ""
+        if state["status_code"] == "NEAR_MATURITY":
+            return f"临近到期 {state['last_trade_date']} 最后交易"
+        if state["status_code"] not in ("TRIGGER_COUNTING", "TRIGGER_MET"):
+            return label
         # None 与 "" 同样视为缺失(ORM 快照列 NULL 与实时源空串同口径)
         real = state["trigger_days_met"] or ""
         need = state["trigger_days_required"] or ""

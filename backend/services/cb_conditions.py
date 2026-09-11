@@ -137,6 +137,10 @@ def _eval_enum(
     行业/代码按原始码精确匹配。
     """
     raw = cell.get(_FIELD_CELL_KEYS.get(field, field))
+    if field == "redeem_status_code" and (raw is None or raw == "UNKNOWN"):
+        if cond.get("missing") == "include":
+            return None
+        return _fail(cond, field, raw, "missing", "强赎业务状态缺失")
     if field == "rating_cd":
         actual = str(raw or "").strip().upper() or _ENUM_NONE
     elif field in ("industry_code", "code"):
