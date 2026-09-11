@@ -30,6 +30,7 @@ from typing import Any
 from backend.services.cb_conditions import evaluate_conditions
 from backend.services.cb_metrics import enrich_cell, finite_number
 from backend.services.industry import industry_info_of
+from backend.services.cb_redeem_semantics import normalize_redeem_state
 
 # 强赎图标 → 中文标签
 _REDEEM_LABELS = {
@@ -154,6 +155,8 @@ def _enrich_rows(
         redeem_cell = redeem_map.get(_normalize_bond_code_6(cell.get("bond_id"))) \
             or redeem_map.get(str(cell.get("bond_id") or "").strip())
         enriched = enrich_cell(cell, redeem_cell)
+        enriched["redeem_state"] = normalize_redeem_state(redeem_cell)
+        enriched["redeem_status_code"] = enriched["redeem_state"]["status_code"]
         enriched["redeem_remain_days"] = finite_number(
             (redeem_cell or {}).get("redeem_remain_days")
         )
@@ -522,28 +525,21 @@ def format_redeem_status(bond_cell: dict[str, Any], redeem_cell: dict[str, Any] 
     优先用 redeem_cell 的精确计数, fallback 到 bond_cell 的 icons 标记。
     """
     if redeem_cell:
-        icon = redeem_cell.get("redeem_icon")
+        state = normalize_redeem_state(redeem_cell)
+        label = state["status_label"]
         # None 与 "" 同样视为缺失(ORM 快照列 NULL 与实时源空串同口径)
-        real = redeem_cell.get("redeem_real_days") or ""
-        need = redeem_cell.get("redeem_count_days") or ""
-        total = redeem_cell.get("redeem_total_days") or ""
+        real = state["trigger_days_met"] or ""
+        need = state["trigger_days_required"] or ""
+        total = state["trigger_window_days"] or ""
         count_str = f"{real}/{need} | {total}" if (real != "" and need != "") else ""
-
-        if icon == "R":
-            return "已公告强赎"
-        elif icon == "O":
-            return f"公告要强赎 {count_str}".strip()
-        elif icon == "G":
-            return "公告不强赎"
-        elif icon == "B":
-            return f"已满足强赎条件 {count_str}".strip()
-        elif count_str:
-            return count_str
+        if label:
+            if state["status_code"] == "TRIGGER_COUNTING" and state["trigger_days_remaining"] is not None:
+                return f"至少还需 {state['trigger_days_remaining']} 天 {count_str}".strip()
+            return f"{label} {count_str}".strip()
 
     icons = bond_cell.get("icons") or {}
-    for icon in ("R", "O", "G", "B"):
-        if icon in icons:
-            return _REDEEM_LABELS.get(icon, icon)
+    if any(icon in icons for icon in ("R", "O", "G", "B")):
+        return "强赎状态待同步"
     return ""
 
 

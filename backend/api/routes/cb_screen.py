@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -217,13 +218,23 @@ def _load_redeem_map(db: Session, as_of_date: Any) -> tuple[dict[str, dict[str, 
     ).all()
     result: dict[str, dict[str, Any]] = {}
     for r in rows:
+        try:
+            raw_redeem = json.loads(r.raw_json) if r.raw_json else {}
+        except (TypeError, ValueError):
+            raw_redeem = {}
         result[r.bond_id] = {
             "redeem_icon": r.redeem_icon,
+            "redeem_flag": r.redeem_flag,
             "redeem_remain_days": r.redeem_remain_days,
             "redeem_real_days": r.redeem_real_days,
             "redeem_count_days": r.redeem_count_days,
             "redeem_total_days": r.redeem_total_days,
             "redeem_price": r.redeem_price,
+            "redeem_dt": r.redeem_dt,
+            "recount_dt": r.recount_dt,
+            "delist_dt": r.delist_dt,
+            "force_redeem": r.force_redeem,
+            "real_force_redeem_price": raw_redeem.get("real_force_redeem_price"),
         }
     return result, latest
 

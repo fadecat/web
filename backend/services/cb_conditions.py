@@ -29,6 +29,7 @@ from backend.services.cb_metrics import finite_number
 _FIELD_CELL_KEYS: dict[str, str] = {
     "industry_code": "sw_cd",  # 申万原始行业码在 cell 上叫 sw_cd
     "code": "bond_id",         # 转债代码在 cell 上叫 bond_id
+    "redeem_status_code": "redeem_status_code",
 }
 
 # 空评级/空行业的枚举占位符(§4.4: 先归一为 NONE 再匹配)
