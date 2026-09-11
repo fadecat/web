@@ -76,6 +76,24 @@ def _to_dict(r: StockDividendDaily) -> dict[str, Any]:
     }
 
 
+def _latest_stmt(trade_date: str):
+    """某交易日的全量快照查询(排序: 股息率降序 + null 沉底 + stock_id 兜底)。
+
+    null 沉底用「IS NULL」布尔升序表达而非 NULLS LAST —— 后者需 SQLite ≥3.30,
+    ECS 系统库 3.26 会报 near "NULLS" 语法错(生产已踩); 契约测试会编译本语句
+    锁定可移植写法。
+    """
+    return (
+        select(StockDividendDaily)
+        .where(StockDividendDaily.trade_date == trade_date)
+        .order_by(
+            StockDividendDaily.dividend_rate.is_(None).asc(),
+            StockDividendDaily.dividend_rate.desc(),
+            StockDividendDaily.stock_id.asc(),
+        )
+    )
+
+
 def get_latest(db: Session, trade_date: str | None = None) -> list[dict[str, Any]]:
     """某交易日全量高股息快照(默认最新交易日), 按股息率降序、null 沉底。"""
     if not trade_date:
@@ -84,13 +102,5 @@ def get_latest(db: Session, trade_date: str | None = None) -> list[dict[str, Any
             return []
         trade_date = latest.isoformat()
 
-    stmt = (
-        select(StockDividendDaily)
-        .where(StockDividendDaily.trade_date == trade_date)
-        .order_by(
-            StockDividendDaily.dividend_rate.desc().nulls_last(),
-            StockDividendDaily.stock_id.asc(),
-        )
-    )
-    rows = db.scalars(stmt).all()
+    rows = db.scalars(_latest_stmt(trade_date)).all()
     return [_to_dict(r) for r in rows]

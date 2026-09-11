@@ -173,3 +173,14 @@ class TestStockDividendContract:
         data = contract_client.get(BASE).json()
         assert set(data[0].keys()) == EXPECTED_KEYS
         assert len(EXPECTED_KEYS) == 47
+
+    def test_order_by_sql_portable_no_nulls_last(self):
+        """排序 SQL 不得使用 NULLS LAST: 需 SQLite≥3.30, ECS 系统库 3.26
+        曾直接 500(near "NULLS" 语法错)。null 沉底必须走 IS NULL 布尔升序。"""
+        from sqlalchemy.dialects import sqlite
+
+        from backend.services.queries import stock_dividend as svc
+
+        sql = str(svc._latest_stmt("2026-09-11").compile(dialect=sqlite.dialect()))
+        assert "NULLS" not in sql.upper()
+        assert "IS NULL" in sql.upper()
