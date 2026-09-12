@@ -35,3 +35,23 @@ body {
 .bond-row-selected {
   background: #e6f7ff !important;
 }
+
+/* ---------- 深色模式(骨架期最小覆盖) ----------
+   语义色(温度四档/涨红跌绿/状态色)是数据编码, 刻意不随主题翻转。
+   数值对齐 Element Plus 暗色变量, 全面 token 化阶段再统一整理。 */
+html.dark {
+  color-scheme: dark;
+  --app-bg: var(--el-bg-color-page);
+}
+
+html.dark body {
+  color: var(--el-text-color-primary);
+}
+
+html.dark .page-card {
+  background: var(--el-bg-color);
+}
+
+html.dark .bond-row-selected {
+  background: var(--el-color-primary-light-9) !important;
+}

@@ -1,6 +1,8 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 import * as echarts from 'echarts';
+import { useThemeStore } from '../stores/theme';
+import { chartTheme } from '../utils/chartTheme';
 
 const props = defineProps({
   rows: {
@@ -19,8 +21,11 @@ const props = defineProps({
 
 const chartRef = ref(null);
 let chart = null;
+// 深浅色切换时重新 setOption(ECharts 无响应式主题, 见 utils/chartTheme.mjs)
+const theme = useThemeStore();
 
 const buildOption = () => {
+  const t = chartTheme(theme.isDark);
   const values = props.rows
     .map((r) => Number(r[props.field]))
     .filter((v) => !Number.isNaN(v));
@@ -48,7 +53,7 @@ const buildOption = () => {
     title: {
       text: props.title,
       left: 'center',
-      textStyle: { fontSize: 14, color: '#303133' },
+      textStyle: { fontSize: 14, color: t.labelStrong },
     },
     tooltip: { trigger: 'axis' },
     grid: { left: 40, right: 20, top: 50, bottom: 40 },
@@ -62,7 +67,7 @@ const buildOption = () => {
       {
         type: 'bar',
         data: buckets,
-        itemStyle: { color: '#409eff' },
+        itemStyle: { color: t.bar },
         barMaxWidth: 30,
       },
     ],
@@ -85,6 +90,9 @@ watch(
   () => nextTick(render),
   { deep: true },
 );
+
+// 深浅色切换 → 换 token 重绘(数据不变, 只有颜色变)
+watch(() => theme.isDark, () => nextTick(render));
 
 onMounted(() => {
   nextTick(render);

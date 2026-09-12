@@ -3,6 +3,7 @@
 // GET 与 PUT 使用独立 mock, 不访问真实后端。
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
+import { createPinia } from 'pinia';
 
 // mock API 模块: getSettings/saveSettings 分别可控行为
 vi.mock('../../src/api/index.js', () => ({
@@ -28,7 +29,8 @@ const SETTINGS_PAYLOAD = {
 };
 
 async function mountSettings() {
-  const wrapper = mount(Settings);
+  // 外观卡依赖主题 store(Pinia), 挂载需提供实例
+  const wrapper = mount(Settings, { global: { plugins: [createPinia()] } });
   await flushPromises();
   return wrapper;
 }

@@ -3,6 +3,8 @@ import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { use, init } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { LineChart } from 'echarts/charts';
+import { useThemeStore } from '../stores/theme';
+import { chartTheme } from '../utils/chartTheme';
 import {
   AxisPointerComponent,
   DataZoomComponent,
@@ -40,6 +42,8 @@ const chartRef = ref(null);
 let chart = null;
 let resizeObserver = null;
 let zrClickHandler = null;
+// 深浅色切换时重新 setOption(ECharts 无响应式主题, 见 utils/chartTheme.mjs)
+const theme = useThemeStore();
 
 const dates = computed(() => props.rows.map((r) => r.trade_date));
 const medianData = computed(() => props.rows.map((r) => r.median_price));
@@ -52,13 +56,14 @@ const isMobile = () => {
 };
 
 function buildOption() {
+  const t = chartTheme(theme.isDark);
   if (!props.rows.length) {
     return {
       title: {
         text: '暂无数据',
         left: 'center',
         top: 'middle',
-        textStyle: { color: '#9ca3af', fontSize: 15, fontWeight: 600 },
+        textStyle: { color: t.emptyText, fontSize: 15, fontWeight: 600 },
       },
       xAxis: [{ show: false }, { show: false }],
       yAxis: [{ show: false }, { show: false }],
@@ -73,6 +78,7 @@ function buildOption() {
   const symbolSize = single ? 8 : 0;
 
   // 选中日期竖线(非均线/分位, 仅定位); 两图各自绘制以保持可见
+  // 颜色 #94a3b8 对浅/深两种表面对比度均 >=3:1(dataviz 校验), 双模式共用不换档
   const selectedMarkLine = (axisIndex) =>
     props.selectedDate
       ? {
@@ -95,7 +101,7 @@ function buildOption() {
       itemWidth: 16,
       itemHeight: 9,
       itemGap: mobile ? 10 : 18,
-      textStyle: { color: '#4b5563', fontSize: mobile ? 10 : 12 },
+      textStyle: { color: t.labelLegend, fontSize: mobile ? 10 : 12 },
       data: ['价格中位数（元）', '平均到期收益率（集思录口径，%）'],
     },
     // 顶部图标题(单位明确, 颜色不是唯一识别)
@@ -104,22 +110,22 @@ function buildOption() {
         text: '价格中位数（元）',
         left: mobile ? 48 : 60,
         top: mobile ? 22 : 28,
-        textStyle: { color: '#2563eb', fontSize: mobile ? 10 : 12, fontWeight: 600 },
+        textStyle: { color: t.blue, fontSize: mobile ? 10 : 12, fontWeight: 600 },
       },
       {
         text: '平均到期收益率（集思录口径，%）',
         left: mobile ? 48 : 60,
         top: mobile ? 202 : 238,
-        textStyle: { color: '#ea580c', fontSize: mobile ? 10 : 12, fontWeight: 600 },
+        textStyle: { color: t.peOrange, fontSize: mobile ? 10 : 12, fontWeight: 600 },
       },
     ],
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'line', snap: true },
-      backgroundColor: 'rgba(255,255,255,0.96)',
-      borderColor: 'rgba(148,163,184,0.35)',
+      backgroundColor: t.tooltipBg,
+      borderColor: t.tooltipBorder,
       borderWidth: 1,
-      textStyle: { color: '#111827', fontSize: 12 },
+      textStyle: { color: t.tooltipText, fontSize: 12 },
       extraCssText: 'box-shadow: 0 8px 20px rgba(15,23,42,0.14); border-radius: 10px;',
       formatter: (params) => {
         if (!params || !params.length) return '';
@@ -153,13 +159,13 @@ function buildOption() {
         gridIndex: 1,
         boundaryGap: false,
         axisLabel: {
-          color: '#9ca3af',
+          color: t.axisLabel,
           fontSize: mobile ? 9 : 11,
           hideOverlap: true,
           showMinLabel: true,
           showMaxLabel: true,
         },
-        axisLine: { lineStyle: { color: '#e4e7ed' } },
+        axisLine: { lineStyle: { color: t.axisLine } },
         axisTick: { show: false },
       },
     ],
@@ -169,20 +175,20 @@ function buildOption() {
         gridIndex: 0,
         scale: true, // 自适应, 不固定 95-145
         name: '元',
-        nameTextStyle: { color: '#9ca3af', fontSize: mobile ? 9 : 11 },
-        axisLabel: { color: '#9ca3af', fontSize: mobile ? 9 : 11 },
+        nameTextStyle: { color: t.axisLabel, fontSize: mobile ? 9 : 11 },
+        axisLabel: { color: t.axisLabel, fontSize: mobile ? 9 : 11 },
         axisLine: { show: false },
-        splitLine: { lineStyle: { color: 'rgba(148,163,184,0.18)' } },
+        splitLine: { lineStyle: { color: t.splitLine } },
       },
       {
         type: 'value',
         gridIndex: 1,
         scale: true, // 不强制为正
         name: '%',
-        nameTextStyle: { color: '#9ca3af', fontSize: mobile ? 9 : 11 },
-        axisLabel: { color: '#9ca3af', fontSize: mobile ? 9 : 11 },
+        nameTextStyle: { color: t.axisLabel, fontSize: mobile ? 9 : 11 },
+        axisLabel: { color: t.axisLabel, fontSize: mobile ? 9 : 11 },
         axisLine: { show: false },
-        splitLine: { lineStyle: { color: 'rgba(148,163,184,0.18)' } },
+        splitLine: { lineStyle: { color: t.splitLine } },
       },
     ],
     // 底部共用缩放条, 作用于两个 xAxis
@@ -193,10 +199,10 @@ function buildOption() {
         xAxisIndex: [0, 1],
         bottom: mobile ? 4 : 8,
         height: 16,
-        borderColor: 'rgba(148,163,184,0.3)',
-        fillerColor: 'rgba(39,76,119,0.12)',
+        borderColor: t.zoomBorder,
+        fillerColor: t.zoomFiller,
         handleSize: '120%',
-        textStyle: { color: '#9ca3af', fontSize: 10 },
+        textStyle: { color: t.zoomText, fontSize: 10 },
       },
     ],
     series: [
@@ -210,8 +216,8 @@ function buildOption() {
         symbolSize,
         connectNulls: false, // 不补 0、不插值
         smooth: false,
-        lineStyle: { color: '#2563eb', width: 1.8 },
-        itemStyle: { color: '#2563eb' },
+        lineStyle: { color: t.blue, width: 1.8 },
+        itemStyle: { color: t.blue },
         markLine: selectedMarkLine(0),
       },
       {
@@ -224,8 +230,8 @@ function buildOption() {
         symbolSize,
         connectNulls: false,
         smooth: false,
-        lineStyle: { color: '#ea580c', width: 1.8, type: 'dashed' },
-        itemStyle: { color: '#ea580c' },
+        lineStyle: { color: t.peOrange, width: 1.8, type: 'dashed' },
+        itemStyle: { color: t.peOrange },
         markLine: selectedMarkLine(1),
       },
     ],
@@ -281,6 +287,9 @@ const onResize = () => {
 
 watch(() => props.rows, () => nextTick(() => render(true)), { deep: true });
 watch(() => props.selectedDate, () => nextTick(updateSelection));
+
+// 深浅色切换 → 换 token 重绘(数据不变, 只有颜色变)
+watch(() => theme.isDark, () => nextTick(() => render(true)));
 
 onMounted(() => {
   nextTick(() => {

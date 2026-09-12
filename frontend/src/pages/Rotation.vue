@@ -450,11 +450,11 @@ watch(
 
 .valuation-head strong {
   font-size: 15px;
-  color: #111827;
+  color: var(--el-text-color-primary);
 }
 
 .valuation-head span {
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
 }
 
@@ -466,13 +466,13 @@ watch(
 }
 .summary-item .label {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
   margin-bottom: 4px;
 }
 .summary-item .value {
   font-size: 18px;
   font-weight: 700;
-  color: #111827;
+  color: var(--el-text-color-primary);
 }
 .summary-item .value.positive {
   color: #dc2626;
@@ -524,7 +524,7 @@ watch(
 
 .filter-toggle {
   flex: 0 0 auto;
-  color: #98a2b3;
+  color: var(--el-text-color-secondary);
   font-size: 14px;
   transition: transform 0.2s ease;
 }
@@ -562,7 +562,7 @@ watch(
 
 .summary-chip .label {
   font-size: 11px;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
   margin-bottom: 3px;
   white-space: nowrap;
 }
@@ -570,7 +570,7 @@ watch(
 .summary-chip .value {
   font-size: 16px;
   font-weight: 700;
-  color: #111827;
+  color: var(--el-text-color-primary);
   white-space: nowrap;
 }
 
@@ -602,5 +602,14 @@ watch(
   .mobile-form :deep(.el-input-number) {
     width: 100% !important;
   }
+}
+
+/* ---------- 深色模式微调(中性色已走 EP 变量, 这里只补品牌色) ---------- */
+html.dark .filter-summary {
+  color: #a3c3e8;
+}
+
+html.dark .summary-chip {
+  background: rgba(147, 197, 253, 0.08);
 }
 </style>

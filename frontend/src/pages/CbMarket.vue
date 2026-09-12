@@ -323,11 +323,11 @@ onBeforeUnmount(() => {
   margin: 0;
   font-size: 17px;
   font-weight: 700;
-  color: #111827;
+  color: var(--el-text-color-primary);
 }
 .subtitle {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 .head-right {
   display: flex;
@@ -344,12 +344,12 @@ onBeforeUnmount(() => {
   text-decoration: underline;
 }
 .refresh-btn {
-  border: 1px solid #d1d5db;
-  background: #fff;
+  border: 1px solid var(--el-border-color);
+  background: var(--el-bg-color);
   border-radius: 8px;
   padding: 5px 14px;
   font-size: 13px;
-  color: #374151;
+  color: var(--el-text-color-regular);
   cursor: pointer;
 }
 .refresh-btn:disabled {
@@ -359,7 +359,7 @@ onBeforeUnmount(() => {
 
 .data-note {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 
 .banner {
@@ -385,7 +385,7 @@ onBeforeUnmount(() => {
 }
 .retry-btn {
   border: 1px solid #b91c1c;
-  background: #fff;
+  background: var(--el-bg-color);
   color: #b91c1c;
   border-radius: 6px;
   padding: 4px 12px;
@@ -429,7 +429,7 @@ onBeforeUnmount(() => {
 
 .empty-state {
   text-align: center;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
   font-size: 14px;
   padding: 40px 0;
   display: flex;
@@ -445,34 +445,34 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 .sum-item {
-  background: #fff;
-  border: 1px solid #eef2f7;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 12px;
   padding: 12px 14px;
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
 }
 .sum-label {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
   margin-bottom: 4px;
 }
 .sum-value {
   font-size: 20px;
   font-weight: 700;
-  color: #111827;
+  color: var(--el-text-color-primary);
   font-variant-numeric: tabular-nums;
 }
 .sum-date {
   margin-top: 3px;
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
   font-variant-numeric: tabular-nums;
 }
 
 /* 时间按钮 */
 .seg-group {
   display: inline-flex;
-  background: #f3f4f6;
+  background: var(--el-fill-color-light);
   border-radius: 8px;
   padding: 3px;
   gap: 2px;
@@ -484,20 +484,20 @@ onBeforeUnmount(() => {
   padding: 6px 14px;
   border-radius: 6px;
   font-size: 13px;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
   white-space: nowrap;
 }
 .seg-btn.active {
-  background: #fff;
-  color: #111827;
+  background: var(--el-bg-color);
+  color: var(--el-text-color-primary);
   font-weight: 600;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
 }
 .window-info {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
 }
 .window-info .hint {
   margin-left: 8px;
@@ -511,14 +511,14 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 .nav-btn {
-  border: 1px solid #d1d5db;
-  background: #fff;
+  border: 1px solid var(--el-border-color);
+  background: var(--el-bg-color);
   border-radius: 8px;
   width: 32px;
   height: 32px;
   font-size: 18px;
   line-height: 1;
-  color: #374151;
+  color: var(--el-text-color-regular);
   cursor: pointer;
   flex-shrink: 0;
 }
@@ -528,31 +528,31 @@ onBeforeUnmount(() => {
 }
 .read-text {
   font-size: 13px;
-  color: #374151;
+  color: var(--el-text-color-regular);
   flex: 1;
   font-variant-numeric: tabular-nums;
 }
 
 /* 口径 */
 .caliber {
-  border: 1px solid #eef2f7;
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 10px;
   padding: 10px 14px;
   font-size: 12px;
-  color: #6b7280;
-  background: #fafafa;
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color-light);
 }
 .caliber summary {
   cursor: pointer;
   font-weight: 600;
-  color: #4b5563;
+  color: var(--el-text-color-regular);
 }
 .caliber p {
   margin: 10px 0;
   line-height: 1.7;
 }
 .caliber code {
-  background: #eef2f7;
+  background: var(--el-fill-color);
   padding: 1px 5px;
   border-radius: 4px;
   font-size: 11px;
@@ -565,5 +565,18 @@ onBeforeUnmount(() => {
   .sum-value { font-size: 18px; }
   .sk-chart { height: 420px; }
   .sk-row { grid-template-columns: 1fr; }
+}
+
+/* ---------- 深色模式微调(语义色只提亮不换色相, 骨架屏换暗色微光) ---------- */
+html.dark .link-btn { color: #60a5fa; }
+html.dark .banner.error { background: rgba(248, 113, 113, 0.1); color: #f87171; }
+html.dark .banner.warn { background: rgba(251, 191, 36, 0.1); color: #fbbf24; }
+html.dark .banner.neutral { background: rgba(148, 163, 184, 0.12); color: #94a3b8; }
+html.dark .retry-btn { border-color: #f87171; color: #f87171; }
+html.dark .window-info .hint { color: #fbbf24; }
+html.dark .sk-card,
+html.dark .sk-chart {
+  background: linear-gradient(90deg, #1f2937, #374151, #1f2937);
+  background-size: 200% 100%;
 }
 </style>

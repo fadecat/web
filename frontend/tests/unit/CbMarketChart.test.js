@@ -3,6 +3,7 @@
 // date-select 事件有效、卸载释放。
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { shallowMount, flushPromises } from '@vue/test-utils';
+import { createPinia } from 'pinia';
 
 // jsdom 无 ResizeObserver, 提供空实现
 let resizeCallback = null;
@@ -70,6 +71,8 @@ async function mountChart(props = {}) {
   const wrapper = shallowMount(CbMarketChart, {
     props: { rows: ROWS, ...props },
     attachTo: document.body,
+    // 图表组件依赖主题 store(Pinia) 取配色 token
+    global: { plugins: [createPinia()] },
   });
   await flushPromises();
   return wrapper;

@@ -1,6 +1,8 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import { use, init } from 'echarts/core';
+import { useThemeStore } from '../stores/theme';
+import { chartTheme } from '../utils/chartTheme';
 import { CanvasRenderer } from 'echarts/renderers';
 import { LineChart } from 'echarts/charts';
 import {
@@ -36,6 +38,8 @@ const props = defineProps({
 
 const chartRef = ref(null);
 let chart = null;
+// 深浅色切换时重新 setOption(ECharts 无响应式主题, 见 utils/chartTheme.mjs)
+const theme = useThemeStore();
 
 const isMobile = () => window.innerWidth < 768;
 
@@ -69,7 +73,7 @@ const hasComparison = computed(() =>
   props.comparisonValues.some((v) => v != null && !Number.isNaN(v)),
 );
 
-function buildMarkLine() {
+function buildMarkLine(t) {
   const { p30, p50, p70 } = refLines.value;
   const base = {
     symbol: 'none',
@@ -82,9 +86,9 @@ function buildMarkLine() {
     },
   };
   const lines = [
-    { yAxis: p30, name: '30分位', lineStyle: { color: '#16a34a', type: 'dashed', width: 1 } },
-    { yAxis: p50, name: '中位值', lineStyle: { color: '#6b7280', type: 'dashed', width: 1 } },
-    { yAxis: p70, name: '70分位', lineStyle: { color: '#dc2626', type: 'dashed', width: 1 } },
+    { yAxis: p30, name: '30分位', lineStyle: { color: t.green, type: 'dashed', width: 1 } },
+    { yAxis: p50, name: '中位值', lineStyle: { color: t.medianGray, type: 'dashed', width: 1 } },
+    { yAxis: p70, name: '70分位', lineStyle: { color: t.red, type: 'dashed', width: 1 } },
   ];
   return {
     ...base,
@@ -96,13 +100,14 @@ function buildMarkLine() {
 }
 
 function buildOption() {
+  const t = chartTheme(theme.isDark);
   if (!props.dates.length) {
     return {
       title: {
         text: '暂无数据',
         left: 'center',
         top: 'middle',
-        textStyle: { color: '#9ca3af', fontSize: 15, fontWeight: 600 },
+        textStyle: { color: t.emptyText, fontSize: 15, fontWeight: 600 },
       },
       xAxis: [{ show: false }],
       yAxis: [{ show: false }],
@@ -122,10 +127,10 @@ function buildOption() {
       type: 'value',
       scale: true, // 不强制从 0 起, 否则 PE 波动被压平看不见
       name: comparison ? props.primaryUnit : '',
-      nameTextStyle: { color: '#9ca3af', fontSize: mobile ? 9 : 11, align: 'right' },
-      axisLabel: { color: '#9ca3af', fontSize: mobile ? 9 : 11 },
+      nameTextStyle: { color: t.axisLabel, fontSize: mobile ? 9 : 11, align: 'right' },
+      axisLabel: { color: t.axisLabel, fontSize: mobile ? 9 : 11 },
       axisLine: { show: false },
-      splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.18)' } },
+      splitLine: { lineStyle: { color: t.splitLine } },
     },
   ];
   if (comparison) {
@@ -134,8 +139,8 @@ function buildOption() {
       type: 'value',
       scale: true,
       name: props.comparisonUnit || '%',
-      nameTextStyle: { color: '#9ca3af', fontSize: mobile ? 9 : 11 },
-      axisLabel: { color: '#9ca3af', fontSize: mobile ? 9 : 11 },
+      nameTextStyle: { color: t.axisLabel, fontSize: mobile ? 9 : 11 },
+      axisLabel: { color: t.axisLabel, fontSize: mobile ? 9 : 11 },
       axisLine: { show: false },
       splitLine: { show: false },
     });
@@ -147,9 +152,9 @@ function buildOption() {
       data: props.values,
       symbol: 'none',
       connectNulls: true, // 个别日期缺数据时不断线
-      lineStyle: { width: 1.8, color: '#274c77' },
-      areaStyle: { color: 'rgba(39, 76, 119, 0.08)' },
-      markLine: buildMarkLine(),
+      lineStyle: { width: 1.8, color: t.navy },
+      areaStyle: { color: t.navyArea },
+      markLine: buildMarkLine(t),
     },
   ];
   if (comparison) {
@@ -161,7 +166,7 @@ function buildOption() {
       data: props.comparisonValues,
       symbol: 'none',
       connectNulls: false,
-      lineStyle: { width: 1.5, color: '#b45309', type: 'dashed' },
+      lineStyle: { width: 1.5, color: t.amber, type: 'dashed' },
     });
   }
   return {
@@ -169,10 +174,10 @@ function buildOption() {
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'line', snap: true },
-      backgroundColor: 'rgba(255, 255, 255, 0.96)',
-      borderColor: 'rgba(148, 163, 184, 0.35)',
+      backgroundColor: t.tooltipBg,
+      borderColor: t.tooltipBorder,
       borderWidth: 1,
-      textStyle: { color: '#111827', fontSize: 12 },
+      textStyle: { color: t.tooltipText, fontSize: 12 },
       extraCssText: 'box-shadow: 0 8px 20px rgba(15,23,42,0.14); border-radius: 10px;',
       formatter: (params) => {
         if (!params?.length) return '';
@@ -193,7 +198,7 @@ function buildOption() {
             itemWidth: 16,
             itemHeight: 9,
             itemGap: mobile ? 12 : 20,
-            textStyle: { color: '#4b5563', fontSize: mobile ? 10 : 12 },
+            textStyle: { color: t.labelLegend, fontSize: mobile ? 10 : 12 },
           }
         : undefined,
     grid: {
@@ -207,14 +212,14 @@ function buildOption() {
       data: props.dates,
       boundaryGap: false,
       axisLabel: {
-        color: '#9ca3af',
+        color: t.axisLabel,
         fontSize: mobile ? 9 : 11,
         hideOverlap: true,
         showMinLabel: true,
         showMaxLabel: true,
       },
       axisTick: { show: false },
-      axisLine: { lineStyle: { color: '#e4e7ed' } },
+      axisLine: { lineStyle: { color: t.axisLine } },
     },
     yAxis,
     dataZoom: [
@@ -237,7 +242,7 @@ function buildOption() {
                 top: 'middle',
                 style: {
                   text: '同期国债走势数据暂缺',
-                  fill: '#9ca3af',
+                  fill: t.emptyText,
                   fontSize: 12,
                 },
               },
@@ -277,6 +282,9 @@ watch(
   () => nextTick(render),
   { deep: true },
 );
+
+// 深浅色切换 → 换 token 重绘(数据不变, 只有颜色变)
+watch(() => theme.isDark, () => nextTick(render));
 
 onMounted(() => {
   nextTick(render);

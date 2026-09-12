@@ -5,6 +5,8 @@ import { CanvasRenderer } from 'echarts/renderers';
 import { LineChart } from 'echarts/charts';
 import { GridComponent, LegendComponent, MarkLineComponent, TooltipComponent } from 'echarts/components';
 import { emitHover, onHover, findClosestIndex } from '../utils/chartLink';
+import { useThemeStore } from '../stores/theme';
+import { chartTheme } from '../utils/chartTheme';
 
 use([CanvasRenderer, LineChart, GridComponent, LegendComponent, MarkLineComponent, TooltipComponent]);
 
@@ -21,6 +23,8 @@ const props = defineProps({
 
 // 上下两个独立 ECharts 实例: tooltip 是实例级的, 同实例两个 grid 的 showTip
 // 会互相覆盖(联动时只有一张图有数值框); 拆开实例各持 tooltip, 联动时同时显示
+// 深浅色切换时重新 setOption(ECharts 无响应式主题, 见 utils/chartTheme.mjs)
+const theme = useThemeStore();
 const topRef = ref(null);
 const bottomRef = ref(null);
 let topChart = null;
@@ -55,9 +59,10 @@ function alignClose(quoteRows, peRows) {
 }
 
 function buildOption(rows, closeRows, name, { showX }) {
+  const t = chartTheme(theme.isDark);
   if (!rows.length) {
     return {
-      title: { text: `${name}（无数据）`, left: '8%', top: 'middle', textStyle: { color: '#9ca3af', fontSize: 13 } },
+      title: { text: `${name}（无数据）`, left: '8%', top: 'middle', textStyle: { color: t.emptyText, fontSize: 13 } },
       xAxis: [{ show: false }],
       yAxis: [{ show: false }],
       series: [],
@@ -65,8 +70,8 @@ function buildOption(rows, closeRows, name, { showX }) {
   }
 
   // 配色简化(用户定版): 两图统一 指数=蓝 / PE=橘黄, 不再用红绿区分左右
-  const closeColor = '#185fa5';
-  const peColor = '#ea580c';
+  const closeColor = t.indexBlue;
+  const peColor = t.peOrange;
   const mobile = window.innerWidth < 768;
   const last = rows[rows.length - 1];
   const lastClose = closeRows.find((c) => c.date === last.trade_date)?.close;
@@ -102,20 +107,20 @@ function buildOption(rows, closeRows, name, { showX }) {
       itemWidth: 14,
       itemHeight: 2,
       icon: 'rect',
-      textStyle: { fontSize: mobile ? 10 : 11, color: '#475467' },
+      textStyle: { fontSize: mobile ? 10 : 11, color: t.labelTitle },
       // 两图各持 legend, 互不影响
     },
     title: {
       text: titleText,
       left: '8%',
       top: '10%',
-      textStyle: { fontSize: mobile ? 11 : 12, fontWeight: 600, color: '#475467' },
+      textStyle: { fontSize: mobile ? 11 : 12, fontWeight: 600, color: t.labelTitle },
     },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: 'rgba(255, 251, 245, 0.94)',
-      borderColor: 'rgba(148, 163, 184, 0.35)',
-      textStyle: { color: '#111827', fontSize: 11 },
+      backgroundColor: t.tooltipBgWarm,
+      borderColor: t.tooltipBorder,
+      textStyle: { color: t.tooltipText, fontSize: 11 },
       formatter(params) {
         const list = Array.isArray(params) ? params : [params];
         const date = list[0]?.data?.date || list[0]?.axisValueLabel || '';
@@ -131,7 +136,7 @@ function buildOption(rows, closeRows, name, { showX }) {
       min: axisMin,
       max: axisMax,
       show: showX, // 上图隐藏 x 轴(与下图共享时间范围), 下图显示
-      axisLabel: { fontSize: 10, color: '#6b7280', hideOverlap: true, showMinLabel: true, showMaxLabel: true, formatter: timeLabel },
+      axisLabel: { fontSize: 10, color: t.axisName, hideOverlap: true, showMinLabel: true, showMaxLabel: true, formatter: timeLabel },
     },
     yAxis: [
       {
@@ -145,10 +150,10 @@ function buildOption(rows, closeRows, name, { showX }) {
         // 右轴: PE(估值辅助)
         type: 'value',
         name: 'PE',
-        nameTextStyle: { fontSize: 10, color: '#6b7280' },
+        nameTextStyle: { fontSize: 10, color: t.axisName },
         scale: true,
         axisLabel: { fontSize: 10, color: peColor },
-        splitLine: { show: true, lineStyle: { color: 'rgba(148, 163, 184, 0.2)' } },
+        splitLine: { show: true, lineStyle: { color: t.splitLineStrong } },
       },
     ],
     series: [
@@ -261,6 +266,9 @@ watch(
   () => render(),
   { deep: true },
 );
+
+// 深浅色切换 → 换 token 重绘(数据不变, 只有颜色变)
+watch(() => theme.isDark, () => render());
 </script>
 
 <template>

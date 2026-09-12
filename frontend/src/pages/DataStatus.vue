@@ -633,7 +633,7 @@ onBeforeUnmount(() => {
   margin: 0 0 10px;
 }
 .hint {
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 .hint.sub {
@@ -654,7 +654,7 @@ onBeforeUnmount(() => {
 }
 .chk {
   font-size: 12px;
-  color: #4b5563;
+  color: var(--el-text-color-regular);
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -663,7 +663,7 @@ onBeforeUnmount(() => {
   margin-left: auto;
 }
 .card {
-  background: #fff;
+  background: var(--el-bg-color);
   border: 1px solid rgba(148, 163, 184, 0.25);
   border-radius: 10px;
   padding: 12px 14px;
@@ -683,17 +683,17 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 .caret {
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
 }
 .name {
   font-size: 14px;
   font-weight: 600;
-  color: #1f2937;
+  color: var(--el-text-color-primary);
 }
 .code {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 .idx-actions {
   display: flex;
@@ -703,7 +703,7 @@ onBeforeUnmount(() => {
 }
 .switch {
   font-size: 12px;
-  color: #4b5563;
+  color: var(--el-text-color-regular);
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -718,10 +718,10 @@ onBeforeUnmount(() => {
   padding: 5px 0;
   border-top: 1px dashed rgba(148, 163, 184, 0.22);
   font-size: 12px;
-  color: #4b5563;
+  color: var(--el-text-color-regular);
 }
 .ds-row.sub {
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
   font-size: 11px;
 }
 .ds-name {
@@ -733,7 +733,7 @@ onBeforeUnmount(() => {
 }
 .ds-src {
   width: 110px;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
 }
 .ds-date {
   width: 96px;
@@ -742,7 +742,7 @@ onBeforeUnmount(() => {
 }
 .ds-empty {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
   padding: 4px 0;
 }
 .ds-detail {
@@ -751,7 +751,7 @@ onBeforeUnmount(() => {
 .group-title {
   font-size: 13px;
   font-weight: 500;
-  color: #374151;
+  color: var(--el-text-color-regular);
   margin: 14px 0 8px;
 }
 .badge {
@@ -779,7 +779,7 @@ onBeforeUnmount(() => {
 }
 .badge.none {
   background: #f1efe8;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
 }
 .badge.run {
   background: #e6f1fb;
@@ -801,7 +801,7 @@ onBeforeUnmount(() => {
   gap: 4px 14px;
   margin-top: 5px;
   font-size: 11px;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
 }
 .job-error {
   margin: 6px 0 0;
@@ -814,7 +814,7 @@ onBeforeUnmount(() => {
   padding: 4px 0;
   border-top: 1px dashed rgba(148, 163, 184, 0.22);
   font-size: 12px;
-  color: #4b5563;
+  color: var(--el-text-color-regular);
 }
 .log-job {
   flex: 1;
@@ -827,16 +827,16 @@ onBeforeUnmount(() => {
   width: 96px;
   text-align: right;
   font-variant-numeric: tabular-nums;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
 }
 .log-dur {
   width: 70px;
   text-align: right;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
 }
 .src-card .src-count {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
 }
 .dlg {
   display: flex;
@@ -851,7 +851,7 @@ onBeforeUnmount(() => {
 .dlg-row label {
   width: 44px;
   font-size: 13px;
-  color: #4b5563;
+  color: var(--el-text-color-regular);
   flex-shrink: 0;
 }
 .dlg-row :deep(.el-input),
@@ -872,7 +872,7 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 .cap-row label.disabled {
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 .cap-st {
   font-size: 11px;
@@ -882,11 +882,11 @@ onBeforeUnmount(() => {
   color: #a32d2d;
 }
 .cap-st.off {
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 .cap-ov {
   font-size: 11px;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
   padding: 0 0 4px 24px;
 }
 .dlg-tip {
@@ -904,6 +904,23 @@ onBeforeUnmount(() => {
   color: #854f0b;
   background: #faeeda;
 }
+
+/* ---------- 深色模式微调(状态徽章/提示条只提亮不换色相) ---------- */
+html.dark .notice-bar {
+  background: rgba(103, 194, 58, 0.15);
+  border-color: rgba(149, 212, 117, 0.3);
+  color: #95d475;
+}
+html.dark .bad-text { color: #f87171; }
+html.dark .badge.ok { background: rgba(103, 194, 58, 0.15); color: #95d475; }
+html.dark .badge.warn { background: rgba(251, 191, 36, 0.12); color: #fbbf24; }
+html.dark .badge.bad { background: rgba(248, 113, 113, 0.12); color: #f87171; }
+html.dark .badge.none { background: rgba(148, 163, 184, 0.12); }
+html.dark .badge.run { background: rgba(96, 165, 250, 0.12); color: #60a5fa; }
+html.dark .cap-st { color: #95d475; }
+html.dark .cap-st.err { color: #f87171; }
+html.dark .dlg-msg { color: #95d475; background: rgba(103, 194, 58, 0.15); }
+html.dark .dlg-msg.warn { color: #fbbf24; background: rgba(251, 191, 36, 0.12); }
 
 /* 移动端: 工具栏换行, 列宽收窄 */
 @media (max-width: 767px) {

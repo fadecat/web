@@ -2,6 +2,8 @@
 import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import { use, init } from 'echarts/core';
 import { emitHover, onHover, findClosestIndex } from '../utils/chartLink';
+import { useThemeStore } from '../stores/theme';
+import { chartTheme } from '../utils/chartTheme';
 import { CanvasRenderer } from 'echarts/renderers';
 import { LineChart } from 'echarts/charts';
 import {
@@ -35,6 +37,8 @@ const props = defineProps({
 
 const chartRef = ref(null);
 let chart = null;
+// 深浅色切换时重新 setOption(ECharts 无响应式主题, 见 utils/chartTheme.mjs)
+const theme = useThemeStore();
 
 // 三图联动: 悬停时按时间戳在 spread 与 PE 图间同步十字轴(详见 utils/chartLink.js)
 let masterTimestamps = []; // 当前数据的横轴时间戳缓存(与 series 数据同序)
@@ -114,6 +118,7 @@ function buildDefaultZoomRange(length) {
 }
 
 function buildOption() {
+  const t = chartTheme(theme.isDark);
   const data = props.data;
   if (!data) {
     return {
@@ -121,7 +126,7 @@ function buildOption() {
         text: '暂无图表数据',
         left: 'center',
         top: 'middle',
-        textStyle: { color: '#6b7280', fontSize: 18, fontWeight: 600 },
+        textStyle: { color: t.axisName, fontSize: 18, fontWeight: 600 },
       },
       xAxis: [{ show: false }],
       yAxis: [{ show: false }],
@@ -160,7 +165,7 @@ function buildOption() {
         text: '收益差值(spread) %',
         top: '4%',
         left: gridLeft,
-        textStyle: { fontSize: mobile ? 12 : 13, fontWeight: 700, color: '#475467' },
+        textStyle: { fontSize: mobile ? 12 : 13, fontWeight: 700, color: t.labelTitle },
       },
       {
         text: mobile
@@ -168,7 +173,7 @@ function buildOption() {
           : `左 ${leftLabel}  spread ${summary.latest_spread}  MA ${summary.latest_ma}`,
         top: '11%',
         left: gridLeft,
-        textStyle: { fontSize: mobile ? 11 : 12, fontWeight: 600, color: '#475467' },
+        textStyle: { fontSize: mobile ? 11 : 12, fontWeight: 600, color: t.labelTitle },
       },
     ],
     legend: {
@@ -176,7 +181,7 @@ function buildOption() {
       left: 'center',
       itemWidth: mobile ? 10 : 12,
       itemHeight: mobile ? 10 : 12,
-      textStyle: { color: '#475467', fontSize: mobile ? 10 : 12, fontWeight: 600 },
+      textStyle: { color: t.labelTitle, fontSize: mobile ? 10 : 12, fontWeight: 600 },
       type: mobile ? 'scroll' : 'plain',
       pageIconSize: 10,
       data: [
@@ -193,12 +198,12 @@ function buildOption() {
       axisPointer: {
         type: 'cross',
         snap: true,
-        label: { backgroundColor: '#d1d5db', color: '#111827' },
+        label: { backgroundColor: t.pointerLabelBg, color: t.pointerLabelText },
       },
-      backgroundColor: 'rgba(255, 251, 245, 0.94)',
-      borderColor: 'rgba(148, 163, 184, 0.35)',
+      backgroundColor: t.tooltipBgWarm,
+      borderColor: t.tooltipBorder,
       borderWidth: 1,
-      textStyle: { color: '#111827' },
+      textStyle: { color: t.tooltipText },
       extraCssText:
         'box-shadow: 0 18px 36px rgba(15, 23, 42, 0.16); border-radius: 14px; padding: 10px 12px;',
     },
@@ -212,8 +217,8 @@ function buildOption() {
         height: 18,
         start: zoomRange.start,
         end: zoomRange.end,
-        borderColor: 'rgba(148, 163, 184, 0.32)',
-        fillerColor: 'rgba(39, 76, 119, 0.12)',
+        borderColor: t.zoomBorder,
+        fillerColor: t.zoomFiller,
         // 手机端隐藏 ECharts 自绘滑块——它按桌面鼠标设计: 触控目标小于 44px 人体工学标准、
         // 手柄/窗口/刷选三种手势挤一条窄条、按下手柄会跳变。
         // 替代方案: 组件模板里的原生双滑杆(见 rangeMin/leftPct 注释)
@@ -241,7 +246,7 @@ function buildOption() {
         min: axisMin,
         max: axisMax,
         axisLabel: {
-          color: '#667085',
+          color: t.axisLabelAlt,
           hideOverlap: true,
           showMinLabel: true,
           showMaxLabel: true,
@@ -257,7 +262,7 @@ function buildOption() {
           },
         },
         axisTick: { show: false },
-        axisLine: { lineStyle: { color: '#cbd5e1' } },
+        axisLine: { lineStyle: { color: t.axisLineStrong } },
       },
     ],
     yAxis: [
@@ -269,9 +274,9 @@ function buildOption() {
         nameGap: mobile ? 28 : 38,
         nameFontSize: mobile ? 10 : 12,
         scale: true,
-        axisLabel: { color: '#667085', fontSize: mobile ? 9 : 11 },
+        axisLabel: { color: t.axisLabelAlt, fontSize: mobile ? 9 : 11 },
         axisLine: { show: false },
-        splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.18)' } },
+        splitLine: { lineStyle: { color: t.splitLine } },
       },
     ],
     series: [
@@ -283,7 +288,7 @@ function buildOption() {
         data: positiveArea.map((v, i) => [masterTimestamps[i], v]),
         symbol: 'none',
         lineStyle: { opacity: 0 },
-        areaStyle: { color: 'rgba(214, 67, 69, 0.22)' },
+        areaStyle: { color: t.redArea },
         tooltip: { show: false },
         z: 1,
       },
@@ -295,7 +300,7 @@ function buildOption() {
         data: negativeArea.map((v, i) => [masterTimestamps[i], v]),
         symbol: 'none',
         lineStyle: { opacity: 0 },
-        areaStyle: { color: 'rgba(29, 141, 87, 0.22)' },
+        areaStyle: { color: t.greenArea },
         tooltip: { show: false },
         z: 1,
       },
@@ -306,7 +311,7 @@ function buildOption() {
         yAxisIndex: 0,
         data: series.spread.map((v, i) => [masterTimestamps[i], v]),
         symbol: 'none',
-        lineStyle: { width: 1.8, color: '#1f2937' },
+        lineStyle: { width: 1.8, color: t.ink },
         z: 4,
       },
       {
@@ -316,7 +321,7 @@ function buildOption() {
         yAxisIndex: 0,
         data: series.ma.map((v, i) => [masterTimestamps[i], v]),
         symbol: 'none',
-        lineStyle: { width: 1.6, type: 'dashed', color: '#f59e0b' },
+        lineStyle: { width: 1.6, type: 'dashed', color: t.maAmber },
         z: 4,
       },
       {
@@ -326,7 +331,7 @@ function buildOption() {
         yAxisIndex: 0,
         data: globalP90.map((v, i) => [masterTimestamps[i], v]),
         symbol: 'none',
-        lineStyle: { width: 1.2, type: 'dashed', color: '#dc2626' },
+        lineStyle: { width: 1.2, type: 'dashed', color: t.red },
         z: 3,
       },
       {
@@ -336,7 +341,7 @@ function buildOption() {
         yAxisIndex: 0,
         data: globalP10.map((v, i) => [masterTimestamps[i], v]),
         symbol: 'none',
-        lineStyle: { width: 1.2, type: 'dashed', color: '#16a34a' },
+        lineStyle: { width: 1.2, type: 'dashed', color: t.green },
         z: 3,
       },
     ],
@@ -384,6 +389,9 @@ const onResize = () => {
 };
 
 watch(() => props.data, () => nextTick(render), { deep: true });
+
+// 深浅色切换 → 换 token 重绘(数据不变, 只有颜色变)
+watch(() => theme.isDark, () => nextTick(render));
 
 // 收到外部联动时间戳(来自 PE 图): 按时间戳定位本图最近 index, dispatch showTip 显示十字轴
 function applyExternalHover(ts) {
@@ -516,7 +524,7 @@ onBeforeUnmount(() => {
   background: rgba(39, 76, 119, 0.18);
 }
 
-/* 手柄: 22px 圆钮, 深蓝底白边, 与图表配色一致 */
+/* 手柄: 22px 圆钮, 深蓝底白边, 与图表配色一致(深色下边框随卡片底色) */
 .range-input::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
@@ -525,7 +533,7 @@ onBeforeUnmount(() => {
   margin-top: -8px;      /* (轨道6 - 手柄22)/2, 垂直居中 */
   border-radius: 50%;
   background: #274c77;
-  border: 2px solid #ffffff;
+  border: 2px solid var(--el-bg-color);
   box-shadow: 0 1px 4px rgba(15, 23, 42, 0.35);
 }
 
@@ -534,7 +542,22 @@ onBeforeUnmount(() => {
   height: 22px;
   border-radius: 50%;
   background: #274c77;
-  border: 2px solid #ffffff;
+  border: 2px solid var(--el-bg-color);
   box-shadow: 0 1px 4px rgba(15, 23, 42, 0.35);
+}
+
+/* ---------- 深色模式: 滑杆跟随图表深色档 token ---------- */
+html.dark .slider-label {
+  color: #cfd3dc;
+}
+
+html.dark .range-input::-webkit-slider-runnable-track,
+html.dark .range-input::-moz-range-track {
+  background: rgba(67, 144, 214, 0.28);
+}
+
+html.dark .range-input::-webkit-slider-thumb,
+html.dark .range-input::-moz-range-thumb {
+  background: #3d7ab8;
 }
 </style>

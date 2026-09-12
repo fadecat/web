@@ -249,17 +249,17 @@ onBeforeUnmount(() => {
   margin: 0;
   font-size: 17px;
   font-weight: 700;
-  color: #111827;
+  color: var(--el-text-color-primary);
 }
 
 .subtitle {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 
 .update-time {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 
 /* ---- 指数单元格: 名称在上, 代码灰色小字在下(对齐转债页"可转债"列风格) ---- */
@@ -272,12 +272,12 @@ onBeforeUnmount(() => {
 .index-name {
   font-size: 13px;
   font-weight: 600;
-  color: #111827;
+  color: var(--el-text-color-primary);
 }
 
 .index-code {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 
 /* 股债差单元格: 当前值在上, 5年分位灰色小字在下 */
@@ -290,13 +290,13 @@ onBeforeUnmount(() => {
 .eb-value {
   font-size: 13px;
   font-weight: 600;
-  color: #111827;
+  color: var(--el-text-color-primary);
   font-variant-numeric: tabular-nums;
 }
 
 .eb-pct {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 
 .judge-tag {
@@ -316,7 +316,7 @@ onBeforeUnmount(() => {
 
 .empty-hint {
   font-size: 13px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 
 /* ---- 移动端卡片 ---- */
@@ -327,7 +327,7 @@ onBeforeUnmount(() => {
 }
 
 .val-card {
-  background: #fff;
+  background: var(--el-bg-color);
   border-radius: 12px;
   padding: 12px 14px;
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
@@ -369,7 +369,7 @@ onBeforeUnmount(() => {
 
 .metric .m-label {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
   margin-bottom: 2px;
   white-space: nowrap;
 }
@@ -377,7 +377,7 @@ onBeforeUnmount(() => {
 .metric .m-value {
   font-size: 13px;
   font-weight: 700;
-  color: #111827;
+  color: var(--el-text-color-primary);
   font-variant-numeric: tabular-nums;
 }
 

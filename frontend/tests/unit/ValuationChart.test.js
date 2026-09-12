@@ -2,6 +2,7 @@
 // 覆盖右轴单位、tooltip 双值、null 缺口、主指标分位不受对照线影响、移除对照序列后恢复单轴。
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { shallowMount, flushPromises } from '@vue/test-utils';
+import { createPinia } from 'pinia';
 
 // ECharts 模拟: 只验证 buildOption 产物, 不渲染真实 canvas
 const setOptionMock = vi.fn();
@@ -44,6 +45,8 @@ async function mountChart(props) {
       ...props,
     },
     attachTo: document.body,
+    // 图表组件依赖主题 store(Pinia) 取配色 token
+    global: { plugins: [createPinia()] },
   });
   await flushPromises();
   return wrapper;

@@ -1,6 +1,14 @@
 <script setup>
-import { ref, reactive, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted } from 'vue';
 import { getSettings, saveSettings, sendTestMail } from '../api';
+import { useThemeStore } from '../stores/theme';
+
+// 外观: 三态(浅色/深色/跟随系统), 本地即时生效, 读写见 stores/theme.js
+const theme = useThemeStore();
+const themeMode = computed({
+  get: () => theme.mode,
+  set: (v) => theme.setMode(v),
+});
 
 const loading = ref(true);
 const saving = ref(false);
@@ -107,6 +115,22 @@ onMounted(load);
     <div class="page-head">
       <h2>系统设置</h2>
       <span v-if="message" class="msg" :class="messageCls">{{ message }}</span>
+    </div>
+
+    <!-- 外观(本地偏好, 不走后端配置, 加载失败也不受影响) -->
+    <div class="card appearance-card">
+      <div class="card-head">
+        <div class="card-title">外观</div>
+      </div>
+      <p class="desc">
+        深浅色主题仅保存在当前浏览器, 与邮件等其他设置互不影响;
+        「跟随系统」时随操作系统外观自动切换(顶栏 🌙/☀️ 按钮为快速切换)。
+      </p>
+      <el-radio-group v-model="themeMode">
+        <el-radio-button value="light">浅色</el-radio-button>
+        <el-radio-button value="dark">深色</el-radio-button>
+        <el-radio-button value="auto">跟随系统</el-radio-button>
+      </el-radio-group>
     </div>
 
     <p v-if="loading" class="hint">加载中...</p>
@@ -260,7 +284,7 @@ onMounted(load);
 }
 
 .hint {
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 
@@ -269,7 +293,7 @@ onMounted(load);
 }
 
 .card {
-  background: #fff;
+  background: var(--el-bg-color);
   border: 1px solid rgba(148, 163, 184, 0.25);
   border-radius: 10px;
   padding: 14px 16px;
@@ -308,17 +332,17 @@ onMounted(load);
 
 .sum-label {
   width: 110px;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
   flex-shrink: 0;
 }
 
 .sum-value {
-  color: #111827;
+  color: var(--el-text-color-primary);
   word-break: break-all;
 }
 
 .sum-value.muted {
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 
 .btn.sm {
@@ -329,7 +353,7 @@ onMounted(load);
 .desc {
   margin: 0 0 12px;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
   line-height: 1.6;
 }
 
@@ -342,7 +366,7 @@ onMounted(load);
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #4b5563;
+  color: var(--el-text-color-regular);
   margin-bottom: 4px;
 }
 
@@ -359,7 +383,7 @@ onMounted(load);
 
 .tag.none {
   background: #f1efe8;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 
 .input {
@@ -369,8 +393,8 @@ onMounted(load);
   border: 1px solid rgba(148, 163, 184, 0.45);
   border-radius: 6px;
   font-size: 13px;
-  background: #fff;
-  color: #111827;
+  background: var(--el-bg-color);
+  color: var(--el-text-color-primary);
 }
 
 .input:focus {
@@ -400,21 +424,33 @@ onMounted(load);
 }
 
 .btn.ghost {
-  background: #fff;
+  background: var(--el-bg-color);
   border: 1px solid rgba(59, 109, 17, 0.5);
   color: #3b6d11;
 }
 
 .btn.ghost:disabled {
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
   border-color: rgba(148, 163, 184, 0.4);
-  background: #f8f9fb;
+  background: var(--el-fill-color-light);
 }
 
 .note {
   margin: 10px 0 0;
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
   line-height: 1.6;
 }
+
+.appearance-card {
+  margin-bottom: 12px;
+}
+
+/* ---------- 深色模式微调(品牌绿/状态色只提亮不换色相) ---------- */
+html.dark .msg.ok { color: #95d475; }
+html.dark .msg.bad,
+html.dark .hint.bad-text { color: #f87171; }
+html.dark .tag.ok { background: rgba(103, 194, 58, 0.15); color: #95d475; }
+html.dark .tag.none { background: rgba(148, 163, 184, 0.12); }
+html.dark .btn.ghost { border-color: rgba(149, 212, 117, 0.5); color: #95d475; }
 </style>

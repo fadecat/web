@@ -1,8 +1,10 @@
 <script setup>
 import { ref, computed } from 'vue';
 import { useRoute } from 'vue-router';
+import { useThemeStore } from '../stores/theme';
 
 const route = useRoute();
+const theme = useThemeStore();
 const collapsed = ref(false);
 const mobileOpen = ref(false);
 
@@ -98,6 +100,12 @@ function onMenuClick(item) {
         <!-- 手机汉堡按钮 -->
         <button class="hamburger" @click="mobileOpen = !mobileOpen">☰</button>
         <h2 class="page-title">{{ currentTitle }}</h2>
+        <!-- 一键深浅切换: 图标示意点击后的目标态 -->
+        <button
+          class="theme-toggle"
+          :title="theme.isDark ? '切换到浅色模式' : '切换到深色模式'"
+          @click="theme.toggle()"
+        >{{ theme.isDark ? '☀️' : '🌙' }}</button>
       </header>
       <main class="content">
         <router-view />
@@ -244,6 +252,27 @@ function onMenuClick(item) {
   font-size: 17px;
   font-weight: 600;
   color: #303133;
+}
+
+.theme-toggle {
+  margin-left: auto;
+  border: none;
+  background: none;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+/* ---------- 深色模式(骨架期最小覆盖, token 化阶段统一整理) ---------- */
+html.dark .header {
+  background: var(--el-bg-color);
+  border-bottom-color: var(--el-border-color);
+}
+
+html.dark .hamburger,
+html.dark .page-title {
+  color: var(--el-text-color-primary);
 }
 
 .content {

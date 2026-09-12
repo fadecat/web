@@ -424,7 +424,7 @@ onBeforeUnmount(() => {
 .back-btn {
   align-self: flex-start;
   font-size: 13px;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
   padding-left: 0;
 }
 
@@ -445,12 +445,12 @@ onBeforeUnmount(() => {
   margin: 0;
   font-size: 18px;
   font-weight: 700;
-  color: #111827;
+  color: var(--el-text-color-primary);
 }
 
 .index-title .meta {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 
 /* ---- 判断区 ---- */
@@ -471,12 +471,12 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
   margin-bottom: 4px;
 }
 
 .cheaper-line b {
-  color: #111827;
+  color: var(--el-text-color-primary);
   font-size: 15px;
 }
 
@@ -487,8 +487,8 @@ onBeforeUnmount(() => {
   width: 15px;
   height: 15px;
   border-radius: 50%;
-  border: 1px solid #cbd5e1;
-  color: #9ca3af;
+  border: 1px solid var(--el-border-color);
+  color: var(--el-text-color-secondary);
   font-size: 10px;
   cursor: help;
 }
@@ -508,14 +508,14 @@ onBeforeUnmount(() => {
 
 .mb-item .mb-label {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
   margin-bottom: 3px;
 }
 
 .mb-item .mb-value {
   font-size: 16px;
   font-weight: 700;
-  color: #111827;
+  color: var(--el-text-color-primary);
   font-variant-numeric: tabular-nums;
 }
 
@@ -530,7 +530,7 @@ onBeforeUnmount(() => {
 
 .seg-group {
   display: inline-flex;
-  background: #f3f4f6;
+  background: var(--el-fill-color-light);
   border-radius: 8px;
   padding: 3px;
   gap: 2px;
@@ -543,15 +543,15 @@ onBeforeUnmount(() => {
   padding: 6px 14px;
   border-radius: 6px;
   font-size: 13px;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
   white-space: nowrap;
 }
 
 .seg-btn.active {
-  background: #fff;
-  color: #111827;
+  background: var(--el-bg-color);
+  color: var(--el-text-color-primary);
   font-weight: 600;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
 }
@@ -575,14 +575,14 @@ onBeforeUnmount(() => {
 
 .dy-label {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
   margin-bottom: 4px;
 }
 
 .dy-value {
   font-size: 26px;
   font-weight: 800;
-  color: #111827;
+  color: var(--el-text-color-primary);
   font-variant-numeric: tabular-nums;
 }
 
@@ -592,7 +592,7 @@ onBeforeUnmount(() => {
 
 .dy-vs {
   font-size: 13px;
-  color: #cbd5e1;
+  color: var(--el-text-color-placeholder);
 }
 
 .dy-bars {
@@ -611,13 +611,13 @@ onBeforeUnmount(() => {
 .bar-label {
   flex: 0 0 48px;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
 }
 
 .bar-track {
   flex: 1;
   height: 8px;
-  background: #f3f4f6;
+  background: var(--el-fill-color-light);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -633,7 +633,7 @@ onBeforeUnmount(() => {
   text-align: right;
   font-size: 12px;
   font-weight: 600;
-  color: #374151;
+  color: var(--el-text-color-regular);
   font-variant-numeric: tabular-nums;
 }
 
@@ -641,7 +641,7 @@ onBeforeUnmount(() => {
   margin: 14px 0 0;
   font-size: 11px;
   line-height: 1.6;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 
 /* ---- 移动端 ---- */
@@ -680,5 +680,10 @@ onBeforeUnmount(() => {
   .dy-value {
     font-size: 22px;
   }
+}
+
+/* ---------- 深色模式微调(中性色已走 EP 变量, 这里只补品牌色底) ---------- */
+html.dark .judge-block {
+  background: rgba(147, 197, 253, 0.07);
 }
 </style>

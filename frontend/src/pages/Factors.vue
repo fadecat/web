@@ -67,5 +67,5 @@ onBeforeRouteLeave(async()=>{if(!anyDirty.value)return true;try{await ElMessageB
  </div>
 </template>
 <style scoped>
-.workspace{min-width:0}.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}.toolbar>.el-select{width:260px}.toolbar>.el-input{width:220px}.status{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#909399}.status::before{content:'';width:6px;height:6px;border-radius:50%;background:#67c23a}.status.dirty::before{background:#e6a23c}.content{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin-top:16px;min-width:0}.el-alert{margin:10px 0}@media(max-width:767px){.toolbar>.el-select{width:100%}.toolbar{gap:6px}.actions>.el-radio-group{width:100%}}
+.workspace{min-width:0}.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}.toolbar>.el-select{width:260px}.toolbar>.el-input{width:220px}.status{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--el-text-color-secondary)}.status::before{content:'';width:6px;height:6px;border-radius:50%;background:#67c23a}.status.dirty::before{background:#e6a23c}.content{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin-top:16px;min-width:0}.el-alert{margin:10px 0}@media(max-width:767px){.toolbar>.el-select{width:100%}.toolbar{gap:6px}.actions>.el-radio-group{width:100%}}
 </style>
