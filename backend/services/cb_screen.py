@@ -31,6 +31,10 @@ from backend.services.cb_conditions import evaluate_conditions
 from backend.services.cb_metrics import enrich_cell, finite_number
 from backend.services.industry import industry_info_of
 from backend.services.cb_redeem_semantics import normalize_redeem_state
+from backend.services.state_owned_whitelist import (
+    enterprise_nature_map,
+    normalize_stock_code,
+)
 
 # 强赎图标 → 中文标签
 _REDEEM_LABELS = {
@@ -313,6 +317,12 @@ def _to_dto(
         "rank": rank,
         "code": c.get("bond_id", ""),
         "name": c.get("bond_nm", ""),
+        "stock_nm": c.get("stock_nm") or "",
+        "stock_id": c.get("stock_id") or "",
+        # 正股央国企标注(国资白名单命中;缺名单时为空串,不中断管线)
+        "enterprise_nature": enterprise_nature_map().get(
+            normalize_stock_code(c.get("stock_id")), ""
+        ),
         "industry_code": industry_code,
         "industry_name": info.get("industry_name"),
         "industry_level": info.get("industry_level"),
