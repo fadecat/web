@@ -12,7 +12,8 @@
 // ---------------------------------------------------------------------------
 
 /**
- * 25 列配置(对齐集思录展示列; 波动率/质押比例两列非会员账号恒无数据, 不复刻)。
+ * 20 列配置(对齐集思录展示列; 波动率/质押比例两列非会员账号恒无数据, 不复刻;
+ * 涨幅/成交额/5年平均股息率/双温度列按需求不展示, 但对应筛选条件保留)。
  * 元素: {field, label, width, align, fmt, pct?, sortKey?, className?, headerTip?, fixed?}
  *   fmt: 'num2'两位小数 | 'volume'千分位整数 | 'signed'正负着色 | 'temp'温度色阶 | 'text'
  *   pct: 单元格数值后追加 '%'
@@ -21,15 +22,10 @@ export const STOCK_DIVIDEND_COLUMNS = [
   { field: 'stock_id', label: '代码', width: 80, align: 'center', fmt: 'text', fixed: 'left' },
   { field: 'stock_nm', label: '名称', width: 110, align: 'left', fmt: 'text', fixed: 'left' },
   { field: 'price', label: '价格', width: 75, align: 'right', fmt: 'num2' },
-  { field: 'increase_rt', label: '涨幅', width: 80, align: 'right', fmt: 'signed', pct: true },
-  { field: 'volume', label: '成交额(万)', width: 95, align: 'right', fmt: 'volume' },
   { field: 'total_value', label: '总市值(亿)', width: 95, align: 'right', fmt: 'num2', headerTip: '按A股计价总市值(亿元)' },
   { field: 'float_value', label: '流通市值(亿)', width: 95, align: 'right', fmt: 'num2', headerTip: '按A股计价流通市值(亿元)' },
   { field: 'pe', label: 'PE-TTM', width: 80, align: 'right', fmt: 'num2' },
-  { field: 'pe_temperature', label: 'PE温度', width: 80, align: 'right', fmt: 'temp' },
   { field: 'pb', label: 'PB', width: 70, align: 'right', fmt: 'num2' },
-  { field: 'pb_temperature', label: 'PB温度', width: 80, align: 'right', fmt: 'temp' },
-  { field: 'aft_dividend', label: '5年平均股息率', width: 120, align: 'right', fmt: 'num2', pct: true, className: 'col-highlight', headerTip: '5年平均股息率=(5年累计每股分红÷5)/现价*100%; 其中5年累计每股分红=5年累计分红/现总股本' },
   { field: 'dividend_rate', label: '股息率TTM', width: 100, align: 'right', fmt: 'num2', pct: true, headerTip: '到前一交易日为止最近4个季报每股分红与当前股价的比值' },
   { field: 'dividend_rate2', label: '静态股息率', width: 100, align: 'right', fmt: 'num2', pct: true, headerTip: '上一自然年度收到的每股分红与当前股价的比值' },
   { field: 'roe', label: 'ROE', width: 75, align: 'right', fmt: 'num2', pct: true, headerTip: '最新年报ROE' },

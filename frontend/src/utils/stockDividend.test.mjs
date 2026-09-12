@@ -69,12 +69,17 @@ function formWith(over = {}) {
 // 列配置 / 常量
 // ---------------------------------------------------------------------------
 
-test('列配置: 恰 25 项, 字段唯一, 不含会员占位列(stdevry/pledge_rt)', () => {
-  assert.equal(STOCK_DIVIDEND_COLUMNS.length, 25);
+test('列配置: 恰 20 项, 字段唯一, 不含会员占位列与按需隐藏列', () => {
+  assert.equal(STOCK_DIVIDEND_COLUMNS.length, 20);
   const fields = STOCK_DIVIDEND_COLUMNS.map((c) => c.field);
-  assert.equal(new Set(fields).size, 25);
+  assert.equal(new Set(fields).size, 20);
+  // 会员占位列不复刻
   assert.equal(fields.includes('stdevry'), false);
   assert.equal(fields.includes('pledge_rt'), false);
+  // 按需求不展示(筛选条件仍保留)
+  for (const hidden of ['increase_rt', 'volume', 'pe_temperature', 'pb_temperature', 'aft_dividend']) {
+    assert.equal(fields.includes(hidden), false);
+  }
   // 每列必备骨架字段
   for (const c of STOCK_DIVIDEND_COLUMNS) {
     assert.equal(typeof c.field, 'string');
@@ -85,13 +90,12 @@ test('列配置: 恰 25 项, 字段唯一, 不含会员占位列(stdevry/pledge_
   }
 });
 
-test('列配置: 前两列代码/名称 fixed left, aft_dividend 黄底强调列存在', () => {
+test('列配置: 前两列代码/名称 fixed left, 股息率TTM 列存在', () => {
   assert.equal(STOCK_DIVIDEND_COLUMNS[0].field, 'stock_id');
   assert.equal(STOCK_DIVIDEND_COLUMNS[0].fixed, 'left');
   assert.equal(STOCK_DIVIDEND_COLUMNS[1].field, 'stock_nm');
   assert.equal(STOCK_DIVIDEND_COLUMNS[1].fixed, 'left');
-  const aft = STOCK_DIVIDEND_COLUMNS.find((c) => c.field === 'aft_dividend');
-  assert.equal(aft.className, 'col-highlight');
+  assert.equal(typeof STOCK_DIVIDEND_COLUMNS.find((c) => c.field === 'dividend_rate'), 'object');
 });
 
 test('默认排序 = 股息率TTM 降序, 分页档 20/50/100', () => {

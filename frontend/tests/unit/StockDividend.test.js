@@ -233,13 +233,17 @@ describe('StockDividend 页面状态闭环', () => {
     await flushPromises();
     const row = wrapper.vm.allRows[0];
     const byField = (f) => wrapper.vm.dynamicColumns.find((c) => c.field === f);
+    // 温度/涨幅/成交额列已隐藏: 用合成列对象直测分发函数(分支保留)
+    const tempCol = { field: 'pe_temperature', label: 'PE温度', fmt: 'temp' };
+    const incCol = { field: 'increase_rt', label: '涨幅', fmt: 'signed', pct: true };
+    const volCol = { field: 'volume', label: '成交额', fmt: 'volume' };
 
-    expect(wrapper.vm.cellText(row, byField('pe_temperature'))).toBe('80.00');
-    expect(wrapper.vm.cellClass(row, byField('pe_temperature'))).toBe('t-red');
-    expect(wrapper.vm.cellText(row, byField('increase_rt'))).toBe('+2.50%');
-    expect(wrapper.vm.cellClass(row, byField('increase_rt'))).toBe('up');
+    expect(wrapper.vm.cellText(row, tempCol)).toBe('80.00');
+    expect(wrapper.vm.cellClass(row, tempCol)).toBe('t-red');
+    expect(wrapper.vm.cellText(row, incCol)).toBe('+2.50%');
+    expect(wrapper.vm.cellClass(row, incCol)).toBe('up');
+    expect(wrapper.vm.cellText(row, volCol)).toBe('123,456');
     expect(wrapper.vm.cellText(row, byField('dividend_rate'))).toBe('—'); // null
-    expect(wrapper.vm.cellText(row, byField('volume'))).toBe('123,456');
     // pb_flag='Y' 走模板灰色分支(值本身照常格式化)
     expect(wrapper.vm.cellText(row, byField('pb'))).toBe('1.20');
   });
@@ -262,11 +266,14 @@ describe('StockDividend 页面状态闭环', () => {
     // 会员占位列不复刻(用户明确要求)
     expect(text).not.toContain('波动率');
     expect(text).not.toContain('质押');
+    // 按需求隐藏列不出现在表头(涨幅/成交额无筛选条件, 文本可判)
+    expect(text).not.toContain('涨幅');
+    expect(text).not.toContain('成交额');
     // 名称列徽标
     expect(wrapper.find('.badge-r').exists()).toBe(true);
     expect(wrapper.find('.audit-warn').exists()).toBe(true);
-    // 5年平均股息率黄底强调列
-    expect(wrapper.find('td.col-highlight').exists()).toBe(true);
+    // 5年平均股息率列已隐藏, 无黄底强调单元格
+    expect(wrapper.find('td.col-highlight').exists()).toBe(false);
     // 代码列外链(两行各有指向集思录个股页的链接)
     const hrefs = wrapper.findAll('.code-link').map((a) => a.attributes('href'));
     expect(hrefs).toEqual([

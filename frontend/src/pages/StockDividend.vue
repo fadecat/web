@@ -361,25 +361,17 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="stock-dividend-page">
-    <!-- 1. 标题 / 刷新 -->
+    <!-- 1. 数据说明 / 刷新(菜单已示页面名, 页内不再重复标题) -->
     <div class="page-head">
-      <div class="head-left">
-        <h3 class="title">高股息</h3>
-        <span class="subtitle">股票快照</span>
-      </div>
-      <div class="head-right">
-        <button class="refresh-btn" :disabled="loading" @click="loadData(true)">
-          {{ refreshing ? '刷新中…' : '刷新' }}
-        </button>
-      </div>
-    </div>
-
-    <!-- 2. 数据说明 + 刷新失败提示 -->
-    <div class="data-note">
-      <template v-if="asOfDate">
-        数据截至 {{ asOfDate }} · 来源：集思录股息率排行 · 成分：总市值≥200亿
-      </template>
-      <template v-else-if="!loading && !errorMsg">来源：集思录股息率排行 · 成分：总市值≥200亿</template>
+      <span class="data-note">
+        <template v-if="asOfDate">
+          数据截至 {{ asOfDate }} · 来源：集思录股息率排行 · 成分：总市值≥200亿
+        </template>
+        <template v-else-if="!loading && !errorMsg">来源：集思录股息率排行 · 成分：总市值≥200亿</template>
+      </span>
+      <button class="refresh-btn" :disabled="loading" @click="loadData(true)">
+        {{ refreshing ? '刷新中…' : '刷新' }}
+      </button>
     </div>
     <div v-if="refreshError" class="banner warn">
       刷新失败，已保留上次成功数据（截至 {{ asOfDate || '—' }}）。
@@ -666,26 +658,10 @@ onBeforeUnmount(() => {
 
 .page-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-}
-.head-left {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.title {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 700;
-  color: #111827;
-}
-.subtitle {
-  font-size: 12px;
-  color: #9ca3af;
 }
 .refresh-btn {
   border: 1px solid #d1d5db;
@@ -975,7 +951,6 @@ onBeforeUnmount(() => {
   }
 }
 @media (max-width: 767px) {
-  .title { font-size: 16px; }
   .filter-bar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
