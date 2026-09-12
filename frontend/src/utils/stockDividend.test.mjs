@@ -119,13 +119,13 @@ test('emptyForm: 全部未启用(markets 空/字符串空/阈值 null), 每次�
 
 test('sanitizeForm: 合法输入逐键透传, 缺失键回退 emptyForm 默认值', () => {
   const src = {
-    markets: ['sh'], industries: ['8011'], excludeIndustries: ['90', '11'], province: '北京',
+    markets: ['sh'], industries: ['8011'], excludeIndustries: ['90', '11'], provinces: ['北京'],
     peMax: 15, dividendMin: 3, soeOnly: true,
   };
   const f = sanitizeForm(src);
   assert.deepEqual(f, {
     ...emptyForm(),
-    markets: ['sh'], industries: ['8011'], excludeIndustries: ['90', '11'], province: '北京',
+    markets: ['sh'], industries: ['8011'], excludeIndustries: ['90', '11'], provinces: ['北京'],
     peMax: 15, dividendMin: 3, soeOnly: true,
   });
 });
@@ -250,11 +250,12 @@ test('行业与排除行业可并用: 先含后除', () => {
   );
 });
 
-test('省份筛选: 精确匹配; 空串不过滤; null 省份行在启用时被剔除', () => {
-  assert.equal(matchStock(baseRow(), formWith({ province: '北京' })), true);
-  assert.equal(matchStock(baseRow({ province: '上海' }), formWith({ province: '北京' })), false);
-  assert.equal(matchStock(baseRow({ province: null }), formWith({ province: '北京' })), false);
-  assert.equal(matchStock(baseRow({ province: null }), formWith({ province: '' })), true);
+test('省份筛选(多选): 任一精确命中即过(OR); 启用时 null 省份行被剔除', () => {
+  assert.equal(matchStock(baseRow(), formWith({ provinces: ['北京'] })), true);
+  assert.equal(matchStock(baseRow({ province: '上海' }), formWith({ provinces: ['北京'] })), false);
+  assert.equal(matchStock(baseRow({ province: '上海' }), formWith({ provinces: ['北京', '上海'] })), true);
+  assert.equal(matchStock(baseRow({ province: null }), formWith({ provinces: ['北京'] })), false);
+  assert.equal(matchStock(baseRow({ province: null }), formWith({ provinces: [] })), true);
 });
 
 test('仅国资筛选: soeOnly 启用时留有 enterprise_nature 的行, 空/缺失被剔除', () => {
@@ -343,7 +344,7 @@ test('多条件 AND 合取: 任一不满足即剔除', () => {
     baseRow({ stock_id: '000005', pe: 8, dividend_rate: 5, province: '北京' }), // 深市
   ];
   const ids = filterRows(rows, formWith({
-    markets: ['sh'], province: '北京', peMax: 10, dividendMin: 4,
+    markets: ['sh'], provinces: ['北京', '天津'], peMax: 10, dividendMin: 4,
   })).map((r) => r.stock_id);
   assert.deepEqual(ids, ['600001']);
 });

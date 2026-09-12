@@ -36,7 +36,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "markets": [],
                 "industries": [],
                 "excludeIndustries": [],
-                "province": "",
+                "provinces": [],
                 "peMax": 15,
                 "peTMax": 40,
                 "pbTMax": 40,

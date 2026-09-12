@@ -272,6 +272,7 @@ class TestDividendPresetsContract:
         assert form2["markets"] == []
         assert form2["industries"] == []
         assert form2["excludeIndustries"] == []
+        assert form2["provinces"] == []
 
         assert presets_file.exists()  # 落盘在测试产物目录
         assert contract_client.get(PRESETS_BASE).json() == cfg

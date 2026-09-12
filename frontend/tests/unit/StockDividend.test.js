@@ -177,7 +177,7 @@ describe('StockDividend 页面状态闭环', () => {
     expect(wrapper.vm.filteredRows.map((r) => r.stock_id)).toEqual(['600001']); // 12 超限, null 被滤
     expect(getStockDividendSnapshotMock).toHaveBeenCalledTimes(1); // 零新增请求
 
-    wrapper.vm.form.province = '北京';
+    wrapper.vm.form.provinces = ['北京'];
     await flushPromises();
     expect(wrapper.vm.filteredRows.map((r) => r.stock_id)).toEqual(['600001']);
     expect(getStockDividendSnapshotMock).toHaveBeenCalledTimes(1);
@@ -345,7 +345,7 @@ describe('StockDividend 页面状态闭环', () => {
       active_id: 'p1',
       presets: [
         { id: 'p1', name: '不限', form: {} },
-        { id: 'p2', name: '宽口径', form: { peMax: 99, province: '北京' } },
+        { id: 'p2', name: '宽口径', form: { peMax: 99, provinces: ['北京'] } },
       ],
     });
     const wrapper = await mountPage();
@@ -356,7 +356,7 @@ describe('StockDividend 页面状态闭环', () => {
     await flushPromises();
     expect(wrapper.vm.editingId).toBe('p2');
     expect(wrapper.vm.form.peMax).toBe(99);
-    expect(wrapper.vm.form.province).toBe('北京');
+    expect(wrapper.vm.form.provinces).toEqual(['北京']);
     expect(wrapper.vm.dirty).toBe(false);
   });
 
@@ -386,6 +386,30 @@ describe('StockDividend 页面状态闭环', () => {
     expect([...wrapper.vm.form.excludeIndustries].sort()).toEqual(['11', '80']);
     expect(wrapper.vm.excludeIndustriesAllSelected).toBe(true);
     expect(wrapper.vm.form.industries).toEqual([]); // 不串扰
+  });
+
+  it('地域一键沿海组合: 点选江苏+浙江+广东+福建, 再点清空', async () => {
+    getStockDividendSnapshotMock.mockResolvedValue([
+      makeRow({ stock_id: '600001', province: '江苏' }),
+      makeRow({ stock_id: '600002', province: '浙江' }),
+      makeRow({ stock_id: '600003', province: '广东' }),
+      makeRow({ stock_id: '600004', province: '福建' }),
+      makeRow({ stock_id: '600005', province: '北京' }),
+    ]);
+    const wrapper = await mountPage();
+    await flushPromises();
+    expect(wrapper.vm.provincesQuick).toBe(false);
+
+    wrapper.vm.toggleQuickProvinces();
+    await flushPromises();
+    expect(wrapper.vm.form.provinces).toEqual(['江苏', '浙江', '广东', '福建']);
+    expect(wrapper.vm.provincesQuick).toBe(true);
+    expect(wrapper.vm.filteredRows.map((r) => r.stock_id)).toEqual(['600001', '600002', '600003', '600004']);
+
+    wrapper.vm.toggleQuickProvinces();
+    await flushPromises();
+    expect(wrapper.vm.form.provinces).toEqual([]);
+    expect(wrapper.vm.filteredRows.length).toBe(5);
   });
 
   it('高级筛选计数: 收起状态下统计高级区激活条件数', async () => {

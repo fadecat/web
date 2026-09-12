@@ -55,7 +55,7 @@ export function emptyForm() {
     markets: [],
     industries: [],
     excludeIndustries: [],
-    province: '',
+    provinces: [],
     peMax: null,
     pbMax: null,
     peTMax: null,
@@ -93,7 +93,9 @@ export function sanitizeForm(input) {
   if (Array.isArray(src.excludeIndustries)) {
     f.excludeIndustries = src.excludeIndustries.filter((v) => typeof v === 'string' && v);
   }
-  if (typeof src.province === 'string') f.province = src.province;
+  if (Array.isArray(src.provinces)) {
+    f.provinces = src.provinces.filter((v) => typeof v === 'string' && v);
+  }
   for (const key of [
     'peMax', 'pbMax', 'peTMax', 'pbTMax', 'intDebtMax',
     'dividendMin', 'aftDividendMin', 'roeMin', 'roeAverageMin',
@@ -148,8 +150,9 @@ function inRange(v, min, max) {
  * - 数值筛选启用时字段为 null → 不命中(保守排除, 与源站一致);
  * - 负值正常参与比较(如 PE ≤ 10 时 -5 命中);
  * - 区间单边启用即开区间; min > max 按字面判定为空集;
- * - 行业/排除行业可多选(sw_cd 前缀匹配): 包含=任一命中即过(OR),
- *   排除=任一命中即剔(含整棵子树); sw_cd 为空的行: 包含启用时被拒, 排除不影响。
+ * - 行业/排除行业/地域均可多选(sw_cd 前缀 / 省份精确): 包含=任一命中即过
+ *   (OR), 排除=任一命中即剔(含整棵子树); sw_cd 为空的行: 包含启用时被拒,
+ *   排除不影响。
  */
 export function matchStock(row, form) {
   const f = form || emptyForm();
@@ -170,7 +173,10 @@ export function matchStock(row, form) {
     if (sw && f.excludeIndustries.some((p) => sw.startsWith(p))) return false;
   }
 
-  if (f.province && row.province !== f.province) return false;
+  // 地域多选: 任一精确命中即过(OR); 启用时 null 省份行被剔除
+  if (Array.isArray(f.provinces) && f.provinces.length > 0) {
+    if (!f.provinces.includes(row.province)) return false;
+  }
 
   // 仅国资白名单: 行缺少央国企标注(名单缺失或未命中)则不通过
   if (f.soeOnly && !row.enterprise_nature) return false;

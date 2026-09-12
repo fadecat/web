@@ -118,6 +118,17 @@ function toggleAllExcludeIndustries() {
   form.value.excludeIndustries = excludeIndustriesAllSelected.value ? [] : [...industryRootCodes.value];
 }
 
+// 地域一键选择: 常用沿海组合(江浙粤闽), 再点一次取消
+const QUICK_PROVINCES = ['江苏', '浙江', '广东', '福建'];
+const provincesQuick = computed(
+  () => form.value.provinces.length > 0
+    && form.value.provinces.every((p) => QUICK_PROVINCES.includes(p)),
+);
+
+function toggleQuickProvinces() {
+  form.value.provinces = provincesQuick.value ? [] : [...QUICK_PROVINCES];
+}
+
 const filteredRows = computed(() => filterRows(allRows.value, form.value));
 const sortedRows = computed(() => sortRows(filteredRows.value, sort.value));
 const pagedRows = computed(() =>
@@ -148,7 +159,7 @@ const advancedCount = computed(() => {
   if (f.markets.length) n += 1;
   if (f.industries.length) n += 1;
   if (f.excludeIndustries.length) n += 1;
-  if (f.province) n += 1;
+  if (f.provinces.length) n += 1;
   for (const k of ADVANCED_FORM_KEYS) if (f[k] != null) n += 1;
   if (f.floatValueMin != null || f.floatValueMax != null) n += 1;
   return n;
@@ -517,15 +528,21 @@ onBeforeUnmount(() => {
         <label class="f-item">
           <span class="f-label">地域</span>
           <el-select
-            v-model="form.province"
+            v-model="form.provinces"
             placeholder="不限"
             clearable
             filterable
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
             size="small"
             class="f-fill"
           >
             <el-option v-for="p in provinceOptions" :key="p" :label="p" :value="p" />
           </el-select>
+          <button type="button" class="mini-link" @click="toggleQuickProvinces">
+            {{ provincesQuick ? '清空' : '江浙粤闽' }}
+          </button>
         </label>
         <label v-for="f in ADVANCED_THRESHOLDS" :key="f.key" class="f-item">
           <span class="f-label">{{ f.label }}</span>
