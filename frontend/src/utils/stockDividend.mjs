@@ -53,8 +53,8 @@ export const PAGE_SIZES = [20, 50, 100];
 export function emptyForm() {
   return {
     markets: [],
-    industry: '',
-    excludeIndustry: '',
+    industries: [],
+    excludeIndustries: [],
     province: '',
     peMax: null,
     pbMax: null,
@@ -87,8 +87,12 @@ export function sanitizeForm(input) {
   if (Array.isArray(src.markets)) {
     f.markets = src.markets.filter((m) => m === 'sh' || m === 'sz');
   }
-  if (typeof src.industry === 'string') f.industry = src.industry;
-  if (typeof src.excludeIndustry === 'string') f.excludeIndustry = src.excludeIndustry;
+  if (Array.isArray(src.industries)) {
+    f.industries = src.industries.filter((v) => typeof v === 'string' && v);
+  }
+  if (Array.isArray(src.excludeIndustries)) {
+    f.excludeIndustries = src.excludeIndustries.filter((v) => typeof v === 'string' && v);
+  }
   if (typeof src.province === 'string') f.province = src.province;
   for (const key of [
     'peMax', 'pbMax', 'peTMax', 'pbTMax', 'intDebtMax',
@@ -144,8 +148,8 @@ function inRange(v, min, max) {
  * - 数值筛选启用时字段为 null → 不命中(保守排除, 与源站一致);
  * - 负值正常参与比较(如 PE ≤ 10 时 -5 命中);
  * - 区间单边启用即开区间; min > max 按字面判定为空集;
- * - 行业 = sw_cd 前缀匹配(选中任意层级即筛其整棵子树);
- *   排除行业同为前缀匹配, 命中子树则剔除(sw_cd 为空的行不受排除影响)。
+ * - 行业/排除行业可多选(sw_cd 前缀匹配): 包含=任一命中即过(OR),
+ *   排除=任一命中即剔(含整棵子树); sw_cd 为空的行: 包含启用时被拒, 排除不影响。
  */
 export function matchStock(row, form) {
   const f = form || emptyForm();
@@ -154,15 +158,16 @@ export function matchStock(row, form) {
     if (!f.markets.includes(marketOf(row.stock_id))) return false;
   }
 
-  if (f.industry) {
+  if (Array.isArray(f.industries) && f.industries.length > 0) {
     const sw = String(row.sw_cd || '');
-    if (!sw || !sw.startsWith(f.industry)) return false;
+    // 包含=多选任一命中即过(OR); sw_cd 为空的行在包含启用时被拒
+    if (!sw || !f.industries.some((p) => sw.startsWith(p))) return false;
   }
 
-  // 排除行业: sw_cd 前缀命中(任意层级, 含整棵子树)则剔除; sw_cd 为空的行不受影响
-  if (f.excludeIndustry) {
+  // 排除行业: 任一选中前缀命中(任意层级, 含整棵子树)即剔除; sw_cd 为空的行不受影响
+  if (Array.isArray(f.excludeIndustries) && f.excludeIndustries.length > 0) {
     const sw = String(row.sw_cd || '');
-    if (sw && sw.startsWith(f.excludeIndustry)) return false;
+    if (sw && f.excludeIndustries.some((p) => sw.startsWith(p))) return false;
   }
 
   if (f.province && row.province !== f.province) return false;

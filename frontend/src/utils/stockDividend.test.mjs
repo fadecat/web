@@ -103,12 +103,13 @@ test('emptyForm: 全部未启用(markets 空/字符串空/阈值 null), 每次�
   const a = emptyForm();
   a.peMax = 5;
   a.markets.push('sh');
-  a.industry = '80';
+  a.industries.push('80');
   a.soeOnly = true;
   const b = emptyForm();
   assert.equal(b.peMax, null);
   assert.deepEqual(b.markets, []);
-  assert.equal(b.industry, '');
+  assert.deepEqual(b.industries, []);
+  assert.deepEqual(b.excludeIndustries, []);
   assert.equal(b.soeOnly, false);
 });
 
@@ -118,13 +119,13 @@ test('emptyForm: 全部未启用(markets 空/字符串空/阈值 null), 每次�
 
 test('sanitizeForm: 合法输入逐键透传, 缺失键回退 emptyForm 默认值', () => {
   const src = {
-    markets: ['sh'], industry: '8011', excludeIndustry: '90', province: '北京',
+    markets: ['sh'], industries: ['8011'], excludeIndustries: ['90', '11'], province: '北京',
     peMax: 15, dividendMin: 3, soeOnly: true,
   };
   const f = sanitizeForm(src);
   assert.deepEqual(f, {
     ...emptyForm(),
-    markets: ['sh'], industry: '8011', excludeIndustry: '90', province: '北京',
+    markets: ['sh'], industries: ['8011'], excludeIndustries: ['90', '11'], province: '北京',
     peMax: 15, dividendMin: 3, soeOnly: true,
   });
 });
@@ -132,6 +133,7 @@ test('sanitizeForm: 合法输入逐键透传, 缺失键回退 emptyForm 默认�
 test('sanitizeForm: 未知键丢弃, 非法类型逐键回退(字符串数字/NaN/Infinity 不收)', () => {
   const f = sanitizeForm({
     markets: ['sh', 'bj', 3], // 'bj'/3 剔除, 'sh' 保留
+    industries: ['80', 42, null, ''], // 非字符串/空串剔除
     peMax: '15', // 字符串数字不收
     dividendMin: NaN,
     roeMin: Infinity,
@@ -139,6 +141,8 @@ test('sanitizeForm: 未知键丢弃, 非法类型逐键回退(字符串数字/Na
     evil: { hack: true }, // 未知键丢弃
   });
   assert.deepEqual(f.markets, ['sh']);
+  assert.deepEqual(f.industries, ['80']);
+  assert.equal(f.excludeIndustries.length, 0);
   assert.equal(f.peMax, null);
   assert.equal(f.dividendMin, null);
   assert.equal(f.roeMin, null);
@@ -199,44 +203,49 @@ test('市场筛选: 同时勾选 sh+sz 时北交所仍被剔除', () => {
   assert.deepEqual(ids, ['600001']);
 });
 
-test('行业筛选: sw_cd 前缀匹配任意层级(一级筛整棵子树), 其他行业不命中', () => {
+test('行业筛选(多选): 任一选中前缀命中即过(OR), 含整棵子树', () => {
   const row = baseRow({ sw_cd: '801160' });
-  assert.equal(matchStock(row, formWith({ industry: '80' })), true); // 一级
-  assert.equal(matchStock(row, formWith({ industry: '8011' })), true); // 二级
-  assert.equal(matchStock(row, formWith({ industry: '801160' })), true); // 三级
-  assert.equal(matchStock(row, formWith({ industry: '90' })), false); // 其他一级行业
+  assert.equal(matchStock(row, formWith({ industries: ['80'] })), true); // 一级
+  assert.equal(matchStock(row, formWith({ industries: ['8011'] })), true); // 二级
+  assert.equal(matchStock(row, formWith({ industries: ['801160'] })), true); // 三级
+  assert.equal(matchStock(row, formWith({ industries: ['90'] })), false); // 其他一级行业
+  // 多选 OR: 90(不中) + 8011(中) → 过
+  assert.equal(matchStock(row, formWith({ industries: ['90', '8011'] })), true);
+  assert.equal(matchStock(row, formWith({ industries: ['90', '11'] })), false);
 });
 
 test('行业筛选: sw_cd 为 null 的行被拒(防御, 与集思录空行业行一致)', () => {
   const row = baseRow({ sw_cd: null });
-  assert.equal(matchStock(row, formWith({ industry: '80' })), false);
+  assert.equal(matchStock(row, formWith({ industries: ['80'] })), false);
 });
 
-test('排除行业: sw_cd 前缀命中(任意层级含子树)则剔除, 空串不过滤', () => {
+test('排除行业(多选): 任一选中前缀命中(任意层级含子树)即剔除, 空串不过滤', () => {
   const row = baseRow({ sw_cd: '801160' }); // 交通运输-铁路公路-铁路运输
-  assert.equal(matchStock(row, formWith({ excludeIndustry: '80' })), false); // 一级整棵子树
-  assert.equal(matchStock(row, formWith({ excludeIndustry: '8011' })), false); // 二级
-  assert.equal(matchStock(row, formWith({ excludeIndustry: '801160' })), false); // 三级
-  assert.equal(matchStock(row, formWith({ excludeIndustry: '90' })), true); // 其他行业不受影响
-  assert.equal(matchStock(row, formWith({ excludeIndustry: '' })), true);
+  assert.equal(matchStock(row, formWith({ excludeIndustries: ['80'] })), false); // 一级整棵子树
+  assert.equal(matchStock(row, formWith({ excludeIndustries: ['8011'] })), false); // 二级
+  assert.equal(matchStock(row, formWith({ excludeIndustries: ['801160'] })), false); // 三级
+  assert.equal(matchStock(row, formWith({ excludeIndustries: ['90'] })), true); // 其他行业不受影响
+  // 多选: 只要一个命中即剔
+  assert.equal(matchStock(row, formWith({ excludeIndustries: ['90', '80'] })), false);
+  assert.equal(matchStock(row, formWith({ excludeIndustries: ['90', '11'] })), true);
   // sw_cd 为空的行不受排除影响(与「行业」包含条件的拒空行为相反)
-  assert.equal(matchStock(baseRow({ sw_cd: null }), formWith({ excludeIndustry: '80' })), true);
+  assert.equal(matchStock(baseRow({ sw_cd: null }), formWith({ excludeIndustries: ['80'] })), true);
 });
 
-test('排除行业与行业可并用: 先含后除, 交集为空时全剔除', () => {
+test('行业与排除行业可并用: 先含后除', () => {
   const rows = [
     baseRow({ stock_id: 'S1', sw_cd: '801160' }), // 交通运输-铁路运输
     baseRow({ stock_id: 'S2', sw_cd: '801170' }), // 交通运输-高铁
     baseRow({ stock_id: 'S3', sw_cd: '110000' }), // 能源
   ];
-  // 含 80 且排 8011 → 全剔
+  // 含 [80, 11] 且排 [8011] → 只剩能源
   assert.deepEqual(
-    filterRows(rows, formWith({ industry: '80', excludeIndustry: '8011' })).map((r) => r.stock_id),
-    [],
+    filterRows(rows, formWith({ industries: ['80', '11'], excludeIndustries: ['8011'] })).map((r) => r.stock_id),
+    ['S3'],
   );
-  // 含 80 且排 11 → 留交通运输两只
+  // 含 [80] 且排 [11] → 留交通运输两只
   assert.deepEqual(
-    filterRows(rows, formWith({ industry: '80', excludeIndustry: '11' })).map((r) => r.stock_id),
+    filterRows(rows, formWith({ industries: ['80'], excludeIndustries: ['11'] })).map((r) => r.stock_id),
     ['S1', 'S2'],
   );
 });

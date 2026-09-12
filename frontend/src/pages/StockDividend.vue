@@ -51,7 +51,7 @@ const ADVANCED_FORM_KEYS = [
   'profitAvgMin', 'epsGrowthTtmMin', 'cashflowAvgMin',
 ];
 
-const cascaderProps = { checkStrictly: true, emitPath: false };
+const cascaderProps = { checkStrictly: true, emitPath: false, multiple: true };
 
 // ---- 请求状态(复刻 CbMarket: reqToken 防竞态 + disposed) ----
 const loading = ref(false); // 首次加载(骨架)
@@ -98,6 +98,26 @@ const asOfDate = computed(() => allRows.value[0]?.trade_date || '');
 const industryOptions = computed(() => buildIndustryTree(allRows.value));
 const provinceOptions = computed(() => collectProvinceOptions(allRows.value));
 
+// 一级行业码(全选写入这些即可: 一级前缀本身覆盖整棵子树)
+const industryRootCodes = computed(() => industryOptions.value.map((o) => o.value));
+
+function allRootsChecked(arr) {
+  const roots = industryRootCodes.value;
+  return roots.length > 0 && roots.every((c) => arr.includes(c));
+}
+
+const industriesAllSelected = computed(() => allRootsChecked(form.value.industries));
+const excludeIndustriesAllSelected = computed(() => allRootsChecked(form.value.excludeIndustries));
+
+// 全选 ⇄ 清空(填入全部一级码即语义完备; 再点一次清空)
+function toggleAllIndustries() {
+  form.value.industries = industriesAllSelected.value ? [] : [...industryRootCodes.value];
+}
+
+function toggleAllExcludeIndustries() {
+  form.value.excludeIndustries = excludeIndustriesAllSelected.value ? [] : [...industryRootCodes.value];
+}
+
 const filteredRows = computed(() => filterRows(allRows.value, form.value));
 const sortedRows = computed(() => sortRows(filteredRows.value, sort.value));
 const pagedRows = computed(() =>
@@ -126,8 +146,8 @@ const advancedCount = computed(() => {
   const f = form.value;
   let n = 0;
   if (f.markets.length) n += 1;
-  if (f.industry) n += 1;
-  if (f.excludeIndustry) n += 1;
+  if (f.industries.length) n += 1;
+  if (f.excludeIndustries.length) n += 1;
   if (f.province) n += 1;
   for (const k of ADVANCED_FORM_KEYS) if (f[k] != null) n += 1;
   if (f.floatValueMin != null || f.floatValueMax != null) n += 1;
@@ -407,7 +427,8 @@ onBeforeUnmount(() => {
         </el-dropdown>
       </div>
 
-      <!-- 4. 筛选区: 邮件漏斗主条件常驻, 其余收进高级面板(本地过滤, 不发请求) -->
+      <!-- 4. 筛选区: 邮件漏斗主条件常驻(4 列网格, 对齐集思录表单式排版),
+           其余收进高级面板(本地过滤, 不发请求) -->
       <div class="filter-bar" :class="{ attached: advancedOpen }">
         <label v-for="f in PRIMARY_THRESHOLDS" :key="f.key" class="f-item">
           <span class="f-label">{{ f.label }}</span>
@@ -429,49 +450,83 @@ onBeforeUnmount(() => {
           <span class="f-label">仅国资</span>
           <el-switch v-model="form.soeOnly" size="small" />
         </label>
-        <el-button size="small" @click="resetForm">重置</el-button>
-        <span class="f-count">{{ sortedRows.length }} / {{ allRows.length }} 只</span>
-        <el-button size="small" text class="adv-toggle" @click="advancedOpen = !advancedOpen">
-          高级筛选{{ advancedCount ? `(${advancedCount})` : '' }}{{ advancedOpen ? ' ▴' : ' ▾' }}
-        </el-button>
+        <div class="f-actions">
+          <el-button size="small" @click="resetForm">重置</el-button>
+          <span class="f-count">{{ sortedRows.length }} / {{ allRows.length }} 只</span>
+          <el-button size="small" text class="adv-toggle" @click="advancedOpen = !advancedOpen">
+            高级筛选{{ advancedCount ? `(${advancedCount})` : '' }}{{ advancedOpen ? ' ▴' : ' ▾' }}
+          </el-button>
+        </div>
       </div>
 
       <!-- 高级筛选面板(默认收起; 有激活条件时切换按钮带计数) -->
       <div v-if="advancedOpen" class="filter-bar advanced">
-        <el-checkbox-group v-model="form.markets" size="small">
-          <el-checkbox value="sh">沪市</el-checkbox>
-          <el-checkbox value="sz">深市</el-checkbox>
-        </el-checkbox-group>
-        <el-cascader
-          v-model="form.industry"
-          :options="industryOptions"
-          :props="cascaderProps"
-          placeholder="行业"
-          clearable
-          filterable
-          size="small"
-          class="f-industry"
-        />
-        <el-cascader
-          v-model="form.excludeIndustry"
-          :options="industryOptions"
-          :props="cascaderProps"
-          placeholder="排除行业"
-          clearable
-          filterable
-          size="small"
-          class="f-industry"
-        />
-        <el-select
-          v-model="form.province"
-          placeholder="地域"
-          clearable
-          filterable
-          size="small"
-          class="f-province"
-        >
-          <el-option v-for="p in provinceOptions" :key="p" :label="p" :value="p" />
-        </el-select>
+        <div class="f-item">
+          <span class="f-label">市场</span>
+          <el-checkbox-group v-model="form.markets" size="small">
+            <el-checkbox value="sh">沪市</el-checkbox>
+            <el-checkbox value="sz">深市</el-checkbox>
+          </el-checkbox-group>
+        </div>
+        <label class="f-item">
+          <span class="f-label">行业</span>
+          <el-cascader
+            v-model="form.industries"
+            :options="industryOptions"
+            :props="cascaderProps"
+            placeholder="不限"
+            clearable
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            size="small"
+            class="f-fill"
+          />
+          <button
+            type="button"
+            class="mini-link"
+            :disabled="!industryRootCodes.length"
+            @click="toggleAllIndustries"
+          >
+            {{ industriesAllSelected ? '清空' : '全选' }}
+          </button>
+        </label>
+        <label class="f-item">
+          <span class="f-label">排除行业</span>
+          <el-cascader
+            v-model="form.excludeIndustries"
+            :options="industryOptions"
+            :props="cascaderProps"
+            placeholder="无"
+            clearable
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            size="small"
+            class="f-fill"
+          />
+          <button
+            type="button"
+            class="mini-link"
+            :disabled="!industryRootCodes.length"
+            @click="toggleAllExcludeIndustries"
+          >
+            {{ excludeIndustriesAllSelected ? '清空' : '全选' }}
+          </button>
+        </label>
+        <label class="f-item">
+          <span class="f-label">地域</span>
+          <el-select
+            v-model="form.province"
+            placeholder="不限"
+            clearable
+            filterable
+            size="small"
+            class="f-fill"
+          >
+            <el-option v-for="p in provinceOptions" :key="p" :label="p" :value="p" />
+          </el-select>
+        </label>
         <label v-for="f in ADVANCED_THRESHOLDS" :key="f.key" class="f-item">
           <span class="f-label">{{ f.label }}</span>
           <el-input-number
@@ -746,12 +801,12 @@ onBeforeUnmount(() => {
   background: #e6a23c;
 }
 
-/* 筛选区 */
+/* 筛选区: 标签+控件成组, 4 列网格对齐(集思录表单式排版) */
 .filter-bar {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px 12px; /* 紧凑: 行距 6 / 列距 12 */
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
   background: #fafafa;
   border: 1px solid #eef2f7;
   border-radius: 10px;
@@ -767,34 +822,58 @@ onBeforeUnmount(() => {
   margin-top: -12px; /* 抵消页面 gap, 与主筛选区贴合 */
   background: #f7f9fb;
 }
-.adv-toggle {
-  white-space: nowrap;
-}
 .f-item {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   font-size: 12px;
   color: #4b5563;
   white-space: nowrap;
+  min-width: 0; /* 允许网格列内收缩 */
 }
 .f-label {
   color: #6b7280;
+  flex-shrink: 0;
 }
 .num-input {
-  width: 84px;
+  width: 84px; /* 数字位数有限, 固定窄宽(不随网格列拉伸) */
+  flex: none;
 }
 .num-input :deep(input) {
   text-align: right;
 }
+.f-fill {
+  flex: 1;
+  min-width: 0; /* 级联/下拉占满所在列剩余宽 */
+}
 .f-sep {
   color: #9ca3af;
 }
-.f-industry {
-  width: 190px;
+.f-actions {
+  grid-column: 1 / -1; /* 操作行独占整行 */
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
-.f-province {
-  width: 110px;
+.adv-toggle {
+  white-space: nowrap;
+}
+.mini-link {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  color: #2563eb;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.mini-link:disabled {
+  color: #c0c4cc;
+  cursor: not-allowed;
+}
+.mini-link:hover:not(:disabled) {
+  text-decoration: underline;
 }
 .f-count {
   margin-left: auto;
@@ -872,11 +951,18 @@ onBeforeUnmount(() => {
   line-height: 1.7;
 }
 
-/* 移动端: 筛选区换行已由 flex-wrap 处理, 表格横向滚动 */
+/* 移动端/窄屏: 网格降列(3 → 2), 表格横向滚动 */
+@media (max-width: 1100px) and (min-width: 768px) {
+  .filter-bar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
 @media (max-width: 767px) {
   .title { font-size: 16px; }
+  .filter-bar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .f-count { margin-left: 0; }
   .num-input { width: 72px; }
-  .f-industry { width: 100%; }
 }
 </style>

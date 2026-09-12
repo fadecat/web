@@ -7,19 +7,28 @@
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
 
 class DividendPresetForm(BaseModel):
-    """筛选表单值(null = 未启用; soeOnly = 仅国资白名单)。"""
+    """筛选表单值(null = 未启用; soeOnly = 仅国资白名单)。
+
+    行业/排除行业为多选数组(sw_cd 前缀, 含任意层级); 与前端 emptyForm()
+    键集严格一致(extra=forbid)。
+    """
 
     model_config = {"extra": "forbid"}
 
     markets: list[Literal["sh", "sz"]] = []
-    industry: str = Field(default="", max_length=32)
-    excludeIndustry: str = Field(default="", max_length=32)
+    # 上限 64 ≥ 申万一级 31 个: 「全选一级行业」可整存
+    industries: list[Annotated[str, Field(min_length=1, max_length=32)]] = Field(
+        default_factory=list, max_length=64
+    )
+    excludeIndustries: list[Annotated[str, Field(min_length=1, max_length=32)]] = Field(
+        default_factory=list, max_length=64
+    )
     province: str = Field(default="", max_length=32)
     peMax: float | None = None
     pbMax: float | None = None

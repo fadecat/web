@@ -270,8 +270,8 @@ class TestDividendPresetsContract:
         assert form2["soeOnly"] is True
         assert form2["peTMax"] is None  # 未给的字段规范化为默认
         assert form2["markets"] == []
-        assert form2["industry"] == ""
-        assert form2["excludeIndustry"] == ""
+        assert form2["industries"] == []
+        assert form2["excludeIndustries"] == []
 
         assert presets_file.exists()  # 落盘在测试产物目录
         assert contract_client.get(PRESETS_BASE).json() == cfg
@@ -322,6 +322,14 @@ class TestDividendPresetsContract:
         body = {"version": 1, "active_id": "x", "presets": []}
         r = contract_client.post(PRESETS_BASE, json=body)
         assert r.status_code == 422
+
+    def test_post_many_industries_allowed(self, contract_client, presets_file):
+        """行业多选上限 64: 全选 31 个申万一级行业码可整存。"""
+        codes = [f"{i:02d}" for i in range(1, 32)]  # 31 个
+        body = {"version": 1, "active_id": "a", "presets": [_preset("a", "一", {"industries": codes})]}
+        r = contract_client.post(PRESETS_BASE, json=body)
+        assert r.status_code == 200
+        assert r.json()["presets"][0]["form"]["industries"] == codes
 
     def test_load_failsoft_corrupt_file(self, presets_file):
         """落盘文件损坏 → GET 回退内置默认, 不抛异常不写盘。"""

@@ -360,6 +360,34 @@ describe('StockDividend 页面状态闭环', () => {
     expect(wrapper.vm.dirty).toBe(false);
   });
 
+  it('行业全选/清空: 写入全部一级码, 再点变清空(一级前缀即覆盖子树)', async () => {
+    getStockDividendSnapshotMock.mockResolvedValue([
+      makeRow({ stock_id: '600001', sw_cd: '801160', industry_nm2: '交通运输-铁路公路-铁路运输' }),
+      makeRow({ stock_id: '600002', sw_cd: '110000', industry_nm2: '能源-煤炭-动煤' }),
+    ]);
+    const wrapper = await mountPage();
+    await flushPromises();
+    expect(wrapper.vm.industryRootCodes).toEqual(['11', '80']);
+    expect(wrapper.vm.industriesAllSelected).toBe(false);
+
+    wrapper.vm.toggleAllIndustries();
+    await flushPromises();
+    expect([...wrapper.vm.form.industries].sort()).toEqual(['11', '80']);
+    expect(wrapper.vm.industriesAllSelected).toBe(true);
+
+    wrapper.vm.toggleAllIndustries();
+    await flushPromises();
+    expect(wrapper.vm.form.industries).toEqual([]);
+    expect(wrapper.vm.industriesAllSelected).toBe(false);
+
+    // 排除行业独立全选
+    wrapper.vm.toggleAllExcludeIndustries();
+    await flushPromises();
+    expect([...wrapper.vm.form.excludeIndustries].sort()).toEqual(['11', '80']);
+    expect(wrapper.vm.excludeIndustriesAllSelected).toBe(true);
+    expect(wrapper.vm.form.industries).toEqual([]); // 不串扰
+  });
+
   it('高级筛选计数: 收起状态下统计高级区激活条件数', async () => {
     getStockDividendSnapshotMock.mockResolvedValue([makeRow()]);
     const wrapper = await mountPage();

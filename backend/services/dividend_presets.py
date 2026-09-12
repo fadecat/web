@@ -34,7 +34,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "name": "邮件口径",
             "form": {
                 "markets": [],
-                "industry": "",
+                "industries": [],
+                "excludeIndustries": [],
                 "province": "",
                 "peMax": 15,
                 "peTMax": 40,
