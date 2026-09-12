@@ -283,10 +283,6 @@ def _no_snapshot_result(template: dict[str, Any], source: str) -> dict[str, Any]
         "total_all": 0,
         "total_filtered": 0,
         "total_excluded": 0,
-        "top_n": 0,
-        "keep_n": 0,
-        "selected_count": 0,
-        "buffer_count": 0,
         "selection_mode": (
             "scored" if any(
                 f.get("enabled", True) for f in (template.get("strategy_factors") or [])

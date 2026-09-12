@@ -36,7 +36,6 @@ onBeforeRouteLeave(async()=>{if(!anyDirty.value)return true;try{await ElMessageB
 </script>
 <template>
  <div class="workspace" v-loading="loading">
-  <h2>转债选债</h2>
   <el-alert v-if="loadError" :title="loadError" type="error" :closable="false"/>
   <div class="toolbar">
    <el-select v-model="editingId" filterable placeholder="选择筛选模板" aria-label="筛选模板"><el-option v-for="t in templates" :key="t.id" :value="t.id" :label="`${t.name}${saved?.active_id===t.id?' · 默认':''}`"/></el-select>
@@ -50,7 +49,7 @@ onBeforeRouteLeave(async()=>{if(!anyDirty.value)return true;try{await ElMessageB
   </div>
   <template v-if="current">
    <div class="toolbar actions">
-    <el-tag :type="dirty?'warning':'success'">{{dirty?'当前草稿未保存':'当前模板已保存'}}</el-tag>
+    <span class="status" :class="{dirty}">{{dirty?'草稿未保存':'已保存'}}</span>
     <el-radio-group v-model="source"><el-radio-button value="db">数据库快照</el-radio-button><el-radio-button value="live">实时行情</el-radio-button></el-radio-group>
     <el-button @click="editorOpen=!editorOpen">{{editorOpen?'收起配置':'配置条件'}}</el-button>
     <el-button :disabled="!dirty||saving" :loading="saving" @click="save">保存模板</el-button>
@@ -60,7 +59,7 @@ onBeforeRouteLeave(async()=>{if(!anyDirty.value)return true;try{await ElMessageB
    <el-alert v-if="errors[editingId]" :title="errors[editingId]" type="error" :closable="false"/>
    <div class="content">
     <FactorEditor v-if="editorOpen" :template="current" :catalog="catalog" :ratings="ratings" :industries="industries" @patch="ws.patch"/>
-    <SelectionResults v-if="result" :result="result" :name="current.name" :stale="stale" @blacklist="addBlacklist"/>
+    <SelectionResults v-if="result" :result="result" :stale="stale" @blacklist="addBlacklist"/>
     <el-empty v-else :description="pending?'处理迁移规则后执行筛选':'点击执行筛选查看结果'"/>
    </div>
   </template>
@@ -68,5 +67,5 @@ onBeforeRouteLeave(async()=>{if(!anyDirty.value)return true;try{await ElMessageB
  </div>
 </template>
 <style scoped>
-.workspace{min-width:0}.workspace h2{font-size:20px;margin:0 0 18px}.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}.toolbar>.el-select{width:260px}.toolbar>.el-input{width:220px}.actions{padding:12px;background:#fff;border:1px solid #e4e7ed;border-radius:8px}.content{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin-top:16px;min-width:0}.el-alert{margin:10px 0}@media(max-width:767px){.toolbar>.el-select{width:100%}.toolbar{gap:6px}.actions>.el-radio-group{width:100%}}
+.workspace{min-width:0}.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}.toolbar>.el-select{width:260px}.toolbar>.el-input{width:220px}.status{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#909399}.status::before{content:'';width:6px;height:6px;border-radius:50%;background:#67c23a}.status.dirty::before{background:#e6a23c}.content{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin-top:16px;min-width:0}.el-alert{margin:10px 0}@media(max-width:767px){.toolbar>.el-select{width:100%}.toolbar{gap:6px}.actions>.el-radio-group{width:100%}}
 </style>

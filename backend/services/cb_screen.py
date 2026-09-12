@@ -3,7 +3,7 @@
 
 管线固定: 输入规范化(_row_to_cell) → 字段补充(enrich: 赎回价/简单到期
 收益率/强赎剩余天数/上市天数) → 全局黑名单及模板条件(evaluate_conditions)
-→ 评分(排名线性映射) → 入选标记 → DTO。
+→ 评分(排名线性映射, 仅决定排序与总分展示) → DTO。
 
 边界合同(§6.1):
 - 纯函数: 不读数据库、不联网、不按系统当天暗中计算上市时间——上市天数以
@@ -215,7 +215,7 @@ def _apply_filters(
 
 
 # ---------------------------------------------------------------------------
-# 评分与入选标记(管线第 4/5 步)
+# 评分与排序(管线第 4/5 步)
 # ---------------------------------------------------------------------------
 
 def _template_depends_on_redeem(
@@ -301,8 +301,6 @@ def _to_dto(
     row: dict[str, Any],
     rank: int | None,
     *,
-    selected: bool,
-    holdable: bool,
     scored_mode: bool,
 ) -> dict[str, Any]:
     """cell → 结果 DTO。行业字段按 §3.3: 原始码始终携带, 名称/层级来自映射。"""
@@ -313,8 +311,6 @@ def _to_dto(
     industry_code = str(c.get("sw_cd") or "").strip() or None
     return {
         "rank": rank,
-        "selected": selected,
-        "holdable": holdable,
         "code": c.get("bond_id", ""),
         "name": c.get("bond_nm", ""),
         "industry_code": industry_code,
@@ -365,9 +361,6 @@ def _run_pipeline(
     warnings = list(base_warnings or [])
     conditions = template.get("conditions") or []
     factors = template.get("strategy_factors") or []
-    target = max(1, min(50, int(template.get("target_count") or 10)))
-    tol = max(0, min(20, int(template.get("hold_tolerance") or 0)))
-    keep_n = target + tol
     total_all = len(cell_rows)
 
     # 收益率缺失计数(全量输入, 单债缺失是质量问题不是失败, §3.2)
@@ -399,29 +392,17 @@ def _run_pipeline(
 
     rows_out: list[dict[str, Any]] = []
     for i, row in enumerate(filtered, 1):
-        rows_out.append(_to_dto(
-            row, i,
-            selected=bool(scored_mode and i <= target),
-            holdable=bool(scored_mode and i <= keep_n),
-            scored_mode=scored_mode,
-        ))
+        rows_out.append(_to_dto(row, i, scored_mode=scored_mode))
     excluded_out = [
-        _to_dto(row, None, selected=False, holdable=False, scored_mode=False)
+        _to_dto(row, None, scored_mode=False)
         | {"exclude_reasons": row.get("_exclude_reasons", [])}
         for row in excluded_rows
     ]
-
-    selected_count = sum(1 for r in rows_out if r["selected"])
-    buffer_count = sum(1 for r in rows_out if r["holdable"] and not r["selected"])
 
     return {
         "total_all": total_all,
         "total_filtered": len(filtered),
         "total_excluded": len(excluded_out),
-        "top_n": target if scored_mode else 0,
-        "keep_n": keep_n if scored_mode else 0,
-        "selected_count": selected_count,
-        "buffer_count": buffer_count,
         "selection_mode": "scored" if scored_mode else "filter_only",
         "rows": rows_out,
         "excluded_rows": excluded_out,

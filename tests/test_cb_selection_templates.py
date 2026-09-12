@@ -67,7 +67,6 @@ def _v3_template(**overrides):
         "strategy_factors": [
             {"field": "dblow", "ascending": True, "weight": 1, "enabled": True},
         ],
-        "target_count": 10, "hold_tolerance": 0,
         "migration_issues": [],
     }
     base.update(overrides)
@@ -315,6 +314,48 @@ class TestMigrationPure:
         model = SelectionTemplateModel.model_validate(migrated)
         assert model.id == "t1"
 
+    def test_retired_count_fields_dropped_with_archived_issue(self):
+        """V1/V2 非默认目标/容差: 输出不再携带该键, 且 archived 留痕不无声丢弃。"""
+        migrated = migrate_config_to_v3(
+            {"version": 2, "active_id": "t1", "templates": [_legacy_template()]}
+        )["templates"][0]
+        assert "target_count" not in migrated
+        assert "hold_tolerance" not in migrated
+        retired = _issues_of(migrated, "retired_field_dropped")
+        # 固定资产 target_count=5(≠10) 留痕; hold_tolerance=0 为默认值不留痕
+        assert [i["field"] for i in retired] == ["target_count"]
+        assert retired[0]["status"] == "archived"
+        assert retired[0]["original"] == 5
+        SelectionTemplateModel.model_validate(migrated)
+
+    def test_retired_count_default_values_dropped_silently(self):
+        """V1/V2 默认取值(10/0)行为与下线后一致, 直接剥离不留痕。"""
+        migrated = migrate_config_to_v3({"version": 2, "active_id": "t1", "templates": [
+            _legacy_template(target_count=10, hold_tolerance=0),
+        ]})["templates"][0]
+        assert "target_count" not in migrated
+        assert "hold_tolerance" not in migrated
+        assert not _issues_of(migrated, "retired_field_dropped")
+
+    def test_v3_input_retired_keys_stripped_idempotent(self):
+        """V3 存量(字段下线前保存)仍携带目标/容差: 剥离 + 非默认留痕 + 幂等。"""
+        config = {"version": 3, "active_id": "stable", "templates": [
+            _v3_template(target_count=8, hold_tolerance=3),
+            _v3_template(id="defaults", name="默认值", target_count=10, hold_tolerance=0),
+        ]}
+        migrated = migrate_config_to_v3(config)
+        first, second = migrated["templates"]
+        assert "target_count" not in first and "hold_tolerance" not in first
+        assert "target_count" not in second and "hold_tolerance" not in second
+        retired = _issues_of(first, "retired_field_dropped")
+        assert sorted(i["field"] for i in retired) == ["hold_tolerance", "target_count"]
+        assert all(i["status"] == "archived" for i in retired)
+        assert not _issues_of(second, "retired_field_dropped")
+        # 幂等 + 剥离产物可通过 V3 schema(否则 GET→run 回存会 422)
+        assert migrate_config_to_v3(migrated) == migrated
+        SelectionTemplateModel.model_validate(first)
+        SelectionTemplateModel.model_validate(second)
+
 
 # ---------------------------------------------------------------------------
 # GET /cb-list/factors
@@ -451,7 +492,7 @@ class TestFactorsPostV3:
         assert after["templates"][0]["name"] == "新名字"
         # 除 name(与存储产物 updated_at)外全部一致
         for key in ("id", "description", "conditions", "strategy_factors",
-                    "target_count", "hold_tolerance", "migration_issues"):
+                    "migration_issues"):
             assert after["templates"][0][key] == before["templates"][0][key]
         assert after["active_id"] == before["active_id"] == "stable"
 

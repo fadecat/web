@@ -23,9 +23,12 @@ migration_issues 条目固定携带 id/kind/status/message(+origin/original 等)
 - id_generated               缺失/重复模板 ID 生成的稳定迁移 ID(archived);
 - duplicate_name_renamed     重复名称按文件顺序追加"(迁移N)"(archived);
 - name_truncated             超 40 字符名称截断(archived);
-- active_id_reset            active_id 缺失/悬空时重置为首个模板(archived)。
+- active_id_reset            active_id 缺失/悬空时重置为首个模板(archived);
+- retired_field_dropped      已下线字段(目标 target_count/容差 hold_tolerance
+                             不再可配置, 评分固定标记前 10 只): 存量非默认取值
+                             archived 留痕, 默认值(10/0)直接剥离不留痕。
 
-V3 输入直接原样深拷贝返回(幂等不动点)。
+V3 输入剥离已下线键后深拷贝返回(幂等不动点)。
 """
 from __future__ import annotations
 
@@ -48,6 +51,10 @@ _LEGACY_TEMPLATE_KEYS = {
 }
 # V3 模板键(若 V2 输入意外携带, 迁移输出以重建结果为准, 不视作未知字段)
 _SUPERSEDED_V3_KEYS = {"conditions", "migration_issues", "updated_at"}
+
+# 已下线的模板字段与其旧默认值: 目标/容差不再可配置(评分固定标记前 10 只),
+# 迁移输出一律移除; 与默认值不同的存量取值 archived 留痕, 不无声丢弃(§5.1)
+_RETIRED_COUNT_DEFAULTS = {"target_count": 10, "hold_tolerance": 0}
 
 _REDEEM_ICON_VALUES = ("R", "O", "B", "G")
 
@@ -307,20 +314,13 @@ def _migrate_template(
                  status="archived", fields=unknown_keys,
                  message=f"模板级未知字段不被 V3 支持, 已忽略: {unknown_keys}")
 
-    # --- 数值兜底: target_count 1~50 / hold_tolerance 0~20(超界夹取并留痕)
-    def _clamp_int(raw: Any, default: int, lo: int, hi: int, label: str) -> int:
-        value = finite_number(raw)
-        if value is None:
-            value = float(default)
-        clamped = int(max(lo, min(hi, round(value))))
-        if clamped != value:
-            sink.add("invalid_value_dropped", "invalid-value",
-                     status="archived",
-                     message=f"{label} {raw!r} 超出 V3 范围[{lo}, {hi}], 已夹取为 {clamped}")
-        return clamped
-
-    target_count = _clamp_int(src.get("target_count"), 10, 1, 50, "target_count")
-    hold_tolerance = _clamp_int(src.get("hold_tolerance"), 0, 0, 20, "hold_tolerance")
+    # --- 已下线字段: 目标/容差不再进入 V3 模板; 非默认存量取值留痕(§5.1)
+    for key, default in _RETIRED_COUNT_DEFAULTS.items():
+        if key in src and src[key] != default:
+            sink.add("retired_field_dropped", "retired-field",
+                     status="archived", field=key, original=src[key],
+                     message=f"字段 {key} 已下线(目标/容差不再可配置), "
+                             f"原值 {src[key]!r} 不再生效, 仅保留迁移记录")
 
     # --- 迁移映射(§5.1 转换表, 顺序固定保证确定性)
     conditions: list[dict[str, Any]] = []
@@ -385,10 +385,39 @@ def _migrate_template(
         "description": str(src.get("description") or ""),
         "conditions": conditions,
         "strategy_factors": factors_out,
-        "target_count": target_count,
-        "hold_tolerance": hold_tolerance,
         "migration_issues": sink.issues,
     }
+
+
+def _strip_retired_count_fields(config: dict[str, Any]) -> dict[str, Any]:
+    """V3 存量模板剥离已下线的目标/容差键(幂等), 非默认取值留痕。
+
+    字段下线前保存的 factors.json 仍携带 target_count/hold_tolerance;
+    V3 schema extra=forbid, 不剥离则读取/保存/执行路径都会 422。
+    """
+    for template in config.get("templates") or []:
+        if not isinstance(template, dict):
+            continue
+        issues = template.setdefault("migration_issues", [])
+        existing_ids = {str(i.get("id")) for i in issues if isinstance(i, dict)}
+        for key, default in _RETIRED_COUNT_DEFAULTS.items():
+            if key not in template:
+                continue
+            value = template.pop(key)
+            if value == default:
+                continue
+            issue_id = f"retired-count-{key}"
+            while issue_id in existing_ids:
+                issue_id += "-x"
+            existing_ids.add(issue_id)
+            issues.append({
+                "id": issue_id,
+                "kind": "retired_field_dropped", "status": "archived",
+                "field": key, "original": value,
+                "message": f"字段 {key} 已下线(目标/容差不再可配置), "
+                           f"原值 {value!r} 不再生效, 仅保留迁移记录",
+            })
+    return config
 
 
 def _migrate_redeem_semantics(config: dict[str, Any]) -> dict[str, Any]:
@@ -418,14 +447,16 @@ def _migrate_redeem_semantics(config: dict[str, Any]) -> dict[str, Any]:
 def migrate_config_to_v3(config: dict[str, Any]) -> dict[str, Any]:
     """任意版本模板配置 → V3。深拷贝入参, 确定性、幂等、零磁盘 IO(§5.1)。
 
-    - version=3 输入: 原样深拷贝返回(幂等不动点);
+    - version=3 输入: 剥离已下线的目标/容差键后深拷贝返回(幂等不动点);
     - V1/V2(或缺 version): 逐模板执行 §5.1 转换表 + §5.2 ytm_rt 特殊迁移;
     - active_id 悬空时重置为首个模板并留痕(§5.1)。
     """
     if not isinstance(config, dict):
         raise TypeError("模板配置必须是 JSON 对象")
     if config.get("version") == 3:
-        return _migrate_redeem_semantics(copy.deepcopy(config))
+        return _migrate_redeem_semantics(
+            _strip_retired_count_fields(copy.deepcopy(config))
+        )
 
     templates_in = config.get("templates") or []
     used_ids: set[str] = set()

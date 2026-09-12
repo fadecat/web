@@ -43,7 +43,7 @@ def main():
                 db.add(CbRedeemDaily(trade_date=date(2026, 9, 11), raw_json=json.dumps(c), **c))
             db.commit()
     if not cb_factors.FACTORS_PATH.exists():
-        cb_factors.save_config_v3({"version": 3, "active_id": "acceptance", "templates": [{"id": "acceptance", "name": "隔离验收模板", "conditions": [], "strategy_factors": [], "target_count": 10, "hold_tolerance": 0, "migration_issues": []}]}, "missing")
+        cb_factors.save_config_v3({"version": 3, "active_id": "acceptance", "templates": [{"id": "acceptance", "name": "隔离验收模板", "conditions": [], "strategy_factors": [], "migration_issues": []}]}, "missing")
     live.fetch_live_snapshot = lambda: live.LiveSnapshot(CELLS, REDEEMS, "ok")
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8002)

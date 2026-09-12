@@ -55,7 +55,7 @@ function resolveIssue(i,status){const a=clone(props.template.migration_issues);a
     <el-button size="small" text type="primary" @click="add" :disabled="!catalog.length">＋ 添加条件</el-button>
    </section>
    <section class="panel scoring">
-    <h3>排序与入选 <small>{{template.strategy_factors.filter(f=>f.enabled).length}} 个评分因子</small></h3>
+    <h3>排序 <small>{{template.strategy_factors.filter(f=>f.enabled).length}} 个评分因子</small></h3>
     <p v-if="!template.strategy_factors.length" class="empty">当前为纯筛选，展示全部符合条件的转债。</p>
     <div class="score-row" v-for="(f,i) in template.strategy_factors" :key="i">
      <el-switch size="small" :model-value="f.enabled" @update:model-value="score(i,{enabled:$event})"/>
@@ -65,15 +65,14 @@ function resolveIssue(i,status){const a=clone(props.template.migration_issues);a
      <el-button size="small" text type="danger" @click="emit('patch',{strategy_factors:template.strategy_factors.filter((_,n)=>n!==i)})">删除</el-button>
     </div>
     <el-button size="small" text type="primary" @click="addScore">＋ 添加评分因子</el-button>
-    <div class="counts"><span>目标</span><el-input-number size="small" :model-value="template.target_count" :min="1" :max="50" @update:model-value="emit('patch',{target_count:$event})"/><span>容差</span><el-input-number size="small" :model-value="template.hold_tolerance" :min="0" :max="20" @update:model-value="emit('patch',{hold_tolerance:$event})"/></div>
-    <small>数量仅用于结果标记，不代表持仓或自动交易。</small>
+    <small>评分仅决定排序与总分展示，不代表持仓或自动交易。</small>
     <details class="description"><summary>模板说明</summary><el-input type="textarea" :model-value="template.description" placeholder="模板说明" @update:model-value="emit('patch',{description:$event})"/></details>
    </section>
   </div>
  </section>
 </template>
 <style scoped>
-.editor{min-width:0}.config-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:16px;align-items:start}.panel{min-width:0;padding:14px;background:#fff;border:1px solid #e4e7ed;border-radius:8px}.panel h3{margin:0 0 12px;font-size:14px}.panel small{font-size:12px;color:#7c8490;font-weight:400}.panel h3 small{margin-left:8px}.empty{font-size:13px;color:#7c8490}.row{display:flex;align-items:center;gap:6px;min-height:36px}.row .field{width:148px;min-width:110px;flex:1.2}.row .op{width:76px;min-width:65px;flex:.65}.value{display:flex;gap:4px;flex:1.1;min-width:100px}.value>.el-input-number,.value>.el-select{width:100%;min-width:0;flex:1}.row .unit{width:24px;flex-shrink:0}.row .el-button{padding:2px;margin:0}.score-row{display:grid;grid-template-columns:28px minmax(100px,1fr) 92px 58px 32px;gap:6px;align-items:center;min-height:36px}.score-row .el-input-number{width:58px}.score-row .el-button{padding:0}.counts{display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:13px;margin:18px 0 10px}.counts .el-input-number{width:90px}.description{margin-top:16px;font-size:13px}.description summary{cursor:pointer;margin-bottom:8px}.el-alert{margin-bottom:12px;overflow-wrap:anywhere}.el-alert pre{white-space:pre-wrap} 
+.editor{min-width:0}.config-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:16px;align-items:start}.panel{min-width:0;padding:14px;background:#fff;border:1px solid #e4e7ed;border-radius:8px}.panel h3{margin:0 0 12px;font-size:14px;font-weight:600;color:#1f2329}.panel small{font-size:12px;color:#909399;font-weight:400}.panel h3 small{margin-left:8px}.empty{font-size:12px;color:#909399}.row{display:flex;align-items:center;gap:6px;min-height:36px}.row .field{width:148px;min-width:110px;flex:1.2}.row .op{width:76px;min-width:65px;flex:.65}.value{display:flex;gap:4px;flex:1.1;min-width:100px}.value>.el-input-number,.value>.el-select{width:100%;min-width:0;flex:1}.row .unit{width:24px;flex-shrink:0}.row .el-button{padding:2px;margin:0}.score-row{display:grid;grid-template-columns:28px minmax(100px,1fr) 92px 58px 32px;gap:6px;align-items:center;min-height:36px}.score-row .el-input-number{width:58px}.score-row .el-button{padding:0}.scoring>small{display:block;margin:10px 0 0}.description{margin-top:16px;font-size:13px}.description summary{cursor:pointer;margin-bottom:8px}.el-alert{margin-bottom:12px;overflow-wrap:anywhere}.el-alert pre{white-space:pre-wrap} 
 @media(max-width:1199px){.config-grid{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:600px){.panel{padding:10px}.row{display:grid;grid-template-columns:28px minmax(0,1fr) 75px 32px 24px;gap:4px;padding:5px 0;border-bottom:1px solid #f1f2f4}.row .field{width:100%;min-width:0}.row .op{width:75px;min-width:0}.row .value{grid-column:2/4;grid-row:2;min-width:0}.row .unit{grid-column:4;grid-row:2}.row>.el-button{grid-column:4;grid-row:1}.row :deep(.el-popover__reference){grid-column:5;grid-row:1}.score-row{grid-template-columns:28px minmax(90px,1fr) 85px 45px 30px;gap:3px}.score-row .el-input-number{width:45px}}
 </style>

@@ -4,7 +4,7 @@ export const clone = value => JSON.parse(JSON.stringify(value));
 // Server serialization can reorder object keys without changing a rule.
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
-export const signature = t => JSON.stringify(canonical([t?.conditions, t?.strategy_factors, t?.target_count, t?.hold_tolerance, t?.migration_issues]));
+export const signature = t => JSON.stringify(canonical([t?.conditions, t?.strategy_factors, t?.migration_issues]));
 export const uid = () => (globalThis.crypto?.randomUUID?.() ?? `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`);
 export function useSelectionWorkspace(api) {
   const saved = ref(null), drafts = ref({}), editingId = ref(''), source = ref('live');
@@ -36,7 +36,7 @@ export function useSelectionWorkspace(api) {
     drafts.value[id]={id,name:clean,description:'',conditions:[
       {id:uid(),field:'redeem_status_code',op:'not_in',value:['ANNOUNCED_REDEEM','ANNOUNCED_INTENT','TRIGGER_MET'],enabled:true,missing:'exclude',negative:'compare'},
       {id:uid(),field:'stock_is_st',op:'eq',value:false,enabled:true,missing:'exclude',negative:'compare'},
-    ],strategy_factors:[],target_count:10,hold_tolerance:0,migration_issues:[]}; editingId.value=id;
+    ],strategy_factors:[],migration_issues:[]}; editingId.value=id;
   }
   function duplicate() {
     let n=1, name; do { const suffix=n===1?' 副本':` 副本 ${n}`; name=[...current.value.name].slice(0,40-[...suffix].length).join('')+suffix;n++; } while(templates.value.some(t=>t.name===name));

@@ -16,7 +16,7 @@ B(110002, price125, redeem110, 行业610101)、C(110003, price100, redeem缺失)
 - 强赎跨日快照严格同日策略可见(D/R + 警告 + 字段按缺失处理);
 - 计数分区: total_all = filtered + excluded, 每行只出现一次,
   blacklisted_count 与其他原因重叠不二次扣减;
-- filter_only 无 selected/holdable 假徽标;
+- filter_only 不打分(total_score=null), 双低升序;
 - 执行请求非法 → 422 且任何数据源 0 次调用(校验先于抓取);
 - 行业目录 = 静态映射 + 快照发现, 不触网。
 使用真实 ORM 数据 + 隔离内存库, 不访问外部网络。
@@ -135,7 +135,6 @@ def _yield_template() -> dict:
         "strategy_factors": [
             {"field": "dblow", "ascending": True, "weight": 1, "enabled": True},
         ],
-        "target_count": 10, "hold_tolerance": 0,
     }
 
 
@@ -285,7 +284,6 @@ class TestUnifiedExecution:
                             "value": 130, "enabled": True}],
             "strategy_factors": [
                 {"field": "dblow", "ascending": True, "weight": 1, "enabled": True}],
-            "target_count": 10, "hold_tolerance": 0,
         }
         r_ready = contract_client.post(f"{BASE}/screen", json=matches_all)
         assert r_ready.status_code == 200
@@ -300,7 +298,6 @@ class TestUnifiedExecution:
                             "value": 999, "enabled": True}],
             "strategy_factors": [
                 {"field": "dblow", "ascending": True, "weight": 1, "enabled": True}],
-            "target_count": 10, "hold_tolerance": 0,
         }
         r_zero = contract_client.post(f"{BASE}/screen", json=matches_none)
         assert r_zero.status_code == 200
@@ -325,7 +322,6 @@ class TestUnifiedExecution:
                             "value": 130, "enabled": True}],
             "strategy_factors": [
                 {"field": "dblow", "ascending": True, "weight": 1, "enabled": True}],
-            "target_count": 10, "hold_tolerance": 0,
         }
         r2 = contract_client.post(f"{BASE}/screen", json=independent)
         assert r2.status_code == 200
@@ -348,7 +344,6 @@ class TestUnifiedExecution:
                             "value": 130, "enabled": True}],
             "strategy_factors": [
                 {"field": "dblow", "ascending": True, "weight": 1, "enabled": True}],
-            "target_count": 10, "hold_tolerance": 0,
         }
         r = contract_client.post(f"{BASE}/screen", json=independent)
         assert r.status_code == 200
@@ -382,7 +377,6 @@ class TestUnifiedExecution:
                             "value": 120, "enabled": True}],  # B(125) 违反
             "strategy_factors": [
                 {"field": "dblow", "ascending": True, "weight": 1, "enabled": True}],
-            "target_count": 10, "hold_tolerance": 0,
         }
         r = contract_client.post(f"{BASE}/screen", json=template)
         assert r.status_code == 200
@@ -400,12 +394,9 @@ class TestUnifiedExecution:
         assert rule_ids == {"global_blacklist", "c1"}
         assert result["meta"]["blacklisted_count"] == 1
         assert result["total_all"] == result["total_filtered"] + result["total_excluded"]
-        # 入选/缓冲不越过通过集合
-        assert result["selected_count"] <= result["total_filtered"]
-        assert result["selected_count"] + result["buffer_count"] <= result["total_filtered"]
 
-    def test_filter_only_has_no_false_selected_badges(self, contract_client, cb_db):
-        """无启用评分因子 → filter_only: 不打分不标记入选, 双低升序。"""
+    def test_filter_only_orders_by_dblow_without_scores(self, contract_client, cb_db):
+        """无启用评分因子 → filter_only: 不打分(total_score=null), 双低升序。"""
         _seed_acceptance(cb_db)
         template = {
             "id": "filter-only", "name": "纯过滤", "description": "",
@@ -413,21 +404,14 @@ class TestUnifiedExecution:
             "conditions": [{"id": "c1", "field": "price", "op": "lte",
                             "value": 130, "enabled": True}],
             "strategy_factors": [],
-            "target_count": 10, "hold_tolerance": 0,
         }
         r = contract_client.post(f"{BASE}/screen", json=template)
         assert r.status_code == 200
         result = r.json()
         assert result["selection_mode"] == "filter_only"
-        assert result["top_n"] == 0
-        assert result["keep_n"] == 0
-        assert result["selected_count"] == 0
-        assert result["buffer_count"] == 0
         assert [x["code"] for x in result["rows"]] == ["110001", "110003", "110002"]
         for rank, row in enumerate(result["rows"], 1):
             assert row["rank"] == rank
-            assert row["selected"] is False
-            assert row["holdable"] is False
             assert row["total_score"] is None
         # C(无赎回价)不配收益率条件时出现在符合结果中(§T4 验收)
         assert "110003" in [x["code"] for x in result["rows"]]

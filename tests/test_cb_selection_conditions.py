@@ -229,7 +229,6 @@ def _template(**overrides):
         "id": "stable", "name": "稳健筛选",
         "conditions": [_cond()],
         "strategy_factors": [{"field": "dblow", "ascending": True, "weight": 1, "enabled": True}],
-        "target_count": 10, "hold_tolerance": 0,
     }
     base.update(overrides)
     return base
@@ -243,21 +242,16 @@ class TestTemplateAndRunModels:
         # 再校验幂等
         SelectionTemplateModel.model_validate(dumped)
 
-    def test_target_count_bounds(self):
+    def test_retired_count_fields_rejected(self):
+        """目标/容差已下线: V3 保存/执行请求携带即 422(extra=forbid)。"""
         with pytest.raises(ValidationError):
-            SelectionTemplateModel.model_validate(_template(target_count=0))
+            SelectionTemplateModel.model_validate(_template(target_count=10))
         with pytest.raises(ValidationError):
-            SelectionTemplateModel.model_validate(_template(target_count=51))
+            SelectionTemplateModel.model_validate(_template(hold_tolerance=0))
         with pytest.raises(ValidationError):
-            SelectionTemplateModel.model_validate(_template(target_count=10.5))
-        SelectionTemplateModel.model_validate(_template(target_count=50))
-
-    def test_hold_tolerance_bounds(self):
-        with pytest.raises(ValidationError):
-            SelectionTemplateModel.model_validate(_template(hold_tolerance=-1))
-        with pytest.raises(ValidationError):
-            SelectionTemplateModel.model_validate(_template(hold_tolerance=21))
-        SelectionTemplateModel.model_validate(_template(hold_tolerance=20))
+            SelectionRunModel.model_validate(
+                dict(_template(), schema_version=3, target_count=5)
+            )
 
     def test_unknown_template_field_rejected(self):
         with pytest.raises(ValidationError):

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { useSelectionWorkspace } from '../../src/composables/useSelectionWorkspace.js';
-const tmpl = (id) => ({id, name:id, conditions:[], strategy_factors:[], target_count:10, hold_tolerance:0, migration_issues:[]});
+const tmpl = (id) => ({id, name:id, conditions:[], strategy_factors:[], migration_issues:[]});
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve=r; }); return {promise, resolve}; };
 const setup = async (overrides={}) => {
  const api={getFactors:vi.fn().mockResolvedValue({version:3,revision:'r1',active_id:'a',templates:[tmpl('a'),tmpl('b')]}),saveFactors:vi.fn(async c => ({data:{...c,revision:'r2'}})),screenBonds:vi.fn().mockResolvedValue({rows:[],meta:{}}),...overrides};

@@ -325,8 +325,6 @@ class _ConditionsTemplateBase(BaseModel):
     description: str = ""
     conditions: list[ConditionModel] = Field(default_factory=list)
     strategy_factors: list[ScoringFactorModel] = Field(default_factory=list)
-    target_count: Annotated[int, Field(strict=True, ge=1, le=50)] = 10
-    hold_tolerance: Annotated[int, Field(strict=True, ge=0, le=20)] = 0
 
     model_config = {"extra": "forbid"}
 
