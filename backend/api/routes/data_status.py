@@ -27,7 +27,8 @@ def get_data_status(db: Session = Depends(get_db)) -> dict:
 def run_job_manually(job_id: str) -> dict:
     """手动触发指定任务: 后台线程执行, 立即返回。
 
-    任务内部自带交易日判断(非交易日直接跳过并记一条日志)。
+    交易日闸门只对当日快照类任务存在(cb_list/stock_dividend/style_rotation
+    非交易日跳过); 每个自然日任务(强赎/等权指数/估值/eod)不跳过。
     运行记录照常写入 task_run_log, 状态页轮询可见。
     """
     func = JOB_FUNCS.get(job_id)
