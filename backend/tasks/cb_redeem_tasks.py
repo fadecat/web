@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """可转债强赎列表日频任务: 拉取集思录 redeem_list → 全量落库。
 
-调度: 交易日 15:03 CST(强赎计数/到期赎回价是筛选链路上游, 先于 cb_list 快照)。
+调度: 每个自然日 15:03 CST(强赎计数/到期赎回价是筛选链路上游, 先于 cb_list 快照;
+集思录当日值发布偏晚, 次日/周末补跑幂等追平)。
 也可手动调用: python -m backend.tasks.cb_redeem_tasks
 """
 from __future__ import annotations
@@ -13,22 +14,23 @@ from loguru import logger
 from backend.models.database import SessionLocal
 from backend.services.fetchers.cb_redeem import fetch_redeem_list
 from backend.services.cb_redeem_store import save_cb_redeem
-from backend.utils import is_trading_day
+from backend.utils import latest_trading_day
 
 
 def run_cb_redeem_daily() -> None:
     """可转债强赎列表日频任务。
 
-    1. 交易日判断
-    2. 集思录登录 → 拉 redeem_list 全量强赎数据
-    3. 每只强赎相关转债一行, 原始字段落库(幂等)
+    1. 集思录登录 → 拉 redeem_list 全量强赎数据
+    2. 每只强赎相关转债一行, 原始字段落库(幂等)
+
+    trade_date 取 latest_trading_day(): 周末/节假日抓到的仍是最近交易日的
+    状态, 覆盖写该日快照(同日覆盖幂等), 不产生假日假行 —— 保证与 cb_list
+    (交易日 15:06)两张表始终同日对齐。
     """
     today = date.today()
-    if not is_trading_day(today):
-        logger.info(f"非交易日({today}),跳过强赎列表快照任务")
-        return {"status": "skipped", "success_count": 0, "fail_count": 0}
+    trade_date = latest_trading_day(today)
 
-    logger.info(f"=== 可转债强赎列表快照任务开始 ({today}) ===")
+    logger.info(f"=== 可转债强赎列表快照任务开始 ({today}, 落库日 {trade_date}) ===")
 
     try:
         records = fetch_redeem_list()
@@ -45,7 +47,7 @@ def run_cb_redeem_daily() -> None:
 
     db = SessionLocal()
     try:
-        inserted = save_cb_redeem(db, records, today)
+        inserted = save_cb_redeem(db, records, trade_date)
         logger.info(f"落库完成: {inserted} 条新写入 (共 {len(records)} 条)")
     except Exception as exc:
         db.rollback()

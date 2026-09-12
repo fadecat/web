@@ -30,8 +30,8 @@ _STALE_MAX_LAG = 5
 
 # 已接入监控的定时任务(job_id → 展示信息)
 JOBS: dict[str, dict[str, str]] = {
-    "cb_redeem_daily": {"name": "强赎列表", "schedule": "交易日 15:03"},
-    "cb_index_daily": {"name": "转债等权指数", "schedule": "交易日 15:04"},
+    "cb_redeem_daily": {"name": "强赎列表", "schedule": "每天 15:03"},
+    "cb_index_daily": {"name": "转债等权指数", "schedule": "每天 15:04"},
     "cb_list_daily": {"name": "转债全量快照", "schedule": "交易日 15:06"},
     "stock_dividend_daily": {"name": "高股息股票快照", "schedule": "交易日 15:08"},
     "style_rotation_daily": {"name": "指数日线（腾讯）", "schedule": "交易日 22:03"},
@@ -288,7 +288,8 @@ def get_job_runs(db: Session) -> list[dict]:
 def _next_run_times(now: datetime) -> dict[str, str]:
     """按 registry 调度时刻计算各任务下一次触发时间(本地 ISO)。
 
-    易方达历史全量同步任务每天检查；其余当日快照任务仅在下一交易日运行。
+    每个自然日运行的任务(历史同步 + 集思录晚发布补抓)按自然日推算；
+    其余当日快照任务仅在下一交易日运行。
     这里表达的是程序计划执行时间(next_run_at)，不与数据目录的应就绪期限混用。
     """
     from datetime import timedelta

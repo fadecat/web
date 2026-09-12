@@ -29,13 +29,14 @@ def _uni_index(code, name="创成长", **ds_kwargs):
     [
         (style_rotation_tasks, "run_style_rotation_daily"),
         (cb_list_tasks, "run_cb_list_daily"),
-        (cb_index_tasks, "run_cb_index_daily"),
-        (cb_redeem_tasks, "run_cb_redeem_daily"),
         (stock_dividend_tasks, "run_stock_dividend_daily"),
     ],
 )
 def test_market_snapshot_tasks_report_non_trading_day_as_skipped(monkeypatch, module, func_name):
-    """当日快照任务非交易日必须 skipped，不能返回 None 被误记 success。"""
+    """当日快照任务非交易日必须 skipped，不能返回 None 被误记 success。
+
+    (cb_redeem/cb_index 已改为每个自然日跑, 见下方 everyday 系列。)
+    """
     monkeypatch.setattr(module, "is_trading_day", lambda _day: False)
 
     result = getattr(module, func_name)()
@@ -53,7 +54,8 @@ def test_market_snapshot_tasks_report_non_trading_day_as_skipped(monkeypatch, mo
 )
 def test_single_stream_fetch_failure_is_reported_failed(monkeypatch, module, func_name, fetch_name):
     """转债单流任务抓取失败必须返回 fail_count，不能吞异常后假绿。"""
-    monkeypatch.setattr(module, "is_trading_day", lambda _day: True)
+    # cb_redeem/cb_index 已无交易日闸门, raising=False 让 patch 仅对保留闸门的模块生效
+    monkeypatch.setattr(module, "is_trading_day", lambda _day: True, raising=False)
     monkeypatch.setattr(module, fetch_name, lambda: (_ for _ in ()).throw(RuntimeError("source down")))
 
     result = getattr(module, func_name)()
@@ -137,7 +139,7 @@ def test_single_stream_database_failure_rolls_back_and_reports_failed(
 ):
     """转债任务落库失败必须 rollback 并返回 failed 计数。"""
     db = MagicMock()
-    monkeypatch.setattr(module, "is_trading_day", lambda _day: True)
+    monkeypatch.setattr(module, "is_trading_day", lambda _day: True, raising=False)
     monkeypatch.setattr(module, "SessionLocal", lambda: db)
     monkeypatch.setattr(module, fetch_name, lambda: sample)
     monkeypatch.setattr(
@@ -209,6 +211,61 @@ def test_historical_sync_jobs_run_without_trading_day_gate(monkeypatch):
     assert index_eod_tasks.run_index_eod_daily() == {"success_count": 0, "fail_count": 0}
 
 
+class _FakeSaturdayDate:
+    """固定 date.today() = 2026-09-12(周六), 验证自然日任务不被非交易日挡住。"""
+
+    @staticmethod
+    def today():
+        from datetime import date
+
+        return date(2026, 9, 12)
+
+
+def test_everyday_cb_jobs_run_without_trading_day_gate(monkeypatch):
+    """强赎列表/转债等权指数改为每个自然日跑: 周六也照常执行并成功。
+
+    (集思录当日值发布偏晚, 次日/周末补跑幂等追平最近交易日。)
+    """
+    idx_db = MagicMock()
+    monkeypatch.setattr(cb_index_tasks, "date", _FakeSaturdayDate)
+    monkeypatch.setattr(cb_index_tasks, "SessionLocal", lambda: idx_db)
+    monkeypatch.setattr(
+        cb_index_tasks, "fetch_cb_index_history",
+        lambda: [{"date": "2026-09-11", "index_value": "180.1"}],
+    )
+    monkeypatch.setattr(cb_index_tasks, "save_cb_index_records", lambda *_args: 1)
+    assert cb_index_tasks.run_cb_index_daily() == {"success_count": 1, "fail_count": 0}
+
+    rdm_db = MagicMock()
+    monkeypatch.setattr(cb_redeem_tasks, "date", _FakeSaturdayDate)
+    monkeypatch.setattr(cb_redeem_tasks, "SessionLocal", lambda: rdm_db)
+    monkeypatch.setattr(cb_redeem_tasks, "fetch_redeem_list", lambda: [{"bond_id": "113050"}])
+    monkeypatch.setattr(cb_redeem_tasks, "save_cb_redeem", lambda *_args: 1)
+    assert cb_redeem_tasks.run_cb_redeem_daily() == {"success_count": 1, "fail_count": 0}
+
+
+def test_redeem_weekend_run_writes_latest_trading_day_not_holiday(monkeypatch):
+    """周六跑强赎列表: trade_date 必须取最近交易日(周五 09-11), 不写假日假行。
+
+    防回归: 若退回 date.today(), 周末会写出 trade_date=周六的假行,
+    破坏与 cb_list(交易日 15:06)的同日对齐。
+    """
+    from datetime import date
+
+    saved = {}
+    monkeypatch.setattr(cb_redeem_tasks, "date", _FakeSaturdayDate)
+    monkeypatch.setattr(cb_redeem_tasks, "SessionLocal", lambda: MagicMock())
+    monkeypatch.setattr(cb_redeem_tasks, "fetch_redeem_list", lambda: [{"bond_id": "113050"}])
+    monkeypatch.setattr(
+        cb_redeem_tasks,
+        "save_cb_redeem",
+        lambda _db, records, trade_date: saved.update(trade_date=trade_date) or 1,
+    )
+
+    assert cb_redeem_tasks.run_cb_redeem_daily() == {"success_count": 1, "fail_count": 0}
+    assert saved["trade_date"] == date(2026, 9, 11)  # 周五, 而非周六
+
+
 # ---------------------------------------------------------------------------
 # 异常空数据契约: 本应非空的返回为空 -> 判失败(不能静默记成功)
 # 合法可空的返回为空 -> 仍算成功; 非空但新增 0 条 -> 仍算成功
@@ -226,7 +283,7 @@ def test_single_stream_empty_fetch_is_reported_failed(
 ):
     """转债全量快照/等权指数返回空列表必须判失败,不能因为「没抛异常」就记成功。"""
     db = MagicMock()
-    monkeypatch.setattr(module, "is_trading_day", lambda _day: True)
+    monkeypatch.setattr(module, "is_trading_day", lambda _day: True, raising=False)
     monkeypatch.setattr(module, "SessionLocal", lambda: db)
     monkeypatch.setattr(module, fetch_name, lambda: [])
     monkeypatch.setattr(module, save_name, lambda *_args: 0)
@@ -256,7 +313,7 @@ def test_single_stream_non_empty_with_zero_inserted_is_success(
 ):
     """正常非空返回但新增 0 条(当日已写过/幂等命中)必须算成功。"""
     db = MagicMock()
-    monkeypatch.setattr(module, "is_trading_day", lambda _day: True)
+    monkeypatch.setattr(module, "is_trading_day", lambda _day: True, raising=False)
     monkeypatch.setattr(module, "SessionLocal", lambda: db)
     monkeypatch.setattr(module, fetch_name, lambda: sample)
     monkeypatch.setattr(module, save_name, lambda *_args: 0)
@@ -267,7 +324,6 @@ def test_single_stream_non_empty_with_zero_inserted_is_success(
 def test_redeem_legal_empty_list_is_success(monkeypatch):
     """强赎列表合法为空(当日无强赎转债)不能一刀切判失败。"""
     db = MagicMock()
-    monkeypatch.setattr(cb_redeem_tasks, "is_trading_day", lambda _day: True)
     monkeypatch.setattr(cb_redeem_tasks, "SessionLocal", lambda: db)
     monkeypatch.setattr(cb_redeem_tasks, "fetch_redeem_list", lambda: [])
     monkeypatch.setattr(cb_redeem_tasks, "save_cb_redeem", lambda *_args: 0)

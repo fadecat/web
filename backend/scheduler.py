@@ -143,15 +143,18 @@ def _startup_integrity_scan() -> None:
 
 
 def _register_daily_jobs() -> None:
-    """注册五个日频抓取任务(周一至周五, 收盘后错峰执行)。
+    """注册日频抓取任务(时刻与自然日/交易日口径见 registry.DAILY_JOBS)。
 
     misfire_grace_time=3600: 错过触发时间后 1 小时内仍补跑
     (如 15:30 定时任务遇到 15:50 才重启的服务, 重启后立即补抓当天数据)。
     coalesce=True: 积压多次触发只跑一次, 防止重启风暴后连环抓取。
 
     顺序依赖: cb_redeem(含到期赎回价/强赎计数)是 cb_screen 筛选链路的上游,
-    排在 cb_list 之前, 保证 15:06 手动筛选时两张表同日对齐。
-    转债等权指数集思录 15:04 即更新, 提前排; 风格轮动/估值数据源更新慢, 放 22 点档。
+    排在 cb_list 之前, 保证 15:06 手动筛选时两张表同日对齐(周末 cb_redeem
+    按 latest_trading_day 覆盖写最近交易日快照, 不写假日假行)。
+    cb_redeem/cb_index(集思录)与 valuation/index_eod(易方达)为每个自然日:
+    当日值发布偏晚, 次日/周末补跑 + 幂等落库追平最近交易日;
+    其余当日快照仍限周一至周五。数据源更新慢的放 22 点档。
     任务定义统一在 backend/tasks/registry.py(手动触发端点共用同一份)。
     """
     from backend.tasks.registry import DAILY_JOBS, EVERYDAY_JOB_IDS
@@ -198,7 +201,8 @@ def start_scheduler() -> None:
         "scheduler started: cb_redeem@15:03, cb_index@15:04, cb_list@15:06, "
         "stock_dividend@15:08, "
         "style_rotation@22:03, valuation@22:06, index_eod@22:09 "
-        "(misfire_grace_time=3600, coalesce=True)"
+        "(cb_redeem/cb_index/valuation/index_eod 每个自然日; "
+        "misfire_grace_time=3600, coalesce=True)"
     )
 
 

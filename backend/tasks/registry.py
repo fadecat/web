@@ -14,9 +14,17 @@ from backend.tasks.stock_dividend_tasks import run_stock_dividend_daily
 from backend.tasks.style_rotation_tasks import run_style_rotation_daily
 from backend.tasks.valuation_tasks import run_valuation_daily
 
-# 历史全量同步任务每天检查：来源可能在周末发布最近交易日数据，且接口本身可幂等回补。
+# 每个自然日都跑的任务:
+# - valuation/index_eod 是历史全量同步, 来源可能在周末发布最近交易日数据;
+# - cb_redeem/cb_index 的集思录源当日值发布偏晚(15:03/15:04 只能抓到昨日),
+#   次日/周末自然日补跑 + 幂等落库, 最近交易日的值最迟隔天追平。
 # 其余任务是“当日市场快照”，仍只在周一至周五触发并由任务内交易日判断兜底。
-EVERYDAY_JOB_IDS = frozenset({"valuation_daily", "index_eod_daily"})
+EVERYDAY_JOB_IDS = frozenset({
+    "cb_redeem_daily",
+    "cb_index_daily",
+    "valuation_daily",
+    "index_eod_daily",
+})
 
 # (job_id, 函数, 展示名, hour, minute) —— 与 scheduler 注册一致
 DAILY_JOBS: list[tuple[str, object, str, int, int]] = [

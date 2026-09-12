@@ -96,7 +96,7 @@ def test_startup_backfill_stops_before_database_check_when_lock_busy(monkeypatch
 
 
 def test_historical_sync_jobs_are_scheduled_every_day(monkeypatch):
-    """易方达历史同步包含周末，腾讯/转债当日任务仍限定周一至周五。"""
+    """历史同步与集思录晚发布任务(强赎/等权指数)包含周末；腾讯/转债/高股息当日任务仍限周一至周五。"""
     calls = []
     monkeypatch.setattr(
         scheduler_module.scheduler,
@@ -108,5 +108,8 @@ def test_historical_sync_jobs_are_scheduled_every_day(monkeypatch):
     by_id = {c["id"]: c for c in calls}
     assert str(by_id["valuation_daily"]["trigger"]).startswith("cron[day_of_week='*'")
     assert str(by_id["index_eod_daily"]["trigger"]).startswith("cron[day_of_week='*'")
+    assert str(by_id["cb_redeem_daily"]["trigger"]).startswith("cron[day_of_week='*'")
+    assert str(by_id["cb_index_daily"]["trigger"]).startswith("cron[day_of_week='*'")
     assert "day_of_week='mon-fri'" in str(by_id["style_rotation_daily"]["trigger"])
     assert "day_of_week='mon-fri'" in str(by_id["cb_list_daily"]["trigger"])
+    assert "day_of_week='mon-fri'" in str(by_id["stock_dividend_daily"]["trigger"])

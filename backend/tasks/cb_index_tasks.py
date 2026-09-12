@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """可转债等权指数日频任务: 拉取集思录 cb_index → 原始字段落库。
 
-调度: 交易日 15:40 CST。
+调度: 每个自然日 15:04 CST(集思录当日值发布偏晚, 盘后时段只能抓到昨日;
+次日/周末自然日补跑 + 全历史幂等落库, 最近交易日的值最迟隔天追平)。
 也可手动调用: python -m backend.tasks.cb_index_tasks
 """
 from __future__ import annotations
@@ -13,20 +14,15 @@ from loguru import logger
 from backend.models.database import SessionLocal
 from backend.services.fetchers.cb_index import fetch_cb_index_history
 from backend.services.cb_index_store import save_cb_index_records
-from backend.utils import is_trading_day
 
 
 def run_cb_index_daily() -> None:
     """可转债等权指数日频任务。
 
-    1. 交易日判断
-    2. 集思录登录 → 拉 cb_index 页面 → 解析
-    3. 原始字段全量落库(幂等)
+    1. 集思录登录 → 拉 cb_index 页面 → 解析
+    2. 原始字段全量落库(幂等; 日期由源数据决定, 周末跑即回补最近交易日)
     """
     today = date.today()
-    if not is_trading_day(today):
-        logger.info(f"非交易日({today}),跳过可转债等权指数日频任务")
-        return {"status": "skipped", "success_count": 0, "fail_count": 0}
 
     logger.info(f"=== 可转债等权指数日频任务开始 ({today}) ===")
 
