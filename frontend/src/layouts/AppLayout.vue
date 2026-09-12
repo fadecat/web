@@ -275,10 +275,14 @@ html.dark .page-title {
   color: var(--el-text-color-primary);
 }
 
+/* 顶部留白用 margin 而非 padding: sticky 元素相对滚动容器的内边距盒顶缘吸顶,
+   padding-top 会把吸顶位置顶下 20px, 滚动的行从表头上方穿出(漏风);
+   margin 在滚动容器之外, 行永远进不了这条带子, 表头与容器顶缘严丝合缝 */
 .content {
   flex: 1;
   overflow-y: auto;
-  padding: 20px 24px;
+  margin-top: 20px;
+  padding: 0 24px 20px;
 }
 
 /* ---------- 移动端适配 ---------- */
@@ -315,7 +319,8 @@ html.dark .page-title {
   }
 
   .content {
-    padding: 12px;
+    margin-top: 12px;
+    padding: 0 12px 12px;
   }
 }
 </style>

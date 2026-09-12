@@ -1,6 +1,6 @@
 <script setup>
-import { h, ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
-import { ElMessage, ElMessageBox, ElTooltip } from 'element-plus';
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { getStockDividendSnapshot, getDividendPresets, saveDividendPresets } from '../api';
 import { errorText } from '../composables/useSelectionWorkspace';
 import {
@@ -22,7 +22,7 @@ import {
   signedClass,
 } from '../utils/stockDividend.mjs';
 
-// 列配置切片: 代码/名称两列在 v2 渲染函数里有徽标/外链特例, 其余列共用 cellText/cellClass 分发
+// 循环外手写的前两列(代码/名称有徽标与外链, 不走通用单元格分发)
 const dynamicColumns = STOCK_DIVIDEND_COLUMNS.slice(2);
 
 // 主筛选区阈值(邮件漏斗口径 + 派生指标分红率)
@@ -277,7 +277,7 @@ async function renamePreset() {
         (!!v?.trim() && [...v.trim()].length <= 40) || '名称需要 1～40 个字符',
     });
     const name = answer.value.trim();
-    if (presets.value.some((x) => x.name === name && x.id !== p.id)) {
+    if (presets.value.some((p) => p.name === name && p.id !== p.id)) {
       throw new Error('预设名称重复');
     }
     p.name = name;
@@ -340,96 +340,6 @@ function jisiluStockUrl(stockId) {
   return `https://www.jisilu.cn/data/stock/${stockId}`;
 }
 
-// ---- el-table-v2 表格层(固定表头 + 冻结列 + 虚拟滚动的原生形态) ----
-// 列定义由 STOCK_DIVIDEND_COLUMNS 派生(列配置仍是单一事实源);
-// 渲染函数产出的节点不带本组件 scoped 属性, 配色/徽标类放非 scoped 样式块。
-const TOTAL_COLUMN_WIDTH = STOCK_DIVIDEND_COLUMNS.reduce((sum, c) => sum + c.width, 0);
-
-function v2HeaderRenderer(col) {
-  if (!col.headerTip) return undefined; // 缺省渲染 title
-  return () => h(ElTooltip, { content: col.headerTip, placement: 'top' }, {
-    default: () => h('span', { class: 'th-tip' }, [col.label, ' ⓘ']),
-  });
-}
-
-function v2CellRenderer(col) {
-  if (col.field === 'stock_id') {
-    return ({ rowData }) => h('a', {
-      class: 'code-link',
-      href: jisiluStockUrl(rowData.stock_id),
-      target: '_blank',
-      rel: 'noopener',
-    }, rowData.stock_id);
-  }
-  if (col.field === 'stock_nm') {
-    // 名称 + R 徽标 + 审计警示(复刻原 el-table 名称列)
-    return ({ rowData }) => [
-      h('span', rowData.stock_nm),
-      rowData.margin_flg === 'R' ? h('sup', { class: 'badge-r', title: '融资融券标的' }, 'R') : null,
-      rowData.audit_info
-        ? h(ElTooltip, { content: rowData.audit_info, placement: 'top' }, {
-          default: () => h('span', { class: 'audit-warn' }, '⚠'),
-        })
-        : null,
-    ];
-  }
-  if (col.field === 'industry_nm') {
-    return ({ rowData }) => (rowData.industry_nm2
-      ? h(ElTooltip, { content: rowData.industry_nm2, placement: 'top' }, {
-        default: () => h('span', cellText(rowData, col)),
-      })
-      : h('span', cellText(rowData, col)));
-  }
-  if (col.field === 'pb') {
-    return ({ rowData }) => (rowData.pb_flag === 'Y'
-      ? h(ElTooltip, { content: '股东权益含优先股和永续债，PB值与其它平台计算会存在差异', placement: 'top' }, {
-        default: () => h('span', { class: 'pb-gray' }, cellText(rowData, col)),
-      })
-      : h('span', { class: cellClass(rowData, col) }, cellText(rowData, col)));
-  }
-  return ({ rowData }) => h('span', { class: cellClass(rowData, col) }, cellText(rowData, col));
-}
-
-const v2Columns = STOCK_DIVIDEND_COLUMNS.map((col, idx) => ({
-  key: col.field,
-  dataKey: col.field,
-  title: col.label,
-  width: col.width,
-  align: col.align,
-  fixed: idx < 2 || undefined, // 代码/名称 左固定(true = left)
-  sortable: true,
-  flexGrow: col.field === 'province' ? 1 : undefined, // 末列吃满剩余宽, 容器更宽不出留白
-  headerCellRenderer: v2HeaderRenderer(col),
-  cellRenderer: v2CellRenderer(col),
-}));
-
-// 排序状态桥: table-v2 表头只有 asc/desc 两态循环(无第三次点击还原默认),
-// 排序本体仍是 sortRows(null 沉底 + stock_id tie-break), 这里只翻译事件与指示态
-const v2SortState = computed(() => ({
-  [sort.value.prop]: sort.value.order === 'ascending' ? 'asc' : 'desc',
-}));
-
-function onV2ColumnSort({ key, order }) {
-  onSortChange({ prop: String(key), order: order === 'asc' ? 'ascending' : 'descending' });
-}
-
-// 斑马纹(table-v2 无内建 stripe, 走行类)
-function v2RowClass({ rowIndex }) {
-  return rowIndex % 2 === 1 ? 'v2-row-alt' : '';
-}
-
-// width/height 必须传数字: 宽取容器实测(clientWidth 为 0 时回退列宽合计),
-// 高随视口(表格上方筛选区/下方分页合计约 450px)
-const tableWrap = ref(null);
-const tableWidth = ref(0);
-const tableHeight = ref(360);
-
-function measureTable() {
-  tableWidth.value = tableWrap.value?.clientWidth || 0;
-  tableHeight.value = Math.max(320, window.innerHeight - 450);
-}
-const v2Width = computed(() => tableWidth.value || TOTAL_COLUMN_WIDTH);
-
 // 数据新鲜度: 截至日期较今天超过 7 个自然日 → 中性提示
 const dataAgeDays = computed(() => {
   if (!asOfDate.value) return null;
@@ -442,14 +352,11 @@ const isStale = computed(() => dataAgeDays.value != null && dataAgeDays.value > 
 const refreshing = computed(() => loading.value && allRows.value.length > 0);
 
 onMounted(() => {
-  measureTable(); // 表格容器尺寸(el-table-v2 需要数字宽高)
-  window.addEventListener('resize', measureTable);
   loadData(false);
   loadPresets(); // 与数据加载并行; 完成后套用默认预设(套用即触发本地筛选)
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', measureTable);
   disposed = true; // 卸载后不再更新页面
 });
 </script>
@@ -649,26 +556,65 @@ onBeforeUnmount(() => {
         </label>
       </div>
 
-      <!-- 4. 宽表(el-table-v2: 固定表头 + 冻结列 + 虚拟滚动原生形态) -->
-      <div ref="tableWrap" class="table-wrap">
-        <el-table-v2
-          class="stock-table"
-          :columns="v2Columns"
-          :data="pagedRows"
-          :width="v2Width"
-          :height="tableHeight"
-          row-key="stock_id"
-          :row-height="36"
-          :header-height="40"
-          :sort-state="v2SortState"
-          :row-class="v2RowClass"
-          @column-sort="onV2ColumnSort"
-        >
-          <template #empty>
-            <span class="v2-empty">筛选无结果</span>
+      <!-- 4. 宽表(表头吸顶: 滚动长表时表头钉在可视区顶部, 见样式 .el-table__header-wrapper) -->
+      <el-table
+        class="stock-table"
+        :data="pagedRows"
+        stripe
+        :default-sort="{ prop: 'dividend_rate', order: 'descending' }"
+        @sort-change="onSortChange"
+      >
+        <el-table-column prop="stock_id" label="代码" width="80" align="center" fixed="left" sortable="custom">
+          <template #default="{ row }">
+            <a class="code-link" :href="jisiluStockUrl(row.stock_id)" target="_blank" rel="noopener">
+              {{ row.stock_id }}
+            </a>
           </template>
-        </el-table-v2>
-      </div>
+        </el-table-column>
+        <el-table-column prop="stock_nm" label="名称" width="110" align="left" fixed="left" sortable="custom">
+          <template #default="{ row }">
+            <span>{{ row.stock_nm }}</span>
+            <sup v-if="row.margin_flg === 'R'" class="badge-r" title="融资融券标的">R</sup>
+            <el-tooltip v-if="row.audit_info" :content="row.audit_info" placement="top">
+              <span class="audit-warn">⚠</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
+        <el-table-column
+          v-for="col in dynamicColumns"
+          :key="col.field"
+          :prop="col.field"
+          :label="col.label"
+          :width="col.width"
+          :align="col.align"
+          :class-name="col.className || ''"
+          sortable="custom"
+        >
+          <template #header>
+            <el-tooltip v-if="col.headerTip" :content="col.headerTip" placement="top">
+              <span class="th-tip">{{ col.label }} ⓘ</span>
+            </el-tooltip>
+            <span v-else>{{ col.label }}</span>
+          </template>
+          <template #default="{ row }">
+            <el-tooltip
+              v-if="col.field === 'industry_nm' && row.industry_nm2"
+              :content="row.industry_nm2"
+              placement="top"
+            >
+              <span :class="cellClass(row, col)">{{ cellText(row, col) }}</span>
+            </el-tooltip>
+            <el-tooltip
+              v-else-if="col.field === 'pb' && row.pb_flag === 'Y'"
+              content="股东权益含优先股和永续债，PB值与其它平台计算会存在差异"
+              placement="top"
+            >
+              <span class="pb-gray">{{ cellText(row, col) }}</span>
+            </el-tooltip>
+            <span v-else :class="cellClass(row, col)">{{ cellText(row, col) }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
 
       <!-- 5. 分页 -->
       <el-pagination
@@ -722,12 +668,12 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
 }
 .refresh-btn {
-  border: 1px solid var(--el-border-color);
-  background: var(--el-bg-color);
+  border: 1px solid #d1d5db;
+  background: #fff;
   border-radius: 8px;
   padding: 5px 14px;
   font-size: 13px;
-  color: var(--el-text-color-regular);
+  color: #374151;
   cursor: pointer;
 }
 .refresh-btn:disabled {
@@ -737,7 +683,7 @@ onBeforeUnmount(() => {
 
 .data-note {
   font-size: 12px;
-  color: var(--el-text-color-secondary);
+  color: #9ca3af;
 }
 
 .banner {
@@ -763,7 +709,7 @@ onBeforeUnmount(() => {
 }
 .retry-btn {
   border: 1px solid #b91c1c;
-  background: var(--el-bg-color);
+  background: #fff;
   color: #b91c1c;
   border-radius: 6px;
   padding: 4px 12px;
@@ -801,7 +747,7 @@ onBeforeUnmount(() => {
 
 .empty-state {
   text-align: center;
-  color: var(--el-text-color-secondary);
+  color: #9ca3af;
   font-size: 14px;
   padding: 40px 0;
   display: flex;
@@ -825,8 +771,8 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color-lighter);
+  background: #fafafa;
+  border: 1px solid #eef2f7;
   border-radius: 10px;
   padding: 8px 12px;
 }
@@ -838,7 +784,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: var(--el-text-color-secondary);
+  color: #909399;
   white-space: nowrap;
 }
 .status::before {
@@ -858,8 +804,8 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px 12px; /* 紧凑: 行距 6 / 列距 12 */
   align-items: center;
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color-lighter);
+  background: #fafafa;
+  border: 1px solid #eef2f7;
   border-radius: 10px;
   padding: 10px 12px;
 }
@@ -871,19 +817,19 @@ onBeforeUnmount(() => {
   border-radius: 0 0 10px 10px;
   border-top-style: dashed;
   margin-top: -12px; /* 抵消页面 gap, 与主筛选区贴合 */
-  background: var(--el-fill-color-light);
+  background: #f7f9fb;
 }
 .f-item {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: var(--el-text-color-regular);
+  color: #4b5563;
   white-space: nowrap;
   min-width: 0; /* 允许网格列内收缩 */
 }
 .f-label {
-  color: var(--el-text-color-secondary);
+  color: #6b7280;
   flex-shrink: 0;
 }
 .num-input {
@@ -898,7 +844,7 @@ onBeforeUnmount(() => {
   min-width: 0; /* 级联/下拉占满所在列剩余宽 */
 }
 .f-sep {
-  color: var(--el-text-color-secondary);
+  color: #9ca3af;
 }
 .f-actions {
   grid-column: 1 / -1; /* 操作行独占整行 */
@@ -920,7 +866,7 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 .mini-link:disabled {
-  color: var(--el-text-color-placeholder);
+  color: #c0c4cc;
   cursor: not-allowed;
 }
 .mini-link:hover:not(:disabled) {
@@ -929,15 +875,63 @@ onBeforeUnmount(() => {
 .f-count {
   margin-left: auto;
   font-size: 12px;
-  color: var(--el-text-color-secondary);
+  color: #6b7280;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-/* 表格容器(el-table-v2 需要数字宽高, 挂载后实测容器尺寸) */
-.table-wrap {
+/* 表格 */
+.stock-table {
   width: 100%;
+  /* EP 默认 .el-table{overflow:hidden} 会成为 sticky 的滚动容器(自身不滚 → 表头
+     吸顶失效); overflow:clip 视觉同样裁剪但不建立滚动容器, 表头得以感知真正的
+     滚动容器(AppLayout 的 .content) */
+  overflow: clip;
 }
+/* 表头吸顶: 布局滚动容器是 AppLayout 的 .content(overflow-y:auto), 表头钉在
+   其顶缘; 保持「页面单滚动」模型, 不引入表格内部滚动。冻结列单元格自身是
+   sticky 定位(z-index 2), 表头 3 压其上, 互不冲突 */
+.stock-table :deep(.el-table__header-wrapper) {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+.stock-table :deep(td) {
+  font-variant-numeric: tabular-nums;
+}
+.code-link {
+  color: #2563eb;
+  text-decoration: none;
+}
+.code-link:hover {
+  text-decoration: underline;
+}
+.badge-r {
+  margin-left: 2px;
+  font-size: 10px;
+  color: #f59e0b;
+}
+.audit-warn {
+  margin-left: 3px;
+  color: #dc2626;
+  cursor: help;
+}
+.pb-gray {
+  color: #9ca3af;
+}
+.th-tip {
+  cursor: help;
+}
+
+/* 温度色阶(对齐集思录 liquidColour 四档) */
+.t-cyan { color: #0099cc; }
+.t-green { color: #468847; }
+.t-orange { color: #f89406; }
+.t-red { color: #b94a48; }
+
+/* 涨红跌绿 */
+.up { color: #c0392b; }
+.down { color: #1e8e4e; }
 
 /* 分页 */
 .el-pagination {
@@ -946,17 +940,17 @@ onBeforeUnmount(() => {
 
 /* 口径 */
 .caliber {
-  border: 1px solid var(--el-border-color-lighter);
+  border: 1px solid #eef2f7;
   border-radius: 10px;
   padding: 10px 14px;
   font-size: 12px;
-  color: var(--el-text-color-secondary);
-  background: var(--el-fill-color-light);
+  color: #6b7280;
+  background: #fafafa;
 }
 .caliber summary {
   cursor: pointer;
   font-weight: 600;
-  color: var(--el-text-color-regular);
+  color: #4b5563;
 }
 .caliber p {
   margin: 10px 0;
@@ -976,74 +970,4 @@ onBeforeUnmount(() => {
   .f-count { margin-left: 0; }
   .num-input { width: 72px; }
 }
-
-/* ---------- 深色模式微调(语义色只提亮不换色相, 骨架屏换暗色微光) ---------- */
-html.dark .link-btn,
-html.dark .mini-link { color: #60a5fa; }
-html.dark .banner.error { background: rgba(248, 113, 113, 0.1); color: #f87171; }
-html.dark .banner.warn { background: rgba(251, 191, 36, 0.1); color: #fbbf24; }
-html.dark .banner.neutral { background: rgba(148, 163, 184, 0.12); color: #94a3b8; }
-html.dark .retry-btn { border-color: #f87171; color: #f87171; }
-html.dark .sk-toolbar,
-html.dark .sk-row {
-  background: linear-gradient(90deg, #1f2937, #374151, #1f2937);
-  background-size: 200% 100%;
-}
-</style>
-
-<style>
-/* el-table-v2 的单元格/表头由渲染函数产出, 不带本组件 scoped 属性,
-   单元格配色/徽标类放非 scoped 块, 以页面根类限定作用域 */
-.stock-dividend-page .stock-table .el-table-v2__row-cell {
-  font-variant-numeric: tabular-nums;
-}
-.stock-dividend-page .stock-table .v2-row-alt {
-  background: var(--el-fill-color-lighter);
-}
-.stock-dividend-page .stock-table .v2-empty {
-  color: var(--el-text-color-secondary);
-  font-size: 13px;
-}
-.stock-dividend-page .stock-table .code-link {
-  color: #2563eb;
-  text-decoration: none;
-}
-.stock-dividend-page .stock-table .code-link:hover {
-  text-decoration: underline;
-}
-.stock-dividend-page .stock-table .badge-r {
-  margin-left: 2px;
-  font-size: 10px;
-  color: #f59e0b;
-}
-.stock-dividend-page .stock-table .audit-warn {
-  margin-left: 3px;
-  color: #dc2626;
-  cursor: help;
-}
-.stock-dividend-page .stock-table .pb-gray {
-  color: var(--el-text-color-secondary);
-}
-.stock-dividend-page .stock-table .th-tip {
-  cursor: help;
-}
-
-/* 温度色阶(对齐集思录 liquidColour 四档) */
-.stock-dividend-page .stock-table .t-cyan { color: #0099cc; }
-.stock-dividend-page .stock-table .t-green { color: #468847; }
-.stock-dividend-page .stock-table .t-orange { color: #f89406; }
-.stock-dividend-page .stock-table .t-red { color: #b94a48; }
-
-/* 涨红跌绿 */
-.stock-dividend-page .stock-table .up { color: #c0392b; }
-.stock-dividend-page .stock-table .down { color: #1e8e4e; }
-
-/* 深色模式: 链接/警示/温度色阶与涨跌色只提亮不换色相(橙已够亮不动) */
-html.dark .stock-dividend-page .stock-table .code-link { color: #60a5fa; }
-html.dark .stock-dividend-page .stock-table .audit-warn { color: #f87171; }
-html.dark .stock-dividend-page .stock-table .t-cyan { color: #45c5ff; }
-html.dark .stock-dividend-page .stock-table .t-green { color: #6fbf71; }
-html.dark .stock-dividend-page .stock-table .t-red { color: #e88987; }
-html.dark .stock-dividend-page .stock-table .up { color: #f2705f; }
-html.dark .stock-dividend-page .stock-table .down { color: #4cc07f; }
 </style>
