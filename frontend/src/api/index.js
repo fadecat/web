@@ -20,6 +20,13 @@ export const getCbListHistory = (bondId) =>
 export const getStockDividendSnapshot = (params = {}) =>
   api.get('/stock-dividend/latest', { params }).then((r) => r.data);
 
+// 高股息筛选预设(服务端全量读写: GET 缺文件回退内置默认, POST 全量替换)
+export const getDividendPresets = () =>
+  api.get('/stock-dividend/presets').then((r) => r.data);
+
+export const saveDividendPresets = (data) =>
+  api.post('/stock-dividend/presets', data).then((r) => r.data);
+
 // 评级目录(唯一事实源): 规范等级+快照发现的未知值, 含 {value,label,order,is_missing}
 export const getRatingCatalog = () =>
   api.get('/cb-list/factors/ratings', { timeout: 15000 }).then((r) => r.data);

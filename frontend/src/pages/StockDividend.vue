@@ -1,11 +1,14 @@
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
-import { getStockDividendSnapshot } from '../api';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { getStockDividendSnapshot, getDividendPresets, saveDividendPresets } from '../api';
+import { errorText } from '../composables/useSelectionWorkspace';
 import {
   STOCK_DIVIDEND_COLUMNS,
   DEFAULT_SORT,
   PAGE_SIZES,
   emptyForm,
+  sanitizeForm,
   buildIndustryTree,
   collectProvinceOptions,
   filterRows,
@@ -21,21 +24,31 @@ import {
 // 循环外手写的前两列(代码/名称有徽标与外链, 不走通用单元格分发)
 const dynamicColumns = STOCK_DIVIDEND_COLUMNS.slice(2);
 
-// 13 个阈值输入(label 含比较方向, 顺序对齐集思录筛选区)
-const THRESHOLDS = [
+// 主筛选区阈值(邮件漏斗口径: PE≤15 / 股息率≥3 / PE温度≤40 / PB温度≤40 / 平均ROE≥5)
+const PRIMARY_THRESHOLDS = [
   { key: 'peMax', label: 'PE-TTM ≤' },
-  { key: 'pbMax', label: 'PB ≤' },
+  { key: 'dividendMin', label: '股息率TTM ≥' },
   { key: 'peTMax', label: 'PE温度 ≤' },
   { key: 'pbTMax', label: 'PB温度 ≤' },
+  { key: 'roeAverageMin', label: '5年平均ROE ≥' },
+];
+
+// 高级筛选区阈值(默认收起)
+const ADVANCED_THRESHOLDS = [
+  { key: 'pbMax', label: 'PB ≤' },
   { key: 'intDebtMax', label: '有息负债率 ≤' },
-  { key: 'dividendMin', label: '股息率TTM ≥' },
   { key: 'aftDividendMin', label: '5年平均股息率 ≥' },
   { key: 'roeMin', label: 'ROE ≥' },
-  { key: 'roeAverageMin', label: '5年平均ROE ≥' },
   { key: 'revenueAvgMin', label: '5年营收复合 ≥' },
   { key: 'profitAvgMin', label: '5年利润复合 ≥' },
   { key: 'cashflowAvgMin', label: '5年现金流复合 ≥' },
   { key: 'epsGrowthTtmMin', label: '净利同比增长 ≥' },
+];
+
+// 高级区激活条件数( markets/行业/地域/8 阈值/流通市值区间 )
+const ADVANCED_FORM_KEYS = [
+  'pbMax', 'intDebtMax', 'aftDividendMin', 'roeMin', 'revenueAvgMin',
+  'profitAvgMin', 'epsGrowthTtmMin', 'cashflowAvgMin',
 ];
 
 const cascaderProps = { checkStrictly: true, emitPath: false };
@@ -92,7 +105,174 @@ const pagedRows = computed(() =>
 );
 
 function resetForm() {
-  form.value = emptyForm();
+  // 重置 = 回到当前编辑预设的已保存值(而非清空; 预设未加载过则等同清空)
+  form.value = sanitizeForm(savedForm.value);
+}
+
+// ---- 服务端预设(另存为/重命名/删除/设默认; 全量替换保存) ----
+const presets = ref([]); // [{id, name, form}]
+const activeId = ref(''); // 默认预设(下次进页即用它)
+const editingId = ref(''); // 当前编辑中的预设
+const savedForm = ref(emptyForm()); // 当前编辑预设的已保存表单(dirty 比较)
+const presetsLoaded = ref(false);
+const presetSaving = ref(false);
+const advancedOpen = ref(false); // 高级筛选默认收起
+
+const dirty = computed(
+  () => JSON.stringify(form.value) !== JSON.stringify(savedForm.value),
+);
+
+const advancedCount = computed(() => {
+  const f = form.value;
+  let n = 0;
+  if (f.markets.length) n += 1;
+  if (f.industry) n += 1;
+  if (f.excludeIndustry) n += 1;
+  if (f.province) n += 1;
+  for (const k of ADVANCED_FORM_KEYS) if (f[k] != null) n += 1;
+  if (f.floatValueMin != null || f.floatValueMax != null) n += 1;
+  return n;
+});
+
+function cloneForm(f) {
+  return JSON.parse(JSON.stringify(f));
+}
+
+// 统一动作包装: ElMessageBox 的 cancel/close 静默, 其余报错走 ElMessage
+async function action(fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e !== 'cancel' && e !== 'close') ElMessage.error(errorText(e));
+  }
+}
+
+async function loadPresets() {
+  try {
+    const cfg = await getDividendPresets();
+    presets.value = Array.isArray(cfg?.presets) ? cfg.presets : [];
+    activeId.value = cfg?.active_id || presets.value[0]?.id || '';
+    editingId.value = activeId.value;
+    applyPresetForm(editingId.value);
+    presetsLoaded.value = true;
+  } catch (e) {
+    ElMessage.error(`预设加载失败：${errorText(e)}`);
+  }
+}
+
+function applyPresetForm(id) {
+  const p = presets.value.find((x) => x.id === id);
+  form.value = sanitizeForm(p?.form);
+  savedForm.value = sanitizeForm(p?.form);
+}
+
+// el-select 用 :model-value(非 v-model): 取消切换时无需回滚状态
+async function onSwitchPreset(id) {
+  if (id === editingId.value) return;
+  if (dirty.value) {
+    try {
+      await ElMessageBox.confirm('切换预设将放弃当前未保存的修改，是否继续？', '切换预设');
+    } catch {
+      return;
+    }
+  }
+  editingId.value = id;
+  applyPresetForm(id);
+}
+
+async function persist() {
+  presetSaving.value = true;
+  try {
+    const cfg = await saveDividendPresets({
+      version: 1,
+      active_id: activeId.value,
+      presets: presets.value.map((p) => ({ id: p.id, name: p.name, form: sanitizeForm(p.form) })),
+    });
+    presets.value = Array.isArray(cfg?.presets) ? cfg.presets : presets.value;
+    activeId.value = cfg?.active_id || activeId.value;
+    // 以服务端返回为准刷新 dirty 基准
+    savedForm.value = sanitizeForm(presets.value.find((p) => p.id === editingId.value)?.form);
+  } finally {
+    presetSaving.value = false;
+  }
+}
+
+async function savePreset() {
+  await action(async () => {
+    const p = presets.value.find((x) => x.id === editingId.value);
+    if (!p) return;
+    p.form = cloneForm(form.value);
+    await persist();
+    ElMessage.success(`预设“${p.name}”已保存`);
+  });
+}
+
+async function saveAs() {
+  await action(async () => {
+    const cur = presets.value.find((x) => x.id === editingId.value);
+    const answer = await ElMessageBox.prompt('请输入新预设名称', '另存为预设', {
+      inputValue: cur ? `${cur.name} 副本` : '',
+      inputValidator: (v) =>
+        (!!v?.trim() && [...v.trim()].length <= 40) || '名称需要 1～40 个字符',
+    });
+    const name = answer.value.trim();
+    if (presets.value.some((p) => p.name === name)) throw new Error('预设名称重复');
+    const preset = { id: `p${Date.now().toString(36)}`, name, form: cloneForm(form.value) };
+    presets.value.push(preset);
+    editingId.value = preset.id;
+    savedForm.value = cloneForm(form.value);
+    await persist();
+    ElMessage.success(`预设“${name}”已保存`);
+  });
+}
+
+async function setDefault() {
+  await action(async () => {
+    activeId.value = editingId.value;
+    await persist();
+    ElMessage.success('已设为默认预设，下次进入页面将直接使用');
+  });
+}
+
+async function renamePreset() {
+  await action(async () => {
+    const p = presets.value.find((x) => x.id === editingId.value);
+    if (!p) return;
+    const answer = await ElMessageBox.prompt('请输入预设名称', '重命名预设', {
+      inputValue: p.name,
+      inputValidator: (v) =>
+        (!!v?.trim() && [...v.trim()].length <= 40) || '名称需要 1～40 个字符',
+    });
+    const name = answer.value.trim();
+    if (presets.value.some((x) => x.name === name && x.id !== p.id)) {
+      throw new Error('预设名称重复');
+    }
+    p.name = name;
+    await persist();
+  });
+}
+
+async function removePreset() {
+  await action(async () => {
+    if (presets.value.length <= 1) {
+      ElMessage.warning('至少保留一个预设');
+      return;
+    }
+    const p = presets.value.find((x) => x.id === editingId.value);
+    if (!p) return;
+    await ElMessageBox.confirm(`删除预设“${p.name}”？`, '删除预设', { type: 'warning' });
+    presets.value = presets.value.filter((x) => x.id !== p.id);
+    if (activeId.value === p.id) activeId.value = presets.value[0].id;
+    editingId.value = activeId.value;
+    applyPresetForm(editingId.value);
+    await persist();
+  });
+}
+
+function onPresetCommand(cmd) {
+  if (cmd === 'default') setDefault();
+  else if (cmd === 'rename') renamePreset();
+  else if (cmd === 'delete') removePreset();
 }
 
 function onSortChange({ prop, order }) {
@@ -140,6 +320,7 @@ const refreshing = computed(() => loading.value && allRows.value.length > 0);
 
 onMounted(() => {
   loadData(false);
+  loadPresets(); // 与数据加载并行; 完成后套用默认预设(套用即触发本地筛选)
 });
 
 onBeforeUnmount(() => {
@@ -193,33 +374,42 @@ onBeforeUnmount(() => {
 
     <!-- 正常内容 -->
     <template v-else-if="!errorMsg && allRows.length > 0">
-      <!-- 3. 筛选区(本地过滤, 不发请求) -->
-      <div class="filter-bar">
-        <el-checkbox-group v-model="form.markets" size="small">
-          <el-checkbox value="sh">沪市</el-checkbox>
-          <el-checkbox value="sz">深市</el-checkbox>
-        </el-checkbox-group>
-        <el-cascader
-          v-model="form.industry"
-          :options="industryOptions"
-          :props="cascaderProps"
-          placeholder="行业"
-          clearable
-          filterable
-          size="small"
-          class="f-industry"
-        />
+      <!-- 3. 预设工作台(服务端保存; 默认预设下次进页即套用) -->
+      <div class="preset-bar">
+        <span class="status" :class="{ dirty }">{{ dirty ? '未保存' : '已保存' }}</span>
         <el-select
-          v-model="form.province"
-          placeholder="地域"
-          clearable
+          :model-value="editingId"
           filterable
+          placeholder="筛选预设"
           size="small"
-          class="f-province"
+          class="preset-select"
+          aria-label="筛选预设"
+          @change="onSwitchPreset"
         >
-          <el-option v-for="p in provinceOptions" :key="p" :label="p" :value="p" />
+          <el-option
+            v-for="p in presets"
+            :key="p.id"
+            :value="p.id"
+            :label="`${p.name}${activeId === p.id ? ' · 默认' : ''}`"
+          />
         </el-select>
-        <label v-for="f in THRESHOLDS" :key="f.key" class="f-item">
+        <el-button size="small" :disabled="!dirty || presetSaving" :loading="presetSaving" @click="savePreset">保存</el-button>
+        <el-button size="small" :disabled="presetSaving" @click="saveAs">另存为</el-button>
+        <el-dropdown @command="onPresetCommand">
+          <el-button size="small" :disabled="presetSaving">更多 ▾</el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="default" :disabled="activeId === editingId">设为默认</el-dropdown-item>
+              <el-dropdown-item command="rename">重命名</el-dropdown-item>
+              <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
+
+      <!-- 4. 筛选区: 邮件漏斗主条件常驻, 其余收进高级面板(本地过滤, 不发请求) -->
+      <div class="filter-bar" :class="{ attached: advancedOpen }">
+        <label v-for="f in PRIMARY_THRESHOLDS" :key="f.key" class="f-item">
           <span class="f-label">{{ f.label }}</span>
           <el-input-number
             v-model="form[f.key]"
@@ -236,13 +426,68 @@ onBeforeUnmount(() => {
           <el-input-number v-model="form.totalValueMax" :controls="false" placeholder="上限" size="small" class="num-input" />
         </label>
         <label class="f-item">
+          <span class="f-label">仅国资</span>
+          <el-switch v-model="form.soeOnly" size="small" />
+        </label>
+        <el-button size="small" @click="resetForm">重置</el-button>
+        <span class="f-count">{{ sortedRows.length }} / {{ allRows.length }} 只</span>
+        <el-button size="small" text class="adv-toggle" @click="advancedOpen = !advancedOpen">
+          高级筛选{{ advancedCount ? `(${advancedCount})` : '' }}{{ advancedOpen ? ' ▴' : ' ▾' }}
+        </el-button>
+      </div>
+
+      <!-- 高级筛选面板(默认收起; 有激活条件时切换按钮带计数) -->
+      <div v-if="advancedOpen" class="filter-bar advanced">
+        <el-checkbox-group v-model="form.markets" size="small">
+          <el-checkbox value="sh">沪市</el-checkbox>
+          <el-checkbox value="sz">深市</el-checkbox>
+        </el-checkbox-group>
+        <el-cascader
+          v-model="form.industry"
+          :options="industryOptions"
+          :props="cascaderProps"
+          placeholder="行业"
+          clearable
+          filterable
+          size="small"
+          class="f-industry"
+        />
+        <el-cascader
+          v-model="form.excludeIndustry"
+          :options="industryOptions"
+          :props="cascaderProps"
+          placeholder="排除行业"
+          clearable
+          filterable
+          size="small"
+          class="f-industry"
+        />
+        <el-select
+          v-model="form.province"
+          placeholder="地域"
+          clearable
+          filterable
+          size="small"
+          class="f-province"
+        >
+          <el-option v-for="p in provinceOptions" :key="p" :label="p" :value="p" />
+        </el-select>
+        <label v-for="f in ADVANCED_THRESHOLDS" :key="f.key" class="f-item">
+          <span class="f-label">{{ f.label }}</span>
+          <el-input-number
+            v-model="form[f.key]"
+            :controls="false"
+            placeholder="不限"
+            size="small"
+            class="num-input"
+          />
+        </label>
+        <label class="f-item">
           <span class="f-label">流通市值(亿)</span>
           <el-input-number v-model="form.floatValueMin" :controls="false" placeholder="下限" size="small" class="num-input" />
           <span class="f-sep">~</span>
           <el-input-number v-model="form.floatValueMax" :controls="false" placeholder="上限" size="small" class="num-input" />
         </label>
-        <el-button size="small" @click="resetForm">重置</el-button>
-        <span class="f-count">{{ sortedRows.length }} / {{ allRows.length }} 只</span>
       </div>
 
       <!-- 4. 宽表 -->
@@ -468,6 +713,39 @@ onBeforeUnmount(() => {
   text-decoration: underline;
 }
 
+/* 预设工作台 */
+.preset-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: #fafafa;
+  border: 1px solid #eef2f7;
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+.preset-select {
+  width: 220px;
+}
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #909399;
+  white-space: nowrap;
+}
+.status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #67c23a;
+}
+.status.dirty::before {
+  background: #e6a23c;
+}
+
 /* 筛选区 */
 .filter-bar {
   display: flex;
@@ -478,6 +756,19 @@ onBeforeUnmount(() => {
   border: 1px solid #eef2f7;
   border-radius: 10px;
   padding: 10px 12px;
+}
+.filter-bar.attached {
+  border-radius: 10px 10px 0 0;
+  border-bottom: none; /* 与高级面板贴合, 由后者的虚线边作分隔 */
+}
+.filter-bar.advanced {
+  border-radius: 0 0 10px 10px;
+  border-top-style: dashed;
+  margin-top: -12px; /* 抵消页面 gap, 与主筛选区贴合 */
+  background: #f7f9fb;
+}
+.adv-toggle {
+  white-space: nowrap;
 }
 .f-item {
   display: inline-flex;

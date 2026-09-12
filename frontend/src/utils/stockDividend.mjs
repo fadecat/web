@@ -54,6 +54,7 @@ export function emptyForm() {
   return {
     markets: [],
     industry: '',
+    excludeIndustry: '',
     province: '',
     peMax: null,
     pbMax: null,
@@ -72,7 +73,34 @@ export function emptyForm() {
     totalValueMax: null,
     floatValueMin: null,
     floatValueMax: null,
+    soeOnly: false,
   };
+}
+
+/**
+ * 把任意来源(服务端预设/本地草稿)的表单收敛为合法形状:
+ * 仅保留已知键, 逐键做类型防护, 缺失键回退 emptyForm 默认值。
+ */
+export function sanitizeForm(input) {
+  const f = emptyForm();
+  const src = input || {};
+  if (Array.isArray(src.markets)) {
+    f.markets = src.markets.filter((m) => m === 'sh' || m === 'sz');
+  }
+  if (typeof src.industry === 'string') f.industry = src.industry;
+  if (typeof src.excludeIndustry === 'string') f.excludeIndustry = src.excludeIndustry;
+  if (typeof src.province === 'string') f.province = src.province;
+  for (const key of [
+    'peMax', 'pbMax', 'peTMax', 'pbTMax', 'intDebtMax',
+    'dividendMin', 'aftDividendMin', 'roeMin', 'roeAverageMin',
+    'revenueAvgMin', 'profitAvgMin', 'epsGrowthTtmMin', 'cashflowAvgMin',
+    'totalValueMin', 'totalValueMax', 'floatValueMin', 'floatValueMax',
+  ]) {
+    const v = src[key];
+    if (typeof v === 'number' && Number.isFinite(v)) f[key] = v;
+  }
+  if (typeof src.soeOnly === 'boolean') f.soeOnly = src.soeOnly;
+  return f;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +144,8 @@ function inRange(v, min, max) {
  * - 数值筛选启用时字段为 null → 不命中(保守排除, 与源站一致);
  * - 负值正常参与比较(如 PE ≤ 10 时 -5 命中);
  * - 区间单边启用即开区间; min > max 按字面判定为空集;
- * - 行业 = sw_cd 前缀匹配(选中任意层级即筛其整棵子树)。
+ * - 行业 = sw_cd 前缀匹配(选中任意层级即筛其整棵子树);
+ *   排除行业同为前缀匹配, 命中子树则剔除(sw_cd 为空的行不受排除影响)。
  */
 export function matchStock(row, form) {
   const f = form || emptyForm();
@@ -130,7 +159,16 @@ export function matchStock(row, form) {
     if (!sw || !sw.startsWith(f.industry)) return false;
   }
 
+  // 排除行业: sw_cd 前缀命中(任意层级, 含整棵子树)则剔除; sw_cd 为空的行不受影响
+  if (f.excludeIndustry) {
+    const sw = String(row.sw_cd || '');
+    if (sw && sw.startsWith(f.excludeIndustry)) return false;
+  }
+
   if (f.province && row.province !== f.province) return false;
+
+  // 仅国资白名单: 行缺少央国企标注(名单缺失或未命中)则不通过
+  if (f.soeOnly && !row.enterprise_nature) return false;
 
   if (f.peMax != null && !le(row.pe, f.peMax)) return false;
   if (f.pbMax != null && !le(row.pb, f.pbMax)) return false;

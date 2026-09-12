@@ -1,8 +1,8 @@
 // stockDividend.mjs 契约与纯函数测试: node --test 前端工具测试
 // 运行: node --test src/utils/stockDividend.test.mjs (或 pnpm test:node)
 // 覆盖: 列配置完整性(25 项无会员占位列)/市场判定/每类筛选控件边界
-//       (负 PE、null 行过滤、区间空集、北交所防御、sw_cd null 拒)/
-//       行业树分层回退排序/省份去重/排序 null 沉底/格式化色阶档
+//       (负 PE、null 行过滤、区间空集、北交所防御、sw_cd null 拒、仅国资)/
+//       sanitizeForm 预设收敛/行业树分层回退排序/省份去重/排序 null 沉底/格式化色阶档
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -11,6 +11,7 @@ import {
   DEFAULT_SORT,
   PAGE_SIZES,
   emptyForm,
+  sanitizeForm,
   marketOf,
   matchStock,
   filterRows,
@@ -103,10 +104,55 @@ test('emptyForm: 全部未启用(markets 空/字符串空/阈值 null), 每次�
   a.peMax = 5;
   a.markets.push('sh');
   a.industry = '80';
+  a.soeOnly = true;
   const b = emptyForm();
   assert.equal(b.peMax, null);
   assert.deepEqual(b.markets, []);
   assert.equal(b.industry, '');
+  assert.equal(b.soeOnly, false);
+});
+
+// ---------------------------------------------------------------------------
+// sanitizeForm(服务端预设 → 合法表单)
+// ---------------------------------------------------------------------------
+
+test('sanitizeForm: 合法输入逐键透传, 缺失键回退 emptyForm 默认值', () => {
+  const src = {
+    markets: ['sh'], industry: '8011', excludeIndustry: '90', province: '北京',
+    peMax: 15, dividendMin: 3, soeOnly: true,
+  };
+  const f = sanitizeForm(src);
+  assert.deepEqual(f, {
+    ...emptyForm(),
+    markets: ['sh'], industry: '8011', excludeIndustry: '90', province: '北京',
+    peMax: 15, dividendMin: 3, soeOnly: true,
+  });
+});
+
+test('sanitizeForm: 未知键丢弃, 非法类型逐键回退(字符串数字/NaN/Infinity 不收)', () => {
+  const f = sanitizeForm({
+    markets: ['sh', 'bj', 3], // 'bj'/3 剔除, 'sh' 保留
+    peMax: '15', // 字符串数字不收
+    dividendMin: NaN,
+    roeMin: Infinity,
+    soeOnly: 'yes', // 非布尔回退 false
+    evil: { hack: true }, // 未知键丢弃
+  });
+  assert.deepEqual(f.markets, ['sh']);
+  assert.equal(f.peMax, null);
+  assert.equal(f.dividendMin, null);
+  assert.equal(f.roeMin, null);
+  assert.equal(f.soeOnly, false);
+  assert.equal('evil' in f, false);
+});
+
+test('sanitizeForm: null/undefined 输入得空表单(纯函数不改输入)', () => {
+  assert.deepEqual(sanitizeForm(null), emptyForm());
+  assert.deepEqual(sanitizeForm(undefined), emptyForm());
+  assert.deepEqual(sanitizeForm({}), emptyForm());
+  const src = { peMax: 15 };
+  sanitizeForm(src);
+  assert.deepEqual(src, { peMax: 15 });
 });
 
 // ---------------------------------------------------------------------------
@@ -166,11 +212,50 @@ test('行业筛选: sw_cd 为 null 的行被拒(防御, 与集思录空行业行
   assert.equal(matchStock(row, formWith({ industry: '80' })), false);
 });
 
+test('排除行业: sw_cd 前缀命中(任意层级含子树)则剔除, 空串不过滤', () => {
+  const row = baseRow({ sw_cd: '801160' }); // 交通运输-铁路公路-铁路运输
+  assert.equal(matchStock(row, formWith({ excludeIndustry: '80' })), false); // 一级整棵子树
+  assert.equal(matchStock(row, formWith({ excludeIndustry: '8011' })), false); // 二级
+  assert.equal(matchStock(row, formWith({ excludeIndustry: '801160' })), false); // 三级
+  assert.equal(matchStock(row, formWith({ excludeIndustry: '90' })), true); // 其他行业不受影响
+  assert.equal(matchStock(row, formWith({ excludeIndustry: '' })), true);
+  // sw_cd 为空的行不受排除影响(与「行业」包含条件的拒空行为相反)
+  assert.equal(matchStock(baseRow({ sw_cd: null }), formWith({ excludeIndustry: '80' })), true);
+});
+
+test('排除行业与行业可并用: 先含后除, 交集为空时全剔除', () => {
+  const rows = [
+    baseRow({ stock_id: 'S1', sw_cd: '801160' }), // 交通运输-铁路运输
+    baseRow({ stock_id: 'S2', sw_cd: '801170' }), // 交通运输-高铁
+    baseRow({ stock_id: 'S3', sw_cd: '110000' }), // 能源
+  ];
+  // 含 80 且排 8011 → 全剔
+  assert.deepEqual(
+    filterRows(rows, formWith({ industry: '80', excludeIndustry: '8011' })).map((r) => r.stock_id),
+    [],
+  );
+  // 含 80 且排 11 → 留交通运输两只
+  assert.deepEqual(
+    filterRows(rows, formWith({ industry: '80', excludeIndustry: '11' })).map((r) => r.stock_id),
+    ['S1', 'S2'],
+  );
+});
+
 test('省份筛选: 精确匹配; 空串不过滤; null 省份行在启用时被剔除', () => {
   assert.equal(matchStock(baseRow(), formWith({ province: '北京' })), true);
   assert.equal(matchStock(baseRow({ province: '上海' }), formWith({ province: '北京' })), false);
   assert.equal(matchStock(baseRow({ province: null }), formWith({ province: '北京' })), false);
   assert.equal(matchStock(baseRow({ province: null }), formWith({ province: '' })), true);
+});
+
+test('仅国资筛选: soeOnly 启用时留有 enterprise_nature 的行, 空/缺失被剔除', () => {
+  assert.equal(matchStock(baseRow({ enterprise_nature: '中央国有企业' }), formWith({ soeOnly: true })), true);
+  assert.equal(matchStock(baseRow({ enterprise_nature: '地方国有企业' }), formWith({ soeOnly: true })), true);
+  assert.equal(matchStock(baseRow({ enterprise_nature: '' }), formWith({ soeOnly: true })), false); // 未命中名单
+  assert.equal(matchStock(baseRow({ enterprise_nature: null }), formWith({ soeOnly: true })), false);
+  assert.equal(matchStock(baseRow({}), formWith({ soeOnly: true })), false); // 键缺失
+  assert.equal(matchStock(baseRow({}), formWith({ soeOnly: false })), true); // 未启用全过
+  assert.equal(matchStock(baseRow({}), emptyForm()), true);
 });
 
 test('上限筛选: 阈值启用时 null 字段行被过滤(对齐 SQL NULL 比较恒假)', () => {

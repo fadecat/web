@@ -1,15 +1,21 @@
 // StockDividend 页面状态与交互测试(P2):
 // 覆盖首次加载只请求一次、默认排序、空数据、失败重试、刷新失败保留、
-// 筛选表单变化零网络请求(本地过滤)、筛选结果正确、页码重置、API 调用次数。
-// 依赖 getStockDividendSnapshot(API) 用 mock; stockDividend.mjs 纯函数用真实实现。
+// 筛选表单变化零网络请求(本地过滤)、筛选结果正确、页码重置、API 调用次数、
+// 服务端预设闭环(默认套用/仅国资/重置回已保存值/保存全量 POST/切换预设)。
+// 依赖 getStockDividendSnapshot/getDividendPresets/saveDividendPresets(API) 用 mock;
+// stockDividend.mjs 纯函数用真实实现。
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import ElementPlus from 'element-plus';
 
-// API 模块 mock(仅 getStockDividendSnapshot 命中网络)
+// API 模块 mock(仅快照/预设 API 命中网络)
 const getStockDividendSnapshotMock = vi.fn();
+const getDividendPresetsMock = vi.fn();
+const saveDividendPresetsMock = vi.fn();
 vi.mock('../../src/api/index.js', () => ({
   getStockDividendSnapshot: (...a) => getStockDividendSnapshotMock(...a),
+  getDividendPresets: (...a) => getDividendPresetsMock(...a),
+  saveDividendPresets: (...a) => saveDividendPresetsMock(...a),
   default: {},
 }));
 
@@ -21,12 +27,13 @@ vi.mock('vue-router', () => ({
 
 import StockDividend from '../../src/pages/StockDividend.vue';
 
-// 造行工厂: 与后端 47 键契约同形(测试只填关注字段)
+// 造行工厂: 与后端 48 键契约同形(测试只填关注字段)
 function makeRow(over = {}) {
   return {
     trade_date: '2026-09-11',
     stock_id: '600001',
     stock_nm: '示例股份',
+    enterprise_nature: '',
     sw_cd: '801160',
     industry_nm: '铁路运输',
     industry_nm2: '交通运输-铁路公路-铁路运输',
@@ -58,6 +65,13 @@ function makeRow(over = {}) {
   };
 }
 
+// 空预设(表单全空): 让旧用例保持「空表单全过」语义
+const EMPTY_PRESETS = {
+  version: 1,
+  active_id: 'p1',
+  presets: [{ id: 'p1', name: '不限', form: {} }],
+};
+
 async function mountPage() {
   return mount(StockDividend, {
     global: {
@@ -70,6 +84,9 @@ async function mountPage() {
 describe('StockDividend 页面状态闭环', () => {
   beforeEach(() => {
     getStockDividendSnapshotMock.mockReset();
+    // 预设默认给空表单; 保存 mock 像后端一样回显入参(规范化由后端负责, 此处原样)
+    getDividendPresetsMock.mockReset().mockResolvedValue(EMPTY_PRESETS);
+    saveDividendPresetsMock.mockReset().mockImplementation(async (cfg) => cfg);
   });
 
   it('首次加载只请求一次 API, 数据落 allRows, 页码回第一页', async () => {
@@ -256,5 +273,104 @@ describe('StockDividend 页面状态闭环', () => {
       'https://www.jisilu.cn/data/stock/000002',
       'https://www.jisilu.cn/data/stock/600001',
     ]);
+  });
+
+  it('进入页面套用默认预设: 表单生效且 soeOnly 过滤无国资标注行, 初始非脏', async () => {
+    getStockDividendSnapshotMock.mockResolvedValue([
+      makeRow({ stock_id: '600001', enterprise_nature: '中央国有企业', pe: 8 }),
+      makeRow({ stock_id: '600002', pe: 8 }), // 无央国企标注
+      makeRow({ stock_id: '600003', enterprise_nature: '地方国有企业', pe: 20 }), // PE 超限
+    ]);
+    getDividendPresetsMock.mockResolvedValue({
+      version: 1,
+      active_id: 'p1',
+      presets: [{ id: 'p1', name: '邮件口径', form: { peMax: 15, soeOnly: true } }],
+    });
+    const wrapper = await mountPage();
+    await flushPromises();
+    expect(wrapper.vm.editingId).toBe('p1');
+    expect(wrapper.vm.form.peMax).toBe(15);
+    expect(wrapper.vm.form.soeOnly).toBe(true);
+    expect(wrapper.vm.dirty).toBe(false);
+    expect(wrapper.vm.filteredRows.map((r) => r.stock_id)).toEqual(['600001']);
+  });
+
+  it('修改表单变脏, 重置回到当前预设已保存值(而非清空)', async () => {
+    getStockDividendSnapshotMock.mockResolvedValue([makeRow()]);
+    getDividendPresetsMock.mockResolvedValue({
+      version: 1,
+      active_id: 'p1',
+      presets: [{ id: 'p1', name: '邮件口径', form: { peMax: 15 } }],
+    });
+    const wrapper = await mountPage();
+    await flushPromises();
+    expect(wrapper.vm.dirty).toBe(false);
+
+    wrapper.vm.form.peMax = 30;
+    wrapper.vm.form.soeOnly = true;
+    await flushPromises();
+    expect(wrapper.vm.dirty).toBe(true);
+
+    wrapper.vm.resetForm();
+    await flushPromises();
+    expect(wrapper.vm.form.peMax).toBe(15);
+    expect(wrapper.vm.form.soeOnly).toBe(false);
+    expect(wrapper.vm.dirty).toBe(false);
+  });
+
+  it('保存预设: 全量 POST(version/active_id/当前编辑预设携带新表单), 保存后归为非脏', async () => {
+    getStockDividendSnapshotMock.mockResolvedValue([makeRow()]);
+    const wrapper = await mountPage();
+    await flushPromises();
+
+    wrapper.vm.form.peMax = 12;
+    await flushPromises();
+    expect(wrapper.vm.dirty).toBe(true);
+
+    await wrapper.vm.savePreset();
+    await flushPromises();
+    expect(saveDividendPresetsMock).toHaveBeenCalledTimes(1);
+    expect(saveDividendPresetsMock.mock.calls[0][0]).toEqual({
+      version: 1,
+      active_id: 'p1',
+      presets: [{ id: 'p1', name: '不限', form: wrapper.vm.form }],
+    });
+    expect(wrapper.vm.dirty).toBe(false);
+  });
+
+  it('切换预设(非脏): 表单切到新预设已保存值', async () => {
+    getStockDividendSnapshotMock.mockResolvedValue([makeRow()]);
+    getDividendPresetsMock.mockResolvedValue({
+      version: 1,
+      active_id: 'p1',
+      presets: [
+        { id: 'p1', name: '不限', form: {} },
+        { id: 'p2', name: '宽口径', form: { peMax: 99, province: '北京' } },
+      ],
+    });
+    const wrapper = await mountPage();
+    await flushPromises();
+    expect(wrapper.vm.editingId).toBe('p1');
+
+    await wrapper.vm.onSwitchPreset('p2');
+    await flushPromises();
+    expect(wrapper.vm.editingId).toBe('p2');
+    expect(wrapper.vm.form.peMax).toBe(99);
+    expect(wrapper.vm.form.province).toBe('北京');
+    expect(wrapper.vm.dirty).toBe(false);
+  });
+
+  it('高级筛选计数: 收起状态下统计高级区激活条件数', async () => {
+    getStockDividendSnapshotMock.mockResolvedValue([makeRow()]);
+    const wrapper = await mountPage();
+    await flushPromises();
+    expect(wrapper.vm.advancedOpen).toBe(false);
+    expect(wrapper.vm.advancedCount).toBe(0);
+
+    wrapper.vm.form.pbMax = 1.5; // 高级区阈值 +1
+    wrapper.vm.form.markets = ['sh']; // 高级区市场 +1
+    wrapper.vm.form.peMax = 15; // 主区条件不计入
+    await flushPromises();
+    expect(wrapper.vm.advancedCount).toBe(2);
   });
 });

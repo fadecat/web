@@ -15,6 +15,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.models.jisilu_stock import StockDividendDaily
+from backend.services.state_owned_whitelist import (
+    enterprise_nature_map,
+    normalize_stock_code,
+)
 
 
 def _to_dict(r: StockDividendDaily) -> dict[str, Any]:
@@ -22,6 +26,10 @@ def _to_dict(r: StockDividendDaily) -> dict[str, Any]:
         "trade_date": r.trade_date.isoformat() if r.trade_date else None,
         "stock_id": r.stock_id,
         "stock_nm": r.stock_nm,
+        # 央国企标注(国资白名单命中; 缺名单时为空串, 不影响查询)
+        "enterprise_nature": enterprise_nature_map().get(
+            normalize_stock_code(r.stock_id), ""
+        ),
         # 行业/地域
         "sw_cd": r.sw_cd,
         "industry": r.industry,
