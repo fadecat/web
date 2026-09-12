@@ -12,8 +12,9 @@
 // ---------------------------------------------------------------------------
 
 /**
- * 20 列配置(对齐集思录展示列; 波动率/质押比例两列非会员账号恒无数据, 不复刻;
- * 涨幅/成交额/5年平均股息率/双温度列按需求不展示, 但对应筛选条件保留)。
+ * 21 列配置(对齐集思录展示列; 波动率/质押比例两列非会员账号恒无数据, 不复刻;
+ * 涨幅/成交额/双温度列按需求不展示, 但对应筛选条件保留; 5年平均股息率列与
+ * 筛选条件已移除, 由前端派生列「分红率」(股息率TTM×PE-TTM)取代)。
  * 元素: {field, label, width, align, fmt, pct?, sortKey?, className?, headerTip?, fixed?}
  *   fmt: 'num2'两位小数 | 'volume'千分位整数 | 'signed'正负着色 | 'temp'温度色阶 | 'text'
  *   pct: 单元格数值后追加 '%'
@@ -28,6 +29,7 @@ export const STOCK_DIVIDEND_COLUMNS = [
   { field: 'pb', label: 'PB', width: 70, align: 'right', fmt: 'num2' },
   { field: 'dividend_rate', label: '股息率TTM', width: 100, align: 'right', fmt: 'num2', pct: true, headerTip: '到前一交易日为止最近4个季报每股分红与当前股价的比值' },
   { field: 'dividend_rate2', label: '静态股息率', width: 100, align: 'right', fmt: 'num2', pct: true, headerTip: '上一自然年度收到的每股分红与当前股价的比值' },
+  { field: 'payout_rate', label: '分红率', width: 85, align: 'right', fmt: 'num2', pct: true, headerTip: '分红率(派息率)=股息率TTM×PE-TTM=每股分红÷TTM每股净利润; 亏损(PE≤0)或缺数无值' },
   { field: 'roe', label: 'ROE', width: 75, align: 'right', fmt: 'num2', pct: true, headerTip: '最新年报ROE' },
   { field: 'roe_average', label: '5年平均ROE', width: 110, align: 'right', fmt: 'signed', pct: true, headerTip: '5年平均ROE, 算术平均, 0为上市时间小于5年' },
   { field: 'revenue_average', label: '5年营收复合', width: 110, align: 'right', fmt: 'signed', pct: true, headerTip: '5年营收复合增长率' },
@@ -58,7 +60,7 @@ export function emptyForm() {
     pbTMax: null,
     intDebtMax: null,
     dividendMin: null,
-    aftDividendMin: null,
+    payoutMin: null,
     roeMin: null,
     roeAverageMin: null,
     revenueAvgMin: null,
@@ -94,7 +96,7 @@ export function sanitizeForm(input) {
   }
   for (const key of [
     'peMax', 'pbMax', 'peTMax', 'pbTMax', 'intDebtMax',
-    'dividendMin', 'aftDividendMin', 'roeMin', 'roeAverageMin',
+    'dividendMin', 'payoutMin', 'roeMin', 'roeAverageMin',
     'revenueAvgMin', 'profitAvgMin', 'epsGrowthTtmMin', 'cashflowAvgMin',
     'totalValueMin', 'totalValueMax', 'floatValueMin', 'floatValueMax',
   ]) {
@@ -115,6 +117,28 @@ export function marketOf(stockId) {
   if (s.startsWith('60') || s.startsWith('68')) return 'sh';
   if (s.startsWith('00') || s.startsWith('30')) return 'sz';
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// 分红率(派息率)派生
+// ---------------------------------------------------------------------------
+
+/**
+ * 分红率(%) = 股息率TTM × PE-TTM(恒等式: 每股分红/股价 × 股价/每股净利
+ * = 每股分红/每股净利, 源数据无现成字段)。任一字段缺失, 或 PE≤0(TTM 亏损,
+ * 乘积无意义) → null: 显示 '—', 数值筛选启用时该行被滤(与其它字段 null 语义一致)。
+ */
+export function payoutOf(row) {
+  const d = row && row.dividend_rate;
+  const pe = row && row.pe;
+  if (typeof d !== 'number' || !Number.isFinite(d)) return null;
+  if (typeof pe !== 'number' || !Number.isFinite(pe) || pe <= 0) return null;
+  return d * pe;
+}
+
+/** 给每行物化 payout_rate 字段(浅拷贝行, 纯函数), 供列渲染/排序统一取值。 */
+export function withPayoutRate(rows) {
+  return (rows || []).map((r) => ({ ...r, payout_rate: payoutOf(r) }));
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +172,9 @@ function inRange(v, min, max) {
  * - 区间单边启用即开区间; min > max 按字面判定为空集;
  * - 行业/排除行业/地域均可多选(sw_cd 前缀 / 省份精确): 包含=任一命中即过
  *   (OR), 排除=任一命中即剔(含整棵子树); sw_cd 为空的行: 包含启用时被拒,
- *   排除不影响。
+ *   排除不影响;
+ * - 分红率(派息率)为派生值(见 payoutOf): payoutMin 启用时无值行(亏损/缺数)
+ *   同样被滤。
  */
 export function matchStock(row, form) {
   const f = form || emptyForm();
@@ -184,7 +210,7 @@ export function matchStock(row, form) {
   if (f.intDebtMax != null && !le(row.int_debt_rate, f.intDebtMax)) return false;
 
   if (f.dividendMin != null && !ge(row.dividend_rate, f.dividendMin)) return false;
-  if (f.aftDividendMin != null && !ge(row.aft_dividend, f.aftDividendMin)) return false;
+  if (f.payoutMin != null && !ge(payoutOf(row), f.payoutMin)) return false;
   if (f.roeMin != null && !ge(row.roe, f.roeMin)) return false;
   if (f.roeAverageMin != null && !ge(row.roe_average, f.roeAverageMin)) return false;
   if (f.revenueAvgMin != null && !ge(row.revenue_average, f.revenueAvgMin)) return false;

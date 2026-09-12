@@ -50,10 +50,34 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
+# 已下线的表单键: 读取旧落盘文件时先剥掉再校验, 避免用户已存预设被整份
+# 回退默认(extra=forbid 会拒收)。
+# 2026-09-12: 「5年平均股息率≥」(aftDividendMin) 移除, 由派生指标「分红率≥」(payoutMin) 取代;
+# province(单数字符串) 为地域多选改造前的旧键, 由 provinces 数组取代。
+_REMOVED_FORM_KEYS = ("aftDividendMin", "province")
+
+
+def _strip_removed_form_keys(raw: Any) -> Any:
+    """剥掉 presets[].form 里已下线的键(只动 form 字典, 其余形状仍交给 pydantic)。"""
+    if not isinstance(raw, dict):
+        return raw
+    presets = raw.get("presets")
+    if not isinstance(presets, list):
+        return raw
+    for preset in presets:
+        if isinstance(preset, dict) and isinstance(preset.get("form"), dict):
+            for key in _REMOVED_FORM_KEYS:
+                preset["form"].pop(key, None)
+    return raw
+
+
 def load_presets() -> dict[str, Any]:
-    """读取预设配置; 缺文件/损坏/形状不符回退默认配置(不写盘)。"""
+    """读取预设配置; 缺文件/损坏/形状不符回退默认配置(不写盘)。
+
+    读取前剥离旧版已下线的表单键(向前兼容, 见 _REMOVED_FORM_KEYS)。
+    """
     try:
-        raw = json.loads(PRESETS_PATH.read_text(encoding="utf-8"))
+        raw = _strip_removed_form_keys(json.loads(PRESETS_PATH.read_text(encoding="utf-8")))
         config = DividendPresetsConfig.model_validate(raw)
     except (OSError, json.JSONDecodeError, ValidationError):
         return copy.deepcopy(DEFAULT_CONFIG)

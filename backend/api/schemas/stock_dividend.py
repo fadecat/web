@@ -38,7 +38,8 @@ class DividendPresetForm(BaseModel):
     pbTMax: float | None = None
     intDebtMax: float | None = None
     dividendMin: float | None = None
-    aftDividendMin: float | None = None
+    # 分红率下限(派生指标: 股息率TTM×PE-TTM, 前端计算)
+    payoutMin: float | None = None
     roeMin: float | None = None
     roeAverageMin: float | None = None
     revenueAvgMin: float | None = None

@@ -1,8 +1,9 @@
 // stockDividend.mjs 契约与纯函数测试: node --test 前端工具测试
 // 运行: node --test src/utils/stockDividend.test.mjs (或 pnpm test:node)
-// 覆盖: 列配置完整性(25 项无会员占位列)/市场判定/每类筛选控件边界
-//       (负 PE、null 行过滤、区间空集、北交所防御、sw_cd null 拒、仅国资)/
-//       sanitizeForm 预设收敛/行业树分层回退排序/省份去重/排序 null 沉底/格式化色阶档
+// 覆盖: 列配置完整性(21 项无会员占位列)/市场判定/每类筛选控件边界
+//       (负 PE、null 行过滤、区间空集、北交所防御、sw_cd null 拒、仅国资、
+//       分红率派生)/sanitizeForm 预设收敛/行业树分层回退排序/省份去重/
+//       排序 null 沉底/格式化色阶档
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -13,6 +14,8 @@ import {
   emptyForm,
   sanitizeForm,
   marketOf,
+  payoutOf,
+  withPayoutRate,
   matchStock,
   filterRows,
   buildIndustryTree,
@@ -69,17 +72,21 @@ function formWith(over = {}) {
 // 列配置 / 常量
 // ---------------------------------------------------------------------------
 
-test('列配置: 恰 20 项, 字段唯一, 不含会员占位列与按需隐藏列', () => {
-  assert.equal(STOCK_DIVIDEND_COLUMNS.length, 20);
+test('列配置: 恰 21 项, 字段唯一, 不含会员占位列与按需隐藏列', () => {
+  assert.equal(STOCK_DIVIDEND_COLUMNS.length, 21);
   const fields = STOCK_DIVIDEND_COLUMNS.map((c) => c.field);
-  assert.equal(new Set(fields).size, 20);
+  assert.equal(new Set(fields).size, 21);
   // 会员占位列不复刻
   assert.equal(fields.includes('stdevry'), false);
   assert.equal(fields.includes('pledge_rt'), false);
-  // 按需求不展示(筛选条件仍保留)
+  // 按需求不展示(涨幅/成交额/双温度的筛选条件仍保留;
+  // aft_dividend(5年平均股息率)列与筛选条件均已移除, 由派生列「分红率」取代)
   for (const hidden of ['increase_rt', 'volume', 'pe_temperature', 'pb_temperature', 'aft_dividend']) {
     assert.equal(fields.includes(hidden), false);
   }
+  // 分红率为前端派生列(股息率TTM×PE, 排在静态股息率之后)
+  const payoutIdx = fields.indexOf('payout_rate');
+  assert.equal(payoutIdx, fields.indexOf('dividend_rate2') + 1);
   // 每列必备骨架字段
   for (const c of STOCK_DIVIDEND_COLUMNS) {
     assert.equal(typeof c.field, 'string');
@@ -124,14 +131,16 @@ test('emptyForm: 全部未启用(markets 空/字符串空/阈值 null), 每次�
 test('sanitizeForm: 合法输入逐键透传, 缺失键回退 emptyForm 默认值', () => {
   const src = {
     markets: ['sh'], industries: ['8011'], excludeIndustries: ['90', '11'], provinces: ['北京'],
-    peMax: 15, dividendMin: 3, soeOnly: true,
+    peMax: 15, dividendMin: 3, payoutMin: 60, soeOnly: true,
   };
   const f = sanitizeForm(src);
   assert.deepEqual(f, {
     ...emptyForm(),
     markets: ['sh'], industries: ['8011'], excludeIndustries: ['90', '11'], provinces: ['北京'],
-    peMax: 15, dividendMin: 3, soeOnly: true,
+    peMax: 15, dividendMin: 3, payoutMin: 60, soeOnly: true,
   });
+  // 旧版已下线键(aftDividendMin)按未知键丢弃
+  assert.equal('aftDividendMin' in sanitizeForm({ aftDividendMin: 3 }), false);
 });
 
 test('sanitizeForm: 未知键丢弃, 非法类型逐键回退(字符串数字/NaN/Infinity 不收)', () => {
@@ -177,6 +186,34 @@ test('marketOf: 60/68→sh, 00/30→sz, 北交所/空/非常规→null', () => {
   assert.equal(marketOf(''), null);
   assert.equal(marketOf(null), null);
   assert.equal(marketOf(undefined), null);
+});
+
+// ---------------------------------------------------------------------------
+// payoutOf / withPayoutRate(分红率派生)
+// ---------------------------------------------------------------------------
+
+test('payoutOf: 分红率=股息率TTM×PE; 任一缺失或 PE≤0(亏损无意义) → null', () => {
+  assert.equal(payoutOf({ dividend_rate: 5, pe: 8 }), 40);
+  assert.equal(payoutOf({ dividend_rate: 5, pe: 0.5 }), 2.5);
+  assert.equal(payoutOf({ dividend_rate: 0, pe: 8 }), 0);
+  assert.equal(payoutOf({ dividend_rate: null, pe: 8 }), null); // 股息缺数
+  assert.equal(payoutOf({ dividend_rate: 5, pe: null }), null); // PE 缺数
+  assert.equal(payoutOf({ dividend_rate: 5, pe: -20 }), null); // 亏损
+  assert.equal(payoutOf({ dividend_rate: 5, pe: 0 }), null); // PE=0 同无意义
+  assert.equal(payoutOf({ dividend_rate: NaN, pe: 8 }), null);
+  assert.equal(payoutOf({}), null);
+  assert.equal(payoutOf(null), null);
+});
+
+test('withPayoutRate: 每行物化 payout_rate 字段(浅拷贝, 不改原行), 容忍空输入', () => {
+  const rows = [baseRow({ dividend_rate: 5, pe: 8 }), baseRow({ pe: -5 })];
+  const out = withPayoutRate(rows);
+  assert.equal(out[0].payout_rate, 40);
+  assert.equal(out[1].payout_rate, null);
+  assert.equal('payout_rate' in rows[0], false); // 原行不加键(纯函数)
+  assert.equal(out[0].dividend_rate, 5); // 其余字段透传
+  assert.deepEqual(withPayoutRate([]), []);
+  assert.deepEqual(withPayoutRate(null), []);
 });
 
 // ---------------------------------------------------------------------------
@@ -298,13 +335,27 @@ test('下限筛选: 阈值启用时 null 字段行被过滤, 边界闭区间', (
   assert.equal(matchStock(baseRow({ dividend_rate: 3 }), formWith({ dividendMin: 3 })), true);
   assert.equal(matchStock(baseRow({ dividend_rate: 2.99 }), formWith({ dividendMin: 3 })), false);
   // 其余下限同类抽查(5年平均类与增长类)
-  assert.equal(matchStock(baseRow({ aft_dividend: null }), formWith({ aftDividendMin: 3 })), false);
   assert.equal(matchStock(baseRow({ roe: null }), formWith({ roeMin: 5 })), false);
   assert.equal(matchStock(baseRow({ roe_average: null }), formWith({ roeAverageMin: 5 })), false);
   assert.equal(matchStock(baseRow({ revenue_average: null }), formWith({ revenueAvgMin: 0 })), false);
   assert.equal(matchStock(baseRow({ profit_average: null }), formWith({ profitAvgMin: 0 })), false);
   assert.equal(matchStock(baseRow({ cashflow_average: null }), formWith({ cashflowAvgMin: 0 })), false);
   assert.equal(matchStock(baseRow({ eps_growth_ttm: null }), formWith({ epsGrowthTtmMin: 0 })), false);
+});
+
+test('分红率筛选(派生指标): payoutMin 按股息率×PE 判定, 亏损/缺数行在启用时被滤', () => {
+  // baseRow 基准: 股息率 5 × PE 8.5 = 42.5
+  assert.equal(matchStock(baseRow(), formWith({ payoutMin: 42.5 })), true); // 恰阈值(闭区间)
+  assert.equal(matchStock(baseRow(), formWith({ payoutMin: 43 })), false);
+  assert.equal(matchStock(baseRow({ pe: 20 }), formWith({ payoutMin: 60 })), true); // 5×20=100 过
+  assert.equal(matchStock(baseRow({ pe: 20 }), formWith({ payoutMin: 101 })), false);
+  // 亏损(PE≤0)与缺数 → 无值: 启用时被滤, 未启用保留
+  assert.equal(matchStock(baseRow({ pe: -5 }), formWith({ payoutMin: 40 })), false);
+  assert.equal(matchStock(baseRow({ pe: null }), formWith({ payoutMin: 40 })), false);
+  assert.equal(matchStock(baseRow({ dividend_rate: null }), formWith({ payoutMin: 40 })), false);
+  assert.equal(matchStock(baseRow({ pe: -5 }), emptyForm()), true);
+  // 物化过的行(withPayoutRate)同样按派生值判定
+  assert.equal(matchStock(withPayoutRate([baseRow()])[0], formWith({ payoutMin: 42.5 })), true);
 });
 
 test('负增长在下限 0 下不命中, 负下限可命中负增长行', () => {

@@ -1,6 +1,6 @@
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { h, ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
+import { ElMessage, ElMessageBox, ElTooltip } from 'element-plus';
 import { getStockDividendSnapshot, getDividendPresets, saveDividendPresets } from '../api';
 import { errorText } from '../composables/useSelectionWorkspace';
 import {
@@ -13,6 +13,7 @@ import {
   collectProvinceOptions,
   filterRows,
   sortRows,
+  withPayoutRate,
   fmtNum,
   fmtVolume,
   tempText,
@@ -21,13 +22,14 @@ import {
   signedClass,
 } from '../utils/stockDividend.mjs';
 
-// 循环外手写的前两列(代码/名称有徽标与外链, 不走通用单元格分发)
+// 列配置切片: 代码/名称两列在 v2 渲染函数里有徽标/外链特例, 其余列共用 cellText/cellClass 分发
 const dynamicColumns = STOCK_DIVIDEND_COLUMNS.slice(2);
 
-// 主筛选区阈值(邮件漏斗口径: PE≤15 / 股息率≥3 / PE温度≤40 / PB温度≤40 / 平均ROE≥5)
+// 主筛选区阈值(邮件漏斗口径 + 派生指标分红率)
 const PRIMARY_THRESHOLDS = [
   { key: 'peMax', label: 'PE-TTM ≤' },
   { key: 'dividendMin', label: '股息率TTM ≥' },
+  { key: 'payoutMin', label: '分红率 ≥' },
   { key: 'peTMax', label: 'PE温度 ≤' },
   { key: 'pbTMax', label: 'PB温度 ≤' },
   { key: 'roeAverageMin', label: '5年平均ROE ≥' },
@@ -37,7 +39,6 @@ const PRIMARY_THRESHOLDS = [
 const ADVANCED_THRESHOLDS = [
   { key: 'pbMax', label: 'PB ≤' },
   { key: 'intDebtMax', label: '有息负债率 ≤' },
-  { key: 'aftDividendMin', label: '5年平均股息率 ≥' },
   { key: 'roeMin', label: 'ROE ≥' },
   { key: 'revenueAvgMin', label: '5年营收复合 ≥' },
   { key: 'profitAvgMin', label: '5年利润复合 ≥' },
@@ -45,9 +46,9 @@ const ADVANCED_THRESHOLDS = [
   { key: 'epsGrowthTtmMin', label: '净利同比增长 ≥' },
 ];
 
-// 高级区激活条件数( markets/行业/地域/8 阈值/流通市值区间 )
+// 高级区激活条件数( markets/行业/地域/7 阈值/流通市值区间 )
 const ADVANCED_FORM_KEYS = [
-  'pbMax', 'intDebtMax', 'aftDividendMin', 'roeMin', 'revenueAvgMin',
+  'pbMax', 'intDebtMax', 'roeMin', 'revenueAvgMin',
   'profitAvgMin', 'epsGrowthTtmMin', 'cashflowAvgMin',
 ];
 
@@ -70,7 +71,8 @@ async function loadData(isRefresh = false) {
   try {
     const raw = await getStockDividendSnapshot();
     if (disposed || token !== reqToken) return; // 卸载或已被新请求取代
-    allRows.value = Array.isArray(raw) ? raw : [];
+    // 物化派生列 payout_rate(分红率=股息率TTM×PE), 列渲染/排序统一取该字段
+    allRows.value = withPayoutRate(Array.isArray(raw) ? raw : []);
     page.value = 1; // 新数据回第一页
     errorMsg.value = '';
     loading.value = false;
@@ -338,6 +340,96 @@ function jisiluStockUrl(stockId) {
   return `https://www.jisilu.cn/data/stock/${stockId}`;
 }
 
+// ---- el-table-v2 表格层(固定表头 + 冻结列 + 虚拟滚动的原生形态) ----
+// 列定义由 STOCK_DIVIDEND_COLUMNS 派生(列配置仍是单一事实源);
+// 渲染函数产出的节点不带本组件 scoped 属性, 配色/徽标类放非 scoped 样式块。
+const TOTAL_COLUMN_WIDTH = STOCK_DIVIDEND_COLUMNS.reduce((sum, c) => sum + c.width, 0);
+
+function v2HeaderRenderer(col) {
+  if (!col.headerTip) return undefined; // 缺省渲染 title
+  return () => h(ElTooltip, { content: col.headerTip, placement: 'top' }, {
+    default: () => h('span', { class: 'th-tip' }, [col.label, ' ⓘ']),
+  });
+}
+
+function v2CellRenderer(col) {
+  if (col.field === 'stock_id') {
+    return ({ rowData }) => h('a', {
+      class: 'code-link',
+      href: jisiluStockUrl(rowData.stock_id),
+      target: '_blank',
+      rel: 'noopener',
+    }, rowData.stock_id);
+  }
+  if (col.field === 'stock_nm') {
+    // 名称 + R 徽标 + 审计警示(复刻原 el-table 名称列)
+    return ({ rowData }) => [
+      h('span', rowData.stock_nm),
+      rowData.margin_flg === 'R' ? h('sup', { class: 'badge-r', title: '融资融券标的' }, 'R') : null,
+      rowData.audit_info
+        ? h(ElTooltip, { content: rowData.audit_info, placement: 'top' }, {
+          default: () => h('span', { class: 'audit-warn' }, '⚠'),
+        })
+        : null,
+    ];
+  }
+  if (col.field === 'industry_nm') {
+    return ({ rowData }) => (rowData.industry_nm2
+      ? h(ElTooltip, { content: rowData.industry_nm2, placement: 'top' }, {
+        default: () => h('span', cellText(rowData, col)),
+      })
+      : h('span', cellText(rowData, col)));
+  }
+  if (col.field === 'pb') {
+    return ({ rowData }) => (rowData.pb_flag === 'Y'
+      ? h(ElTooltip, { content: '股东权益含优先股和永续债，PB值与其它平台计算会存在差异', placement: 'top' }, {
+        default: () => h('span', { class: 'pb-gray' }, cellText(rowData, col)),
+      })
+      : h('span', { class: cellClass(rowData, col) }, cellText(rowData, col)));
+  }
+  return ({ rowData }) => h('span', { class: cellClass(rowData, col) }, cellText(rowData, col));
+}
+
+const v2Columns = STOCK_DIVIDEND_COLUMNS.map((col, idx) => ({
+  key: col.field,
+  dataKey: col.field,
+  title: col.label,
+  width: col.width,
+  align: col.align,
+  fixed: idx < 2 || undefined, // 代码/名称 左固定(true = left)
+  sortable: true,
+  flexGrow: col.field === 'province' ? 1 : undefined, // 末列吃满剩余宽, 容器更宽不出留白
+  headerCellRenderer: v2HeaderRenderer(col),
+  cellRenderer: v2CellRenderer(col),
+}));
+
+// 排序状态桥: table-v2 表头只有 asc/desc 两态循环(无第三次点击还原默认),
+// 排序本体仍是 sortRows(null 沉底 + stock_id tie-break), 这里只翻译事件与指示态
+const v2SortState = computed(() => ({
+  [sort.value.prop]: sort.value.order === 'ascending' ? 'asc' : 'desc',
+}));
+
+function onV2ColumnSort({ key, order }) {
+  onSortChange({ prop: String(key), order: order === 'asc' ? 'ascending' : 'descending' });
+}
+
+// 斑马纹(table-v2 无内建 stripe, 走行类)
+function v2RowClass({ rowIndex }) {
+  return rowIndex % 2 === 1 ? 'v2-row-alt' : '';
+}
+
+// width/height 必须传数字: 宽取容器实测(clientWidth 为 0 时回退列宽合计),
+// 高随视口(表格上方筛选区/下方分页合计约 450px)
+const tableWrap = ref(null);
+const tableWidth = ref(0);
+const tableHeight = ref(360);
+
+function measureTable() {
+  tableWidth.value = tableWrap.value?.clientWidth || 0;
+  tableHeight.value = Math.max(320, window.innerHeight - 450);
+}
+const v2Width = computed(() => tableWidth.value || TOTAL_COLUMN_WIDTH);
+
 // 数据新鲜度: 截至日期较今天超过 7 个自然日 → 中性提示
 const dataAgeDays = computed(() => {
   if (!asOfDate.value) return null;
@@ -350,11 +442,14 @@ const isStale = computed(() => dataAgeDays.value != null && dataAgeDays.value > 
 const refreshing = computed(() => loading.value && allRows.value.length > 0);
 
 onMounted(() => {
+  measureTable(); // 表格容器尺寸(el-table-v2 需要数字宽高)
+  window.addEventListener('resize', measureTable);
   loadData(false);
   loadPresets(); // 与数据加载并行; 完成后套用默认预设(套用即触发本地筛选)
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', measureTable);
   disposed = true; // 卸载后不再更新页面
 });
 </script>
@@ -554,65 +649,26 @@ onBeforeUnmount(() => {
         </label>
       </div>
 
-      <!-- 4. 宽表 -->
-      <el-table
-        class="stock-table"
-        :data="pagedRows"
-        stripe
-        :default-sort="{ prop: 'dividend_rate', order: 'descending' }"
-        @sort-change="onSortChange"
-      >
-        <el-table-column prop="stock_id" label="代码" width="80" align="center" fixed="left" sortable="custom">
-          <template #default="{ row }">
-            <a class="code-link" :href="jisiluStockUrl(row.stock_id)" target="_blank" rel="noopener">
-              {{ row.stock_id }}
-            </a>
-          </template>
-        </el-table-column>
-        <el-table-column prop="stock_nm" label="名称" width="110" align="left" fixed="left" sortable="custom">
-          <template #default="{ row }">
-            <span>{{ row.stock_nm }}</span>
-            <sup v-if="row.margin_flg === 'R'" class="badge-r" title="融资融券标的">R</sup>
-            <el-tooltip v-if="row.audit_info" :content="row.audit_info" placement="top">
-              <span class="audit-warn">⚠</span>
-            </el-tooltip>
-          </template>
-        </el-table-column>
-        <el-table-column
-          v-for="col in dynamicColumns"
-          :key="col.field"
-          :prop="col.field"
-          :label="col.label"
-          :width="col.width"
-          :align="col.align"
-          :class-name="col.className || ''"
-          sortable="custom"
+      <!-- 4. 宽表(el-table-v2: 固定表头 + 冻结列 + 虚拟滚动原生形态) -->
+      <div ref="tableWrap" class="table-wrap">
+        <el-table-v2
+          class="stock-table"
+          :columns="v2Columns"
+          :data="pagedRows"
+          :width="v2Width"
+          :height="tableHeight"
+          row-key="stock_id"
+          :row-height="36"
+          :header-height="40"
+          :sort-state="v2SortState"
+          :row-class="v2RowClass"
+          @column-sort="onV2ColumnSort"
         >
-          <template #header>
-            <el-tooltip v-if="col.headerTip" :content="col.headerTip" placement="top">
-              <span class="th-tip">{{ col.label }} ⓘ</span>
-            </el-tooltip>
-            <span v-else>{{ col.label }}</span>
+          <template #empty>
+            <span class="v2-empty">筛选无结果</span>
           </template>
-          <template #default="{ row }">
-            <el-tooltip
-              v-if="col.field === 'industry_nm' && row.industry_nm2"
-              :content="row.industry_nm2"
-              placement="top"
-            >
-              <span :class="cellClass(row, col)">{{ cellText(row, col) }}</span>
-            </el-tooltip>
-            <el-tooltip
-              v-else-if="col.field === 'pb' && row.pb_flag === 'Y'"
-              content="股东权益含优先股和永续债，PB值与其它平台计算会存在差异"
-              placement="top"
-            >
-              <span class="pb-gray">{{ cellText(row, col) }}</span>
-            </el-tooltip>
-            <span v-else :class="cellClass(row, col)">{{ cellText(row, col) }}</span>
-          </template>
-        </el-table-column>
-      </el-table>
+        </el-table-v2>
+      </div>
 
       <!-- 5. 分页 -->
       <el-pagination
@@ -634,9 +690,11 @@ onBeforeUnmount(() => {
         <p>
           快照来自集思录「股息率排行」页成分股（总市值≥200亿），交易日收盘后定时抓取；
           本页展示最新交易日全量，筛选/排序/分页在浏览器本地完成（与集思录筛选语义一致：
-          数值条件启用时，缺失该字段的行会被过滤）。5年平均股息率 =(5年累计每股分红÷5)/现价×100%，
-          其中5年累计每股分红=5年累计分红/现总股本；股息率TTM=到前一交易日为止最近4个季报
-          每股分红与当前股价的比值；静态股息率=上一自然年度收到的每股分红与当前股价的比值。
+          数值条件启用时，缺失该字段的行会被过滤）。分红率为派生指标：
+          分红率=股息率TTM×PE-TTM=每股分红÷TTM每股净利润，亏损（PE≤0）或缺数时无值
+          （显示「—」，启用「分红率≥」筛选时该行被过滤）；股息率TTM=到前一交易日为止
+          最近4个季报每股分红与当前股价的比值；静态股息率=上一自然年度收到的每股分红
+          与当前股价的比值。
         </p>
         <p>
           PE/PB温度为当前估值在历史区间的分位色阶（&lt;25 青 / &lt;50 绿 / &lt;75 橙 / ≥75 红）；
@@ -876,49 +934,10 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-/* 表格 */
-.stock-table {
+/* 表格容器(el-table-v2 需要数字宽高, 挂载后实测容器尺寸) */
+.table-wrap {
   width: 100%;
 }
-.stock-table :deep(td) {
-  font-variant-numeric: tabular-nums;
-}
-.stock-table :deep(td.col-highlight) {
-  background: #fdf6ec;
-}
-.code-link {
-  color: #2563eb;
-  text-decoration: none;
-}
-.code-link:hover {
-  text-decoration: underline;
-}
-.badge-r {
-  margin-left: 2px;
-  font-size: 10px;
-  color: #f59e0b;
-}
-.audit-warn {
-  margin-left: 3px;
-  color: #dc2626;
-  cursor: help;
-}
-.pb-gray {
-  color: #9ca3af;
-}
-.th-tip {
-  cursor: help;
-}
-
-/* 温度色阶(对齐集思录 liquidColour 四档) */
-.t-cyan { color: #0099cc; }
-.t-green { color: #468847; }
-.t-orange { color: #f89406; }
-.t-red { color: #b94a48; }
-
-/* 涨红跌绿 */
-.up { color: #c0392b; }
-.down { color: #1e8e4e; }
 
 /* 分页 */
 .el-pagination {
@@ -957,4 +976,52 @@ onBeforeUnmount(() => {
   .f-count { margin-left: 0; }
   .num-input { width: 72px; }
 }
+</style>
+
+<style>
+/* el-table-v2 的单元格/表头由渲染函数产出, 不带本组件 scoped 属性,
+   单元格配色/徽标类放非 scoped 块, 以页面根类限定作用域 */
+.stock-dividend-page .stock-table .el-table-v2__row-cell {
+  font-variant-numeric: tabular-nums;
+}
+.stock-dividend-page .stock-table .v2-row-alt {
+  background: var(--el-fill-color-lighter);
+}
+.stock-dividend-page .stock-table .v2-empty {
+  color: #9ca3af;
+  font-size: 13px;
+}
+.stock-dividend-page .stock-table .code-link {
+  color: #2563eb;
+  text-decoration: none;
+}
+.stock-dividend-page .stock-table .code-link:hover {
+  text-decoration: underline;
+}
+.stock-dividend-page .stock-table .badge-r {
+  margin-left: 2px;
+  font-size: 10px;
+  color: #f59e0b;
+}
+.stock-dividend-page .stock-table .audit-warn {
+  margin-left: 3px;
+  color: #dc2626;
+  cursor: help;
+}
+.stock-dividend-page .stock-table .pb-gray {
+  color: #9ca3af;
+}
+.stock-dividend-page .stock-table .th-tip {
+  cursor: help;
+}
+
+/* 温度色阶(对齐集思录 liquidColour 四档) */
+.stock-dividend-page .stock-table .t-cyan { color: #0099cc; }
+.stock-dividend-page .stock-table .t-green { color: #468847; }
+.stock-dividend-page .stock-table .t-orange { color: #f89406; }
+.stock-dividend-page .stock-table .t-red { color: #b94a48; }
+
+/* 涨红跌绿 */
+.stock-dividend-page .stock-table .up { color: #c0392b; }
+.stock-dividend-page .stock-table .down { color: #1e8e4e; }
 </style>

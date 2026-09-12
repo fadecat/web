@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pytest
@@ -253,7 +254,7 @@ class TestDividendPresetsContract:
             "active_id": "p2",
             "presets": [
                 _preset("p1", "宽口径", {"peMax": 20, "soeOnly": False}),
-                _preset("p2", "邮件口径", {"peMax": 15, "dividendMin": 3, "soeOnly": True}),
+                _preset("p2", "邮件口径", {"peMax": 15, "dividendMin": 3, "payoutMin": 60, "soeOnly": True}),
             ],
         }
         r = contract_client.post(PRESETS_BASE, json=body)
@@ -267,6 +268,7 @@ class TestDividendPresetsContract:
         form2 = cfg["presets"][1]["form"]
         assert form2["peMax"] == 15
         assert form2["dividendMin"] == 3
+        assert form2["payoutMin"] == 60
         assert form2["soeOnly"] is True
         assert form2["peTMax"] is None  # 未给的字段规范化为默认
         assert form2["markets"] == []
@@ -331,6 +333,29 @@ class TestDividendPresetsContract:
         r = contract_client.post(PRESETS_BASE, json=body)
         assert r.status_code == 200
         assert r.json()["presets"][0]["form"]["industries"] == codes
+
+    def test_load_strips_removed_form_keys(self, presets_file):
+        """旧落盘含已下线表单键(aftDividendMin/单数 province): 剥离后正常加载,
+        不整份回退默认。"""
+        from backend.services import dividend_presets
+
+        presets_file.write_text(json.dumps({
+            "version": 1,
+            "active_id": "p1",
+            "presets": [{
+                "id": "p1", "name": "旧预设",
+                "form": {"peMax": 15, "aftDividendMin": 3, "province": "北京"},
+            }],
+        }, ensure_ascii=False), encoding="utf-8")
+
+        cfg = dividend_presets.load_presets()
+        assert cfg["active_id"] == "p1"  # 未回退内置默认
+        form = cfg["presets"][0]["form"]
+        assert "aftDividendMin" not in form  # 已下线键被剥掉
+        assert "province" not in form
+        assert form["peMax"] == 15
+        assert form["provinces"] == []  # 多选新键补默认
+        assert form["payoutMin"] is None
 
     def test_load_failsoft_corrupt_file(self, presets_file):
         """落盘文件损坏 → GET 回退内置默认, 不抛异常不写盘。"""

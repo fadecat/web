@@ -244,6 +244,8 @@ describe('StockDividend 页面状态闭环', () => {
     expect(wrapper.vm.cellClass(row, incCol)).toBe('up');
     expect(wrapper.vm.cellText(row, volCol)).toBe('123,456');
     expect(wrapper.vm.cellText(row, byField('dividend_rate'))).toBe('—'); // null
+    // 分红率派生列: 股息率 null → 无值
+    expect(wrapper.vm.cellText(row, byField('payout_rate'))).toBe('—');
     // pb_flag='Y' 走模板灰色分支(值本身照常格式化)
     expect(wrapper.vm.cellText(row, byField('pb'))).toBe('1.20');
   });
@@ -272,7 +274,7 @@ describe('StockDividend 页面状态闭环', () => {
     // 名称列徽标
     expect(wrapper.find('.badge-r').exists()).toBe(true);
     expect(wrapper.find('.audit-warn').exists()).toBe(true);
-    // 5年平均股息率列已隐藏, 无黄底强调单元格
+    // 5年平均股息率列与筛选条件已移除(由分红率取代), 无黄底强调单元格
     expect(wrapper.find('td.col-highlight').exists()).toBe(false);
     // 代码列外链(两行各有指向集思录个股页的链接)
     const hrefs = wrapper.findAll('.code-link').map((a) => a.attributes('href'));
@@ -417,6 +419,39 @@ describe('StockDividend 页面状态闭环', () => {
     await flushPromises();
     expect(wrapper.vm.form.provinces).toEqual([]);
     expect(wrapper.vm.filteredRows.length).toBe(5);
+  });
+
+  it('分红率派生列: 加载时物化 payout_rate(股息率×PE), 亏损/缺数无值, 筛选按派生值', async () => {
+    getStockDividendSnapshotMock.mockResolvedValue([
+      makeRow({ stock_id: '600001', dividend_rate: 5, pe: 8 }), // 40%
+      makeRow({ stock_id: '600002', dividend_rate: 5, pe: -20 }), // 亏损 → 无值
+      makeRow({ stock_id: '600003', dividend_rate: null, pe: 8 }), // 缺数 → 无值
+      makeRow({ stock_id: '600004', dividend_rate: 6, pe: 10 }), // 60%
+    ]);
+    const wrapper = await mountPage();
+    await flushPromises();
+
+    const byId = Object.fromEntries(wrapper.vm.allRows.map((r) => [r.stock_id, r]));
+    expect(byId['600001'].payout_rate).toBe(40);
+    expect(byId['600002'].payout_rate).toBe(null);
+    expect(byId['600003'].payout_rate).toBe(null);
+    // 列渲染: 真实列配置(num2 + pct)
+    const col = wrapper.vm.dynamicColumns.find((c) => c.field === 'payout_rate');
+    expect(wrapper.vm.cellText(byId['600001'], col)).toBe('40.00%');
+    expect(wrapper.vm.cellText(byId['600002'], col)).toBe('—');
+
+    // 筛选: 分红率 ≥ 50 只留 600004(60%); 收紧到 61 清空
+    wrapper.vm.form.payoutMin = 50;
+    await flushPromises();
+    expect(wrapper.vm.filteredRows.map((r) => r.stock_id)).toEqual(['600004']);
+
+    wrapper.vm.form.payoutMin = 61;
+    await flushPromises();
+    expect(wrapper.vm.filteredRows.length).toBe(0);
+
+    wrapper.vm.resetForm();
+    await flushPromises();
+    expect(wrapper.vm.filteredRows.length).toBe(4); // 未启用时全过(含无值行)
   });
 
   it('高级筛选计数: 收起状态下统计高级区激活条件数', async () => {
