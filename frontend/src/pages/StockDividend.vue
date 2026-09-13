@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { getStockDividendSnapshot, getDividendPresets, saveDividendPresets } from '../api';
 import { errorText } from '../composables/useSelectionWorkspace';
+import { eastmoneyF10Url } from '../utils/eastmoney.mjs';
 import {
   STOCK_DIVIDEND_COLUMNS,
   DEFAULT_SORT,
@@ -573,7 +574,15 @@ onBeforeUnmount(() => {
         </el-table-column>
         <el-table-column prop="stock_nm" label="名称" width="110" align="left" fixed="left" sortable="custom">
           <template #default="{ row }">
-            <span>{{ row.stock_nm }}</span>
+            <!-- 名称外链东财 F10; 北交所等无市场前缀的代码退回纯文本 -->
+            <a
+              v-if="eastmoneyF10Url(row.stock_id)"
+              class="name-link"
+              :href="eastmoneyF10Url(row.stock_id)"
+              target="_blank"
+              rel="noopener"
+            >{{ row.stock_nm }}</a>
+            <span v-else>{{ row.stock_nm }}</span>
             <sup v-if="row.margin_flg === 'R'" class="badge-r" title="融资融券标的">R</sup>
             <el-tooltip v-if="row.audit_info" :content="row.audit_info" placement="top">
               <span class="audit-warn">⚠</span>
@@ -905,6 +914,21 @@ onBeforeUnmount(() => {
 }
 .code-link:hover {
   text-decoration: underline;
+}
+/* 代码/名称链接深色模式提亮(对齐 SelectionResults 的 .ext-link 处理) */
+html.dark .code-link {
+  color: #60a5fa;
+}
+/* 名称列外链(东财 F10), 观感与代码列一致 */
+.name-link {
+  color: #2563eb;
+  text-decoration: none;
+}
+.name-link:hover {
+  text-decoration: underline;
+}
+html.dark .name-link {
+  color: #60a5fa;
 }
 .badge-r {
   margin-left: 2px;

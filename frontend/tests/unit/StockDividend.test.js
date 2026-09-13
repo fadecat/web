@@ -257,6 +257,24 @@ describe('StockDividend 页面状态闭环', () => {
     expect(wrapper.vm.jisiluStockUrl('601398')).toBe('https://www.jisilu.cn/data/stock/601398');
   });
 
+  it('名称外链指向东财 F10, 北交所无前缀映射退回纯文本', async () => {
+    getStockDividendSnapshotMock.mockResolvedValue([
+      makeRow({ stock_id: '600795', stock_nm: '国电电力' }),
+      makeRow({ stock_id: '000001', stock_nm: '平安银行' }),
+      makeRow({ stock_id: '835185', stock_nm: '北交股' }),
+    ]);
+    const wrapper = await mountPage();
+    await flushPromises();
+    // 默认排序并列时按 stock_id 升序 tie-break: 000001 → 600795 → 835185
+    const hrefs = wrapper.findAll('.name-link').map((a) => a.attributes('href'));
+    expect(hrefs).toEqual([
+      'https://emweb.securities.eastmoney.com/pc_hsf10/pages/index.html?type=web&code=SZ000001&color=b#/cpbd',
+      'https://emweb.securities.eastmoney.com/pc_hsf10/pages/index.html?type=web&code=SH600795&color=b#/cpbd',
+    ]);
+    // 北交所代码无 SH/SZ 前缀: 不渲染链接, 名称仍是纯文本
+    expect(wrapper.text()).toContain('北交股');
+  });
+
   it('渲染冒烟: 表头无会员占位列, 名称列 R 徽标/审计警示, 黄底强调列', async () => {
     getStockDividendSnapshotMock.mockResolvedValue([
       makeRow({ stock_id: '600001', stock_nm: '徽标股', margin_flg: 'R', audit_info: '保留意见' }),
