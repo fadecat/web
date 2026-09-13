@@ -677,12 +677,12 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
 }
 .refresh-btn {
-  border: 1px solid #d1d5db;
-  background: #fff;
+  border: 1px solid var(--el-border-color);
+  background: var(--el-bg-color);
   border-radius: 8px;
   padding: 5px 14px;
   font-size: 13px;
-  color: #374151;
+  color: var(--el-text-color-regular);
   cursor: pointer;
 }
 .refresh-btn:disabled {
@@ -692,7 +692,7 @@ onBeforeUnmount(() => {
 
 .data-note {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 
 .banner {
@@ -718,7 +718,7 @@ onBeforeUnmount(() => {
 }
 .retry-btn {
   border: 1px solid #b91c1c;
-  background: #fff;
+  background: var(--el-bg-color);
   color: #b91c1c;
   border-radius: 6px;
   padding: 4px 12px;
@@ -756,7 +756,7 @@ onBeforeUnmount(() => {
 
 .empty-state {
   text-align: center;
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
   font-size: 14px;
   padding: 40px 0;
   display: flex;
@@ -780,8 +780,8 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  background: #fafafa;
-  border: 1px solid #eef2f7;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 10px;
   padding: 8px 12px;
 }
@@ -793,7 +793,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   white-space: nowrap;
 }
 .status::before {
@@ -813,8 +813,8 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px 12px; /* 紧凑: 行距 6 / 列距 12 */
   align-items: center;
-  background: #fafafa;
-  border: 1px solid #eef2f7;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 10px;
   padding: 10px 12px;
 }
@@ -826,19 +826,19 @@ onBeforeUnmount(() => {
   border-radius: 0 0 10px 10px;
   border-top-style: dashed;
   margin-top: -12px; /* 抵消页面 gap, 与主筛选区贴合 */
-  background: #f7f9fb;
+  background: var(--el-fill-color-light);
 }
 .f-item {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #4b5563;
+  color: var(--el-text-color-regular);
   white-space: nowrap;
   min-width: 0; /* 允许网格列内收缩 */
 }
 .f-label {
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
   flex-shrink: 0;
 }
 .num-input {
@@ -853,7 +853,7 @@ onBeforeUnmount(() => {
   min-width: 0; /* 级联/下拉占满所在列剩余宽 */
 }
 .f-sep {
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 .f-actions {
   grid-column: 1 / -1; /* 操作行独占整行 */
@@ -875,7 +875,7 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 .mini-link:disabled {
-  color: #c0c4cc;
+  color: var(--el-text-color-placeholder);
   cursor: not-allowed;
 }
 .mini-link:hover:not(:disabled) {
@@ -884,7 +884,7 @@ onBeforeUnmount(() => {
 .f-count {
   margin-left: auto;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--el-text-color-secondary);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -941,7 +941,7 @@ html.dark .name-link {
   cursor: help;
 }
 .pb-gray {
-  color: #9ca3af;
+  color: var(--el-text-color-secondary);
 }
 .th-tip {
   cursor: help;
@@ -964,17 +964,17 @@ html.dark .name-link {
 
 /* 口径 */
 .caliber {
-  border: 1px solid #eef2f7;
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 10px;
   padding: 10px 14px;
   font-size: 12px;
-  color: #6b7280;
-  background: #fafafa;
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color-light);
 }
 .caliber summary {
   cursor: pointer;
   font-weight: 600;
-  color: #4b5563;
+  color: var(--el-text-color-regular);
 }
 .caliber p {
   margin: 10px 0;
@@ -994,4 +994,24 @@ html.dark .name-link {
   .f-count { margin-left: 0; }
   .num-input { width: 72px; }
 }
+
+/* ---------- 深色模式微调(语义色只提亮不换色相, 骨架屏换暗色微光) ---------- */
+html.dark .link-btn,
+html.dark .mini-link { color: #60a5fa; }
+html.dark .banner.error { background: rgba(248, 113, 113, 0.1); color: #f87171; }
+html.dark .banner.warn { background: rgba(251, 191, 36, 0.1); color: #fbbf24; }
+html.dark .banner.neutral { background: rgba(148, 163, 184, 0.12); color: #94a3b8; }
+html.dark .retry-btn { border-color: #f87171; color: #f87171; }
+html.dark .sk-toolbar,
+html.dark .sk-row {
+  background: linear-gradient(90deg, #1f2937, #374151, #1f2937);
+  background-size: 200% 100%;
+}
+/* 链接/警示/温度色阶与涨跌色深色提亮(橙已够亮不动); 代码/名称链接的深色规则见上方 */
+html.dark .audit-warn { color: #f87171; }
+html.dark .t-cyan { color: #45c5ff; }
+html.dark .t-green { color: #6fbf71; }
+html.dark .t-red { color: #e88987; }
+html.dark .up { color: #f2705f; }
+html.dark .down { color: #4cc07f; }
 </style>
