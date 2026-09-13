@@ -648,8 +648,7 @@ onBeforeUnmount(() => {
           数值条件启用时，缺失该字段的行会被过滤）。分红率为派生指标：
           分红率=股息率TTM×PE-TTM=每股分红÷TTM每股净利润，亏损（PE≤0）或缺数时无值
           （显示「—」，启用「分红率≥」筛选时该行被过滤）；股息率TTM=到前一交易日为止
-          最近4个季报每股分红与当前股价的比值；静态股息率=上一自然年度收到的每股分红
-          与当前股价的比值。
+          最近4个季报每股分红与当前股价的比值。
         </p>
         <p>
           PE/PB温度为当前估值在历史区间的分位色阶（&lt;25 青 / &lt;50 绿 / &lt;75 橙 / ≥75 红）；
@@ -896,6 +895,17 @@ onBeforeUnmount(() => {
      吸顶失效); overflow:clip 视觉同样裁剪但不建立滚动容器, 表头得以感知真正的
      滚动容器(AppLayout 的 .content) */
   overflow: clip;
+  /* 列间距收紧(参考转债筛选 SelectionResults): 全表 12px 字号 */
+  font-size: 12px;
+}
+/* 列间距收紧(参考转债筛选): 单元格上下 4px / 内容左右 6px / 行高 20px。
+   注意 .stock-table 挂在 .el-table 根上, 不能写 :deep(.el-table .cell) 自引用 */
+.stock-table :deep(.el-table__cell) {
+  padding: 4px 0;
+}
+.stock-table :deep(.cell) {
+  padding: 0 6px;
+  line-height: 20px;
 }
 /* 表头吸顶: 布局滚动容器是 AppLayout 的 .content(overflow-y:auto), 表头钉在
    其顶缘; 保持「页面单滚动」模型, 不引入表格内部滚动。冻结列单元格自身是

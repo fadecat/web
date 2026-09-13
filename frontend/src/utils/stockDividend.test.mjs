@@ -72,21 +72,22 @@ function formWith(over = {}) {
 // 列配置 / 常量
 // ---------------------------------------------------------------------------
 
-test('列配置: 恰 21 项, 字段唯一, 不含会员占位列与按需隐藏列', () => {
-  assert.equal(STOCK_DIVIDEND_COLUMNS.length, 21);
+test('列配置: 恰 18 项, 字段唯一, 不含会员占位列与按需隐藏列', () => {
+  assert.equal(STOCK_DIVIDEND_COLUMNS.length, 18);
   const fields = STOCK_DIVIDEND_COLUMNS.map((c) => c.field);
-  assert.equal(new Set(fields).size, 21);
+  assert.equal(new Set(fields).size, 18);
   // 会员占位列不复刻
   assert.equal(fields.includes('stdevry'), false);
   assert.equal(fields.includes('pledge_rt'), false);
   // 按需求不展示(涨幅/成交额/双温度的筛选条件仍保留;
-  // aft_dividend(5年平均股息率)列与筛选条件均已移除, 由派生列「分红率」取代)
-  for (const hidden of ['increase_rt', 'volume', 'pe_temperature', 'pb_temperature', 'aft_dividend']) {
+  // aft_dividend(5年平均股息率)列与筛选条件均已移除, 由派生列「分红率」取代;
+  // 流通市值/静态股息率/ROE 列剔除但对应筛选条件仍保留)
+  for (const hidden of ['increase_rt', 'volume', 'pe_temperature', 'pb_temperature', 'aft_dividend', 'float_value', 'dividend_rate2', 'roe']) {
     assert.equal(fields.includes(hidden), false);
   }
-  // 分红率为前端派生列(股息率TTM×PE, 排在静态股息率之后)
+  // 分红率为前端派生列(股息率TTM×PE, 紧跟股息率TTM)
   const payoutIdx = fields.indexOf('payout_rate');
-  assert.equal(payoutIdx, fields.indexOf('dividend_rate2') + 1);
+  assert.equal(payoutIdx, fields.indexOf('dividend_rate') + 1);
   // 每列必备骨架字段
   for (const c of STOCK_DIVIDEND_COLUMNS) {
     assert.equal(typeof c.field, 'string');
