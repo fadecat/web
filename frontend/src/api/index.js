@@ -54,6 +54,13 @@ export const screenBonds = (template, source = 'db') =>
 export const screenBondsActive = () =>
   api.get('/cb-list/screen/active', { timeout: 30000 }).then((r) => r.data);
 
+// 转债「相关讨论」(集思录详情页按需代理): 单只惰性 + 当前页批量预热
+export const getCbDiscussion = (bondId) =>
+  api.get(`/cb-discussion/${bondId}`, { timeout: 15000 }).then((r) => r.data);
+
+export const warmCbDiscussions = (bondIds) =>
+  api.post('/cb-discussion/batch', { bond_ids: bondIds }, { timeout: 30000 }).then((r) => r.data);
+
 // 盘中选债: 实时拉集思录纯条件过滤(不读快照不落库不打分), 约 1~2s
 export const screenBondsIntraday = (filters = {}) =>
   api.get('/cb-list/screen/intraday', { params: filters, timeout: 30000 }).then((r) => r.data);

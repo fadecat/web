@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue';
 import { eastmoneyF10Url } from '../../utils/eastmoney.mjs';
+import { getCbDiscussion, warmCbDiscussions } from '../../api/index.js';
 const props=defineProps({result:Object,stale:Boolean});
 const emit=defineEmits(['blacklist']);
 const view=ref('all'),search=ref(''),page=ref(1),size=ref(50),sort=ref({prop:'rank',order:'ascending'});
@@ -20,6 +21,29 @@ const paged=computed(()=>rows.value.slice((page.value-1)*size.value,page.value*s
 watch([view,search,size,()=>props.result],()=>{page.value=1;});
 watch(()=>props.result,()=>{view.value='all';});
 const reasons=row=>(row.exclude_reasons||[]).map(r=>typeof r==='string'?r:r.message).join('；');
+// 「相关讨论」悬浮展示(集思录详情页按需代理): 当前页批量预热 + 悬浮惰性兜底。
+// disc 形如 {code:{status:'loading'|'ok'|'error',items:[...]}}; 跨筛选结果保留(讨论只跟代码走)。
+const disc=ref({});
+function ensureDiscussion(code){
+ if(!code)return;
+ const cur=disc.value[code];
+ if(cur&&cur.status!=='error')return; // loading/ok 不重复请求; error 允许重试
+ disc.value={...disc.value,[code]:{status:'loading',items:[]}};
+ getCbDiscussion(code).then((d)=>{disc.value={...disc.value,[code]:{status:'ok',items:d.items||[]}};})
+  .catch(()=>{disc.value={...disc.value,[code]:{status:'error',items:[]}};});
+}
+async function warmDiscussions(){
+ const codes=[...new Set(paged.value.map((r)=>r.code).filter(Boolean))];
+ const missing=codes.filter((c)=>{const s=disc.value[c];return !s||s.status==='error';});
+ if(!missing.length)return;
+ try{
+  const d=await warmCbDiscussions(missing.slice(0,100));
+  const next={...disc.value};
+  for(const [c,items] of Object.entries(d.items||{}))next[c]={status:'ok',items};
+  disc.value=next;
+ }catch{/* 预热失败静默: 悬浮时 ensureDiscussion 惰性兜底 */}
+}
+watch(paged,warmDiscussions,{immediate:true});
 </script>
 <template>
  <section class="results">
@@ -29,9 +53,9 @@ const reasons=row=>(row.exclude_reasons||[]).map(r=>typeof r==='string'?r:r.mess
   <p class="meta">{{ result.source==='live'?'实时行情':'数据库快照' }} · 行情日期 {{ result.meta?.trade_date || (result.source==='live' ? '实时' : '未确认') }} · 赎回日期 {{ result.meta?.redeem_trade_date || (result.source==='live' ? '实时' : '未确认') }}<span v-if="result.meta?.fetched_at"> · 请求时间 {{ result.meta.fetched_at }}</span></p>
   <div class="tools"><el-radio-group v-model="view"><el-radio-button value="all">全部符合</el-radio-button><el-radio-button value="excluded">排除明细</el-radio-button></el-radio-group><el-input v-model="search" placeholder="当前结果内查找代码/名称" clearable/><el-button @click="sort={prop:'rank',order:'ascending'}">恢复默认排序</el-button></div>
   <el-table :data="paged" stripe max-height="620" @sort-change="sort=$event.prop&&$event.order?$event:{prop:'rank',order:'ascending'}">
-   <el-table-column v-for="c in columns" :key="c.field" :prop="c.field" :label="c.label" :width="c.width" :min-width="c.min" :fixed="c.field==='name'?'left':false" :align="numberFields.has(c.field)?'right':'left'" sortable="custom" show-overflow-tooltip>
+   <el-table-column v-for="c in columns" :key="c.field" :prop="c.field" :label="c.label" :width="c.width" :min-width="c.min" :fixed="c.field==='name'?'left':false" :align="numberFields.has(c.field)?'right':'left'" sortable="custom" :show-overflow-tooltip="c.field!=='name'">
     <template #header><el-tooltip v-if="c.field==='simple_maturity_yield_pct'" content="(到期赎回价－当前价格) / 当前价格 ×100；未年化，不含票息和税"><span>{{c.label}} ⓘ</span></el-tooltip><span v-else>{{c.label}}</span></template>
-    <template #default="{row}"><el-tooltip v-if="c.field==='industry_name'&&row.industry_is_fallback" :content="`使用申万 ${row.industry_level} 级回退映射，原始码 ${row.industry_code}`"><span>{{ display(row,c.field) }} ⓘ</span></el-tooltip><a v-else-if="c.field==='code'&&row.code" class="ext-link" :href="`https://www.jisilu.cn/data/convert_bond_detail/${row.code}`" target="_blank" rel="noopener">{{ display(row,c.field) }}</a><a v-else-if="c.field==='stock_nm'&&eastmoneyF10Url(row.stock_id)" class="ext-link" :href="eastmoneyF10Url(row.stock_id)" target="_blank" rel="noopener">{{ display(row,c.field) }}<span v-if="soeFlag(row)" class="soe-badge" :class="soeFlag(row).c" :title="row.enterprise_nature">{{ soeFlag(row).t }}</span></a><span v-else-if="c.field==='name'" class="name-cell">{{ display(row,c.field) }}<span v-if="badge(row)" class="redeem-badge" :class="badge(row).cls" :title="row.redeem_state?.status_label">{{ badge(row).text }}</span></span><span v-else>{{ display(row,c.field) }}</span></template>
+    <template #default="{row}"><el-tooltip v-if="c.field==='industry_name'&&row.industry_is_fallback" :content="`使用申万 ${row.industry_level} 级回退映射，原始码 ${row.industry_code}`"><span>{{ display(row,c.field) }} ⓘ</span></el-tooltip><a v-else-if="c.field==='code'&&row.code" class="ext-link" :href="`https://www.jisilu.cn/data/convert_bond_detail/${row.code}`" target="_blank" rel="noopener">{{ display(row,c.field) }}</a><a v-else-if="c.field==='stock_nm'&&eastmoneyF10Url(row.stock_id)" class="ext-link" :href="eastmoneyF10Url(row.stock_id)" target="_blank" rel="noopener">{{ display(row,c.field) }}<span v-if="soeFlag(row)" class="soe-badge" :class="soeFlag(row).c" :title="row.enterprise_nature">{{ soeFlag(row).t }}</span></a><el-popover v-else-if="c.field==='name'" trigger="hover" placement="top" :width="300" :show-after="200" @show="ensureDiscussion(row.code)"><template #reference><span class="name-cell">{{ display(row,c.field) }}<span v-if="badge(row)" class="redeem-badge" :class="badge(row).cls" :title="row.redeem_state?.status_label">{{ badge(row).text }}</span></span></template><div v-if="disc[row.code]?.status!=='ok'" class="disc-tip">{{ disc[row.code]?.status==='error'?'加载失败，稍后重试':'讨论加载中…' }}</div><ul v-else-if="disc[row.code].items.length" class="disc-list"><li v-for="t in disc[row.code].items" :key="t.url"><a class="disc-link" :href="t.url" target="_blank" rel="noopener">{{ t.title }}</a><span class="disc-meta">{{ t.replies }} · {{ t.views }}<template v-if="t.date"> · {{ t.date }}</template></span></li></ul><div v-else class="disc-tip">暂无相关讨论</div></el-popover><span v-else>{{ display(row,c.field) }}</span></template>
    </el-table-column>
    <el-table-column v-if="view==='excluded'" label="排除原因" min-width="300"><template #default="{row}">{{reasons(row)}}</template></el-table-column>
    <el-table-column label="操作" width="100"><template #default="{row}"><el-button size="small" text @click="emit('blacklist',row)">加入黑名单</el-button></template></el-table-column>
@@ -40,5 +64,5 @@ const reasons=row=>(row.exclude_reasons||[]).map(r=>typeof r==='string'?r:r.mess
  </section>
 </template>
 <style scoped>
-.results{min-width:0;background:var(--el-bg-color);padding:16px;border:1px solid var(--el-border-color-light);border-radius:8px}.tools{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.tools>.el-input{width:240px}.meta{font-size:12px;color:var(--el-text-color-secondary)}.el-alert{margin:8px 0}.footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:16px}.counts{font-size:12px;color:var(--el-text-color-secondary)}.footer :deep(.el-pagination){flex-wrap:wrap}.results :deep(.el-table){width:100%;font-size:12px}.name-cell{font-weight:600}.redeem-badge{margin-left:4px;padding:0 4px;border-radius:3px;font-size:10px;line-height:16px;font-weight:400;white-space:nowrap}.b-green{color:#388e3c;background:rgba(103,194,58,.12)}.b-blue{color:#409eff;background:rgba(64,158,255,.12)}.b-orange{color:#e6a23c;background:rgba(230,162,60,.14)}.b-red{color:#f56c6c;background:rgba(245,108,108,.12)}.soe-badge{margin-left:4px;padding:0 4px;border-radius:3px;font-size:10px;line-height:16px;font-weight:400;white-space:nowrap}.soe-central{color:#b03a2e;background:rgba(214,69,65,.12)}.soe-local{color:#409eff;background:rgba(64,158,255,.12)}.ext-link{color:#2563eb;text-decoration:none}html.dark .ext-link{color:#60a5fa}.ext-link:hover{text-decoration:underline}.results :deep(.el-table .el-table__cell){padding:4px 0}.results :deep(.el-table .cell){padding:0 6px;line-height:20px}
+.results{min-width:0;background:var(--el-bg-color);padding:16px;border:1px solid var(--el-border-color-light);border-radius:8px}.tools{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.tools>.el-input{width:240px}.meta{font-size:12px;color:var(--el-text-color-secondary)}.el-alert{margin:8px 0}.footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:16px}.counts{font-size:12px;color:var(--el-text-color-secondary)}.footer :deep(.el-pagination){flex-wrap:wrap}.results :deep(.el-table){width:100%;font-size:12px}.name-cell{font-weight:600}.redeem-badge{margin-left:4px;padding:0 4px;border-radius:3px;font-size:10px;line-height:16px;font-weight:400;white-space:nowrap}.b-green{color:#388e3c;background:rgba(103,194,58,.12)}.b-blue{color:#409eff;background:rgba(64,158,255,.12)}.b-orange{color:#e6a23c;background:rgba(230,162,60,.14)}.b-red{color:#f56c6c;background:rgba(245,108,108,.12)}.soe-badge{margin-left:4px;padding:0 4px;border-radius:3px;font-size:10px;line-height:16px;font-weight:400;white-space:nowrap}.soe-central{color:#b03a2e;background:rgba(214,69,65,.12)}.soe-local{color:#409eff;background:rgba(64,158,255,.12)}.ext-link{color:#2563eb;text-decoration:none}html.dark .ext-link{color:#60a5fa}.ext-link:hover{text-decoration:underline}.disc-list{margin:0;padding:0;list-style:none;max-height:260px;overflow:auto}.disc-list li{padding:6px 0;border-bottom:1px solid var(--el-border-color-lighter)}.disc-list li:last-child{border-bottom:0}.disc-link{display:block;color:#2563eb;text-decoration:none;font-size:13px;line-height:1.4;word-break:break-all}.disc-link:hover{text-decoration:underline}html.dark .disc-link{color:#60a5fa}.disc-meta{display:block;margin-top:2px;font-size:11px;color:var(--el-text-color-secondary)}.disc-tip{padding:4px 0;font-size:12px;color:var(--el-text-color-secondary)}.results :deep(.el-table .el-table__cell){padding:4px 0}.results :deep(.el-table .cell){padding:0 6px;line-height:20px}
 </style>

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import ElementPlus from 'element-plus';
 import { createRouter, createMemoryHistory } from 'vue-router';
-vi.mock('../../src/api/index.js',()=>({getFactorCatalog:vi.fn(),getFactors:vi.fn(),getRatingCatalog:vi.fn(),getIndustryCatalog:vi.fn(),screenBonds:vi.fn(),saveFactors:vi.fn(),getBlacklist:vi.fn(),addBlacklist:vi.fn(),removeBlacklist:vi.fn()}));
+vi.mock('../../src/api/index.js',()=>({getFactorCatalog:vi.fn(),getFactors:vi.fn(),getRatingCatalog:vi.fn(),getIndustryCatalog:vi.fn(),screenBonds:vi.fn(),saveFactors:vi.fn(),getBlacklist:vi.fn(),addBlacklist:vi.fn(),removeBlacklist:vi.fn(),getCbDiscussion:vi.fn(),warmCbDiscussions:vi.fn()}));
 import * as api from '../../src/api/index.js';
 import Factors from '../../src/pages/Factors.vue';
 const t={id:'t1',name:'稳健',conditions:[],strategy_factors:[],migration_issues:[]};
