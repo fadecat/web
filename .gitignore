@@ -22,6 +22,8 @@ data/*.log
 data/backups/
 # 模板配置(含 V3 迁移备份 factors.pre-v3.*.json)属运行时数据, 不入库
 data/factors*.json
+# 高股息筛选预设(dividend_presets.py 运行时读写, 各环境独立)
+data/stock_dividend_presets.json
 logs/
 *.log
 
