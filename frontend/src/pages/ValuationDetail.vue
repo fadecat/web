@@ -1,12 +1,14 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { getValuationSnapshot, getDividendYield, getEquityBond } from '../api';
+import { getValuationSnapshot, getDividendYield, getEquityBond, getIndexQuotes } from '../api';
 import {
   judgeByPercentile,
   cheaperThanPct,
   fmtNum,
   fmtPct,
+  percentileTone,
+  percentilePosition,
 } from '../utils/valuation';
 import ValuationChart from '../components/ValuationChart.vue';
 
@@ -22,6 +24,7 @@ const allRows = ref([]); // 全历史(按日期升序)
 const dividend = ref(null); // 股息率最新一条
 const dividendRows = ref([]); // 股息率全历史(按日期升序, 画折线图用)
 const ebData = ref(null); // 股债收益差/比(含全历史序列)
+const quoteRows = ref([]); // 指数日线收盘价(按日期升序, PE/PB 图叠加用)
 
 // 图表控制: 指标 + 时间窗口
 // metric 支持 URL ?tab=pe/pb/dividend/spread/ratio 控制默认值, 方便分享链接/回归测试
@@ -46,7 +49,7 @@ const metric = ref(
       ? 'spread'
       : 'pe',
 );
-const rangeYears = ref(3);
+const rangeYears = ref(5);
 
 const isMobile = ref(false);
 let mq = null;
@@ -59,10 +62,11 @@ async function loadData() {
   loading.value = true;
   errorMsg.value = '';
   try {
-    const [raw, dy, eb] = await Promise.all([
+    const [raw, dy, eb, quotes] = await Promise.all([
       getValuationSnapshot({ index_code: code.value }),
       getDividendYield(code.value),
       getEquityBond(code.value),
+      getIndexQuotes({ index_code: code.value }).catch(() => []), // 日线缺数据不阻断估值页
     ]);
     // 后端按 trade_date 降序返回, 前端转升序便于按窗口切片和画走势
     allRows.value = (raw || []).slice().reverse();
@@ -72,6 +76,8 @@ async function loadData() {
     dividendRows.value = dyRows;
     dividend.value = dyRows[dyRows.length - 1] || null;
     ebData.value = (eb || [])[0] || null;
+    // 指数日线(quotes 接口已按 trade_date 升序)
+    quoteRows.value = quotes || [];
   } catch (e) {
     errorMsg.value = e?.response?.data?.detail || e?.message || '拉取失败,请检查后端日志';
     allRows.value = [];
@@ -132,23 +138,24 @@ const chartData = computed(() => {
       cutoff = d.toISOString().slice(0, 10);
     }
     const windowed = cutoff ? series.filter((p) => p.date >= cutoff) : series;
-    // 同期十年期国债收益率走右轴对照线(与主指标同一窗口/同一日期集合)
-    const bondValues = windowed.map((p) =>
-      p.cn_10y_bond_yield != null ? p.cn_10y_bond_yield : null,
-    );
     return {
       dates: windowed.map((p) => p.date),
       values: windowed.map((p) => p[metric.value]),
-      comparisonValues: bondValues,
-      comparisonLabel: '十年期国债收益率',
       primaryUnit: metric.value === 'ratio' ? '倍' : '百分点',
-      comparisonUnit: '%',
     };
   }
   const key = metric.value; // 'pe' | 'pb'
+  // PE/PB 图右轴叠加同期指数收盘价(与主指标同一窗口/同一日期集合); 无日线数据全为 null
+  const closeByDate = new Map(quoteRows.value.map((r) => [r.trade_date, r.close]));
+  const windowedRows = windowRows.value;
+  const closeValues = windowedRows.map((r) =>
+    closeByDate.has(r.trade_date) ? closeByDate.get(r.trade_date) : null,
+  );
   return {
-    dates: windowRows.value.map((r) => r.trade_date),
-    values: windowRows.value.map((r) => r[key]),
+    dates: windowedRows.map((r) => r.trade_date),
+    values: windowedRows.map((r) => r[key]),
+    comparisonValues: closeValues,
+    comparisonLabel: '指数收盘价',
   };
 });
 
@@ -160,6 +167,12 @@ const chartLabel = computed(() => {
   if (metric.value === 'ratio') return '股债比';
   return 'PE';
 });
+
+const percentileColor = (value, key) => {
+  const tone = percentileTone(value, key);
+  return tone === 'green' ? 'var(--el-color-success)' : tone === 'red' ? 'var(--el-color-danger)' : 'var(--el-text-color-regular)';
+};
+const fmtUnit = (value, unit) => value == null || !Number.isFinite(Number(value)) ? '—' : `${fmtNum(value)}${unit}`;
 
 // 股债差/股债比 Tab 的分位条: 展示对应指标的 1/3/5/10Y 分位
 const ebPercentiles = computed(() => {
@@ -246,8 +259,9 @@ onBeforeUnmount(() => {
           </div>
           <div class="mb-item">
             <div class="mb-label">PE分位(5年)</div>
-            <div class="mb-value" :style="{ color: judgment.color }">
+            <div class="mb-value" :style="{ color: percentileColor(pe5y, 'pe') }">
               {{ fmtPct(pe5y) }}
+              <small class="position">{{ percentilePosition(pe5y) }}</small>
             </div>
           </div>
           <div class="mb-item">
@@ -256,7 +270,10 @@ onBeforeUnmount(() => {
           </div>
           <div class="mb-item">
             <div class="mb-label">PB分位(5年)</div>
-            <div class="mb-value">{{ fmtPct(pb5y) }}</div>
+            <div class="mb-value" :style="{ color: percentileColor(pb5y, 'pb') }">
+              {{ fmtPct(pb5y) }}
+              <small class="position">{{ percentilePosition(pb5y) }}</small>
+            </div>
           </div>
           <div class="mb-item">
             <div class="mb-label">PS</div>
@@ -268,20 +285,21 @@ onBeforeUnmount(() => {
         <div class="focus-metric-band">
           <div class="focus-item">
             <div class="focus-label">股息率</div>
-            <div class="focus-value accent">{{ fmtNum(dividend?.dividend_yield) }}%</div>
-            <div class="focus-meta">5年分位 {{ fmtPct(dividend?.percentile?.['5y']) }} · 5年均值 {{ fmtNum(dividend?.average_5y) }}%</div>
+            <div class="focus-value">{{ fmtUnit(dividend?.dividend_yield, '%') }}</div>
+            <div class="focus-meta">5年分位 <span :style="{ color: percentileColor(dividend?.percentile?.['5y'], 'dividend') }">{{ fmtPct(dividend?.percentile?.['5y']) }} · {{ percentilePosition(dividend?.percentile?.['5y']) }}</span> · 5年均值 {{ fmtUnit(dividend?.average_5y, '%') }}</div>
           </div>
           <div class="focus-item">
             <div class="focus-label">股债收益差</div>
-            <div class="focus-value accent">{{ fmtNum(ebData?.spread?.current) }}%</div>
-            <div class="focus-meta">5年分位 {{ fmtPct(ebData?.spread?.percentiles?.['5y']) }} · 5年均值 {{ fmtNum(ebData?.spread?.average_5y) }}%</div>
+            <div class="focus-value">{{ fmtUnit(ebData?.spread?.current, '百分点') }}</div>
+            <div class="focus-meta">5年分位 <span :style="{ color: percentileColor(ebData?.spread?.percentiles?.['5y'], 'spread') }">{{ fmtPct(ebData?.spread?.percentiles?.['5y']) }} · {{ percentilePosition(ebData?.spread?.percentiles?.['5y']) }}</span> · 5年均值 {{ fmtUnit(ebData?.spread?.average_5y, '百分点') }}</div>
           </div>
           <div class="focus-item">
             <div class="focus-label">股债比</div>
-            <div class="focus-value">{{ fmtNum(ebData?.ratio?.current) }}x</div>
-            <div class="focus-meta">5年分位 {{ fmtPct(ebData?.ratio?.percentiles?.['5y']) }} · 5年均值 {{ fmtNum(ebData?.ratio?.average_5y) }}x</div>
+            <div class="focus-value">{{ fmtUnit(ebData?.ratio?.current, '倍') }}</div>
+            <div class="focus-meta">5年分位 <span :style="{ color: percentileColor(ebData?.ratio?.percentiles?.['5y'], 'ratio') }">{{ fmtPct(ebData?.ratio?.percentiles?.['5y']) }} · {{ percentilePosition(ebData?.ratio?.percentiles?.['5y']) }}</span> · 5年均值 {{ fmtUnit(ebData?.ratio?.average_5y, '倍') }}</div>
           </div>
         </div>
+        <p class="percentile-legend">分位颜色：红 = 相对吸引力偏弱，绿 = 相对吸引力较强；30～70 为中性。</p>
       </div>
       <el-empty v-else-if="!loading" description="暂无该指数估值数据" :image-size="80" />
     </el-card>
@@ -313,38 +331,43 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </div>
+      <p class="chart-window-note">
+        近{{ rangeYears }}年历史分位 · 顶部固定5年 · 历史不足时按实际样本
+        <el-tooltip content="悬停分位是当日值在当前所选窗口内的回看排名，不是历史当日向前滚动的排名。图表采用中间秩；顶部采用接口分位，统计口径可能存在差异。" placement="top">
+          <span class="help-icon" tabindex="0" aria-label="分位统计口径">?</span>
+        </el-tooltip>
+      </p>
 
-      <!-- 股债差 / 股债比 Tab: 走势图(叠加同期十年期国债) + 当前值/5Y均值 + 分位条 -->
+      <!-- 股债差 / 股债比 Tab: 走势图 + 当前值/5Y均值 + 分位条 -->
       <template v-if="metric === 'spread' || metric === 'ratio'">
         <ValuationChart
           :dates="chartData.dates"
           :values="chartData.values"
           :metric-label="chartLabel"
-          :comparison-values="chartData.comparisonValues"
-          :comparison-label="chartData.comparisonLabel"
           :primary-unit="chartData.primaryUnit"
-          :comparison-unit="chartData.comparisonUnit"
+          :metric-key="metric"
+          :window-years="rangeYears"
         />
         <div v-if="ebData" class="dividend-panel eb-panel">
           <div class="dy-compare">
             <div class="dy-item">
               <div class="dy-label">{{ metric === 'ratio' ? '当前股债比' : '当前股债差' }}</div>
               <div class="dy-value primary">
-                {{ fmtNum(metric === 'ratio' ? ebData.ratio?.current : ebData.spread?.current) }}
+                {{ fmtUnit(metric === 'ratio' ? ebData.ratio?.current : ebData.spread?.current, metric === 'ratio' ? '倍' : '百分点') }}
               </div>
             </div>
             <div class="dy-vs">·</div>
             <div class="dy-item">
               <div class="dy-label">{{ metric === 'ratio' ? '股债差' : '股债比' }}</div>
               <div class="dy-value">
-                {{ fmtNum(metric === 'ratio' ? ebData.spread?.current : ebData.ratio?.current) }}
+                {{ fmtUnit(metric === 'ratio' ? ebData.spread?.current : ebData.ratio?.current, metric === 'ratio' ? '百分点' : '倍') }}
               </div>
             </div>
             <div class="dy-vs">·</div>
             <div class="dy-item">
               <div class="dy-label">5 年均值</div>
               <div class="dy-value">
-                {{ fmtNum(metric === 'ratio' ? ebData.ratio?.average_5y : ebData.spread?.average_5y) }}
+                {{ fmtUnit(metric === 'ratio' ? ebData.ratio?.average_5y : ebData.spread?.average_5y, metric === 'ratio' ? '倍' : '百分点') }}
               </div>
             </div>
           </div>
@@ -353,7 +376,7 @@ onBeforeUnmount(() => {
             <div v-for="p in ebPercentiles" :key="p.key" class="dy-bar-row">
               <span class="bar-label">{{ p.label }}</span>
               <div class="bar-track">
-                <div class="bar-fill" :style="{ width: `${Math.min(100, Math.max(0, p.value ?? 0))}%` }" />
+                <div class="bar-fill" :style="{ width: `${Math.min(100, Math.max(0, p.value ?? 0))}%`, background: percentileColor(p.value, metric) }" />
               </div>
               <span class="bar-value">{{ fmtPct(p.value) }}</span>
             </div>
@@ -361,17 +384,21 @@ onBeforeUnmount(() => {
 
           <p class="dy-note">
             盈利收益率 = 100/PE(%)。股债差 = 盈利收益率 − 国债收益率(百分点), 股债比 = 盈利收益率 ÷ 国债收益率(倍)。<br />
-            右轴为同期 10 年期国债收益率(%)。差值/比值越高代表股票相对债券越有吸引力, 分位越高越便宜。
+            差值/比值越高代表股票相对债券越有吸引力, 分位越高越便宜。
           </p>
         </div>
       </template>
 
-      <!-- PE / PB 走势 -->
+      <!-- PE / PB 走势: 右轴叠加同期指数收盘价, 无日线数据时自动退回单轴 -->
       <ValuationChart
         v-else-if="metric === 'pe' || metric === 'pb'"
         :dates="chartData.dates"
         :values="chartData.values"
         :metric-label="chartLabel"
+        :comparison-values="chartData.comparisonValues"
+        :comparison-label="chartData.comparisonLabel"
+        :metric-key="metric"
+        :window-years="rangeYears"
       />
 
       <!-- 股息率 Tab: 走势图 + 当前 vs 5年均值 + 分位条 -->
@@ -380,17 +407,20 @@ onBeforeUnmount(() => {
           :dates="chartData.dates"
           :values="chartData.values"
           metric-label="股息率"
+          metric-key="dividend"
+          primary-unit="%"
+          :window-years="rangeYears"
         />
         <div v-if="dividend" class="dividend-panel eb-panel">
           <div class="dy-compare">
             <div class="dy-item">
               <div class="dy-label">当前股息率</div>
-              <div class="dy-value primary">{{ fmtNum(dividend?.dividend_yield) }}%</div>
+              <div class="dy-value primary">{{ fmtUnit(dividend?.dividend_yield, '%') }}</div>
             </div>
             <div class="dy-vs">vs</div>
             <div class="dy-item">
               <div class="dy-label">5 年均值</div>
-              <div class="dy-value">{{ fmtNum(dividend?.average_5y) }}%</div>
+              <div class="dy-value">{{ fmtUnit(dividend?.average_5y, '%') }}</div>
             </div>
           </div>
 
@@ -398,7 +428,7 @@ onBeforeUnmount(() => {
             <div v-for="p in dyPercentiles" :key="p.key" class="dy-bar-row">
               <span class="bar-label">{{ p.label }}</span>
               <div class="bar-track">
-                <div class="bar-fill" :style="{ width: `${Math.min(100, Math.max(0, p.value ?? 0))}%` }" />
+                <div class="bar-fill" :style="{ width: `${Math.min(100, Math.max(0, p.value ?? 0))}%`, background: percentileColor(p.value, 'dividend') }" />
               </div>
               <span class="bar-value">{{ fmtPct(p.value) }}</span>
             </div>
@@ -410,12 +440,14 @@ onBeforeUnmount(() => {
         </div>
       </template>
 
-      <!-- PE / PB 走势 -->
+      <!-- 兜底 Tab(理论上不可达) -->
       <ValuationChart
         v-else
         :dates="chartData.dates"
         :values="chartData.values"
         :metric-label="chartLabel"
+        :metric-key="metric"
+        :window-years="rangeYears"
       />
     </el-card>
   </div>
@@ -563,18 +595,12 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
 }
 
-.focus-value.accent {
-  color: var(--el-color-danger);
-}
-
 .focus-meta {
   margin-top: 3px;
   font-size: 11px;
   line-height: 1.4;
   color: var(--el-text-color-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
   font-variant-numeric: tabular-nums;
 }
 
@@ -650,7 +676,21 @@ onBeforeUnmount(() => {
 }
 
 .dy-value.primary {
-  color: #16a34a;
+  color: var(--el-text-color-primary);
+}
+
+.chart-window-note,
+.percentile-legend {
+  margin: 0 0 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+}
+
+.position {
+  display: block;
+  font-size: 10px;
+  font-weight: 400;
+  color: inherit;
 }
 
 .dy-vs {
@@ -767,7 +807,20 @@ onBeforeUnmount(() => {
   }
 
   .dy-compare {
-    gap: 16px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .dy-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+  }
+
+  .dy-vs {
+    display: none;
   }
 
   .dy-value {

@@ -3,6 +3,7 @@ import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { use, init } from 'echarts/core';
 import { useThemeStore } from '../stores/theme';
 import { chartTheme } from '../utils/chartTheme';
+import { percentileDirection } from '../utils/valuation';
 import { CanvasRenderer } from 'echarts/renderers';
 import { LineChart } from 'echarts/charts';
 import {
@@ -29,11 +30,13 @@ const props = defineProps({
   dates: { type: Array, default: () => [] },
   values: { type: Array, default: () => [] },
   metricLabel: { type: String, default: 'PE' }, // 图例/tooltip 用的指标名
-  // 可选对照序列(如十年期国债收益率): 不传时保持单轴单线行为
+  metricKey: { type: String, default: 'pe' },
+  windowYears: { type: Number, default: 5 },
+  // 可选对照序列(现用于指数收盘价): 不传时保持单轴单线行为
   comparisonValues: { type: Array, default: () => [] },
   comparisonLabel: { type: String, default: '' },
   primaryUnit: { type: String, default: '' }, // 主轴单位(如 百分点/倍)
-  comparisonUnit: { type: String, default: '%' }, // 对照轴单位
+  comparisonUnit: { type: String, default: '' }, // 对照轴单位(如收益率传 '%'; 指数点位留空裸显)
 });
 
 const chartRef = ref(null);
@@ -56,7 +59,7 @@ function percentile(sorted, p) {
 // 30/中位/70 三条参考线: 在"当前选定窗口内"计算, 所以切时间范围时参考线跟着变
 // (蛋卷同理——3 年窗口看 3 年内的贵贱, 不是全历史)
 const refLines = computed(() => {
-  const valid = props.values.filter((v) => v != null && !Number.isNaN(v));
+  const valid = props.values.filter((v) => v != null && Number.isFinite(Number(v))).map(Number);
   if (!valid.length) return { p30: null, p50: null, p70: null };
   const sorted = [...valid].sort((a, b) => a - b);
   return {
@@ -67,11 +70,12 @@ const refLines = computed(() => {
 });
 
 const fmt = (v) => (v == null ? '—' : Number(v).toFixed(2));
+const fmtUnit = (v, unit) => v == null || !Number.isFinite(Number(v)) ? '—' : `${fmt(v)}${unit || ''}`;
 
 // 当前点在所选时间窗口中的历史分位。相同值取中间秩，最小/最大值分别为 0/100。
-function valuePercentile(value, values) {
-  if (value == null || Number.isNaN(Number(value))) return null;
-  const valid = values.filter((v) => v != null && !Number.isNaN(Number(v))).map(Number).sort((a, b) => a - b);
+function valuePercentile(value, values, sortedValues = null) {
+  if (value == null || !Number.isFinite(Number(value))) return null;
+  const valid = sortedValues || values.filter((v) => v != null && Number.isFinite(Number(v))).map(Number).sort((a, b) => a - b);
   if (!valid.length) return null;
   const less = valid.filter((v) => v < Number(value)).length;
   const equal = valid.filter((v) => v === Number(value)).length;
@@ -79,21 +83,25 @@ function valuePercentile(value, values) {
   return ((less + (equal - 1) / 2) / (valid.length - 1)) * 100;
 }
 
+const sortedPrimaryValues = computed(() => props.values
+  .filter((v) => v != null && Number.isFinite(Number(v)))
+  .map(Number)
+  .sort((a, b) => a - b));
+
 // 对照序列(如十年期国债)是否有可用数据: 全部缺失时退回单轴单线
 const hasComparison = computed(() =>
-  props.comparisonValues.some((v) => v != null && !Number.isNaN(v)),
+  props.comparisonValues.some((v) => v != null && Number.isFinite(Number(v))),
 );
 
 function buildMarkLine(t) {
   const { p30, p50, p70 } = refLines.value;
   const base = {
     symbol: 'none',
-    // 标签贴右端显示具体数值, 与蛋卷"右侧标 30/中位/70 数值"一致
+    // 标签贴绘图区左端内侧展开，避免与外侧 Y 轴文字重叠
     label: {
-      position: 'end',
-      align: 'right',
-      // 标签保持在绘图区内侧，避免 ECharts 对越界文字裁剪
-      offset: [-6, 0],
+      position: 'start',
+      align: 'left',
+      offset: [6, 0],
       backgroundColor: t.tooltipBg,
       padding: [1, 3],
       borderRadius: 2,
@@ -102,10 +110,11 @@ function buildMarkLine(t) {
       formatter: (p) => `${p.name} ${fmt(p.value)}`,
     },
   };
+  const inverse = percentileDirection(props.metricKey) === 'inverse';
   const lines = [
-    { yAxis: p30, name: '30分位', lineStyle: { color: t.green, type: 'dashed', width: 1 } },
+    { yAxis: p30, name: '30分位', lineStyle: { color: inverse ? t.green : t.red, type: 'dashed', width: 1 } },
     { yAxis: p50, name: '中位', lineStyle: { color: t.medianGray, type: 'dashed', width: 1 } },
-    { yAxis: p70, name: '70分位', lineStyle: { color: t.red, type: 'dashed', width: 1 } },
+    { yAxis: p70, name: '70分位', lineStyle: { color: inverse ? t.red : t.green, type: 'dashed', width: 1 } },
   ];
   return {
     ...base,
@@ -134,11 +143,6 @@ function buildOption() {
 
   const mobile = isMobile();
   const comparison = hasComparison.value;
-  // 对照序列缺失时提示但不阻断主图
-  const comparisonMissing =
-    props.comparisonLabel &&
-    !comparison &&
-    props.comparisonValues.some((v) => v != null);
   const yAxis = [
     {
       type: 'value',
@@ -151,17 +155,20 @@ function buildOption() {
     },
   ];
   if (comparison) {
-    // 右轴: 对照序列(如十年期国债收益率), 不画网格线避免与主轴混淆
+    // 右轴: 对照序列(指数收盘价), 不画网格线避免与主轴混淆
     yAxis.push({
       type: 'value',
       scale: true,
-      name: props.comparisonUnit || '%',
+      name: props.comparisonUnit, // 单位留空则不显示轴名(指数点位不带 %)
       nameTextStyle: { color: t.axisLabel, fontSize: mobile ? 9 : 11 },
       axisLabel: { color: t.axisLabel, fontSize: mobile ? 9 : 11 },
       axisLine: { show: false },
       splitLine: { show: false },
     });
   }
+  // 配色对齐券商惯例(同 PeChart 用户定版): 估值指标=橘黄 / 指数收盘=蓝。
+  // itemStyle 必须与线同色——图例图标与 tooltip 圆点取 itemStyle.color,
+  // 不设时用调色板默认色, 会出现"圆点和线颜色不一样"的错位观感。
   const series = [
     {
       name: props.metricLabel,
@@ -169,21 +176,23 @@ function buildOption() {
       data: props.values,
       symbol: 'none',
       connectNulls: true, // 个别日期缺数据时不断线
-      lineStyle: { width: 1.8, color: t.navy },
-      areaStyle: { color: t.navyArea },
+      lineStyle: { width: 1.8, color: t.peOrange },
+      itemStyle: { color: t.peOrange },
+      areaStyle: { color: t.orangeArea },
       markLine: buildMarkLine(t),
     },
   ];
   if (comparison) {
-    // 对照线: 另一种颜色+虚线, 不带面积, 缺失点不连线
+    // 对照线: 指数收盘价=蓝色实线走右轴, 不带面积; 与主指标日期对不齐的个别缺口跨接连线, 保持视觉连续
     series.push({
       name: props.comparisonLabel,
       type: 'line',
       yAxisIndex: 1,
       data: props.comparisonValues,
       symbol: 'none',
-      connectNulls: false,
-      lineStyle: { width: 1.5, color: t.amber, type: 'dashed' },
+      connectNulls: true, // 个别日期缺数据时不断线
+      lineStyle: { width: 1.5, color: t.indexBlue },
+      itemStyle: { color: t.indexBlue },
     });
   }
   return {
@@ -200,13 +209,13 @@ function buildOption() {
         if (!params?.length) return '';
         const primary = params.find((p) => p.seriesName === props.metricLabel);
         const pointIndex = primary?.dataIndex ?? props.dates.indexOf(params[0].axisValue);
-        const currentPct = pointIndex >= 0 ? valuePercentile(props.values[pointIndex], props.values) : null;
+        const currentPct = pointIndex >= 0 ? valuePercentile(props.values[pointIndex], props.values, sortedPrimaryValues.value) : null;
         const rows = params.map((p) => {
           const isComp = p.seriesName === props.comparisonLabel;
           const unit = isComp ? props.comparisonUnit : props.primaryUnit;
-          return `${p.marker}${p.seriesName} <b>${fmt(p.data)}${unit}</b>`;
+          return `${p.marker}${p.seriesName} <b>${fmtUnit(p.data, unit)}</b>`;
         });
-        const percentileLine = currentPct == null ? '' : `<br/>当前分位 <b>${currentPct.toFixed(1)}%</b>`;
+        const percentileLine = currentPct == null ? '' : `<br/>当日分位（近${props.windowYears}年窗口） <b>${currentPct.toFixed(1)}%</b>`;
         return `${params[0].axisValue}<br/>${rows.join('<br/>')}${percentileLine}`;
       },
     },
@@ -216,8 +225,10 @@ function buildOption() {
             data: [props.metricLabel, props.comparisonLabel],
             top: mobile ? 2 : 6,
             left: 'center',
+            // 图标用纯线段(同 PeChart), 不用默认"横线+圆点"——圆点易被误读成数据点
+            icon: 'rect',
             itemWidth: 16,
-            itemHeight: 9,
+            itemHeight: 3,
             itemGap: mobile ? 12 : 20,
             textStyle: { color: t.labelLegend, fontSize: mobile ? 10 : 12 },
           }
@@ -252,23 +263,6 @@ function buildOption() {
       },
     ],
     series,
-    graphic:
-      comparisonMissing && !props.dates.length
-        ? []
-        : comparisonMissing
-          ? [
-              {
-                type: 'text',
-                left: 'center',
-                top: 'middle',
-                style: {
-                  text: '同期国债走势数据暂缺',
-                  fill: t.emptyText,
-                  fontSize: 12,
-                },
-              },
-            ]
-          : [],
   };
 }
 
@@ -282,11 +276,10 @@ const render = () => {
 let lastMobile = isMobile();
 const onResize = () => {
   if (!chart) return;
+  chart.resize();
   if (isMobile() !== lastMobile) {
     lastMobile = isMobile();
     render();
-  } else {
-    chart.resize();
   }
 };
 
@@ -295,6 +288,8 @@ watch(
     props.dates,
     props.values,
     props.metricLabel,
+    props.metricKey,
+    props.windowYears,
     props.comparisonValues,
     props.comparisonLabel,
     props.primaryUnit,

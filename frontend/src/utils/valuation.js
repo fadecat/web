@@ -8,6 +8,37 @@
 export const PE_LOW = 30; // 分位 < 30% → 偏低
 export const PE_HIGH = 70; // 分位 > 70% → 偏高
 
+export const PERCENTILE_LOW = 30;
+export const PERCENTILE_HIGH = 70;
+
+/**
+ * Whether a higher percentile indicates stronger relative attractiveness.
+ * Valuation multiples are inverse; yield/spread/ratio are positive indicators.
+ */
+export function percentileDirection(metric) {
+  return metric === 'pe' || metric === 'pb' ? 'inverse' : 'positive';
+}
+
+export function percentileTone(value, metric) {
+  if (value == null || !Number.isFinite(Number(value))) return 'neutral';
+  const p = Number(value);
+  const low = p < PERCENTILE_LOW;
+  const high = p > PERCENTILE_HIGH;
+  if (!low && !high) return 'neutral';
+  const direction = percentileDirection(metric);
+  return direction === 'inverse'
+    ? low ? 'green' : 'red'
+    : low ? 'red' : 'green';
+}
+
+export function percentilePosition(value) {
+  if (value == null || !Number.isFinite(Number(value))) return '暂无分位';
+  const p = Number(value);
+  if (p < PERCENTILE_LOW) return '历史偏低';
+  if (p > PERCENTILE_HIGH) return '历史偏高';
+  return '历史中间区间';
+}
+
 /**
  * 按分位数给出估值判断
  * @param {number|null} p 分位数(0~100)
@@ -34,12 +65,12 @@ export function cheaperThanPct(p) {
 
 /** 数值格式化: 空值统一显示破折号, 避免页面出现 null/NaN */
 export function fmtNum(v, digits = 2) {
-  if (v == null || Number.isNaN(v)) return '—';
+  if (v == null || !Number.isFinite(Number(v))) return '—';
   return Number(v).toFixed(digits);
 }
 
 /** 百分比格式化: 分位值保留 1 位小数 */
 export function fmtPct(v, digits = 1) {
-  if (v == null || Number.isNaN(v)) return '—';
+  if (v == null || !Number.isFinite(Number(v))) return '—';
   return `${Number(v).toFixed(digits)}%`;
 }

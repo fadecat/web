@@ -33,9 +33,9 @@ const LIGHT = {
   zoomText: '#9ca3af', // 缩放条刻度
   // ---- 系列与参考线(数据色) ----
   ink: '#1f2937', // spread 主线(墨色, 非分类槽位)
-  navy: '#274c77', // 估值主线(兼移动端滑杆手柄色)
-  navyArea: 'rgba(39, 76, 119, 0.08)', // 估值主线面积
-  amber: '#b45309', // 估值对照线(十年期国债)
+  navy: '#274c77', // (预留)原估值主线色, 估值页改用 peOrange 后暂无图表引用
+  navyArea: 'rgba(39, 76, 119, 0.08)', // (预留)原估值主线面积
+  amber: '#b45309', // (预留)原十年期国债对照线色, 现无引用
   maAmber: '#f59e0b', // 轮动 MA20
   red: '#dc2626', // 70 分位/全局 P90/阈值参考线
   green: '#16a34a', // 30 分位/全局 P10/均值参考线
@@ -44,7 +44,8 @@ const LIGHT = {
   greenArea: 'rgba(29, 141, 87, 0.22)', // spread<0 面积
   blue: '#2563eb', // 转债价格中位数线
   indexBlue: '#185fa5', // 指数收盘线
-  peOrange: '#ea580c', // PE 线/转债 ytm 线
+  peOrange: '#ea580c', // PE 线/转债 ytm 线/估值页主指标线
+  orangeArea: 'rgba(234, 88, 12, 0.08)', // 估值页主指标面积
   bar: '#409eff', // 分布图柱(EP 主蓝, 与全局强调色一致)
 };
 
@@ -84,6 +85,7 @@ const DARK = {
   blue: '#5c94e8',
   indexBlue: '#4390d6',
   peOrange: '#dd6b22',
+  orangeArea: 'rgba(221, 107, 34, 0.12)',
   // bar 不覆盖: EP 主蓝在深色下仍是全局强调色, 对暗表面对比度已达标
 };
 

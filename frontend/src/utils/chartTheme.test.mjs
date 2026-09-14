@@ -17,6 +17,7 @@ test('浅色档锁定现状基线: 与改造前硬编码逐值一致', () => {
   assert.equal(t.blue, '#2563eb');
   assert.equal(t.indexBlue, '#185fa5');
   assert.equal(t.peOrange, '#ea580c');
+  assert.equal(t.orangeArea, 'rgba(234, 88, 12, 0.08)');
   assert.equal(t.tooltipBg, 'rgba(255, 255, 255, 0.96)');
   assert.equal(t.splitLine, 'rgba(148, 163, 184, 0.18)');
 });
@@ -32,7 +33,7 @@ test('深色档系列色全部换档(未被浅色基线漏掉)', () => {
   const dark = chartTheme(true);
   for (const key of [
     'navy', 'amber', 'maAmber', 'red', 'green', 'blue', 'indexBlue', 'peOrange',
-    'navyArea', 'redArea', 'greenArea', 'medianGray',
+    'navyArea', 'redArea', 'greenArea', 'orangeArea', 'medianGray',
     'tooltipBg', 'tooltipBgWarm', 'tooltipText', 'axisLabel', 'labelTitle',
     'zoomFiller',
   ]) {
