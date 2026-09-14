@@ -289,7 +289,7 @@ onBeforeUnmount(() => {
     <el-card shadow="never" class="chart-card">
       <div class="chart-controls">
         <!-- 指标切换 -->
-        <div class="seg-group">
+        <div class="seg-group metric-seg-group">
           <button
             v-for="opt in METRIC_OPTIONS"
             :key="opt.key"
@@ -301,7 +301,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <!-- 时间窗口(所有指标都有历史) -->
-        <div class="seg-group">
+        <div class="seg-group range-seg-group">
           <button
             v-for="opt in RANGE_OPTIONS"
             :key="opt.key"
@@ -595,6 +595,10 @@ onBeforeUnmount(() => {
   gap: 2px;
 }
 
+.metric-seg-group {
+  max-width: 100%;
+}
+
 /* 触控目标 ≥32px: 手机端胶囊按钮要够大 */
 .seg-btn {
   border: none;
@@ -745,6 +749,16 @@ onBeforeUnmount(() => {
 
   .chart-controls {
     gap: 8px;
+  }
+
+  .metric-seg-group {
+    display: flex;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .metric-seg-group .seg-btn {
+    flex: 1 0 auto;
   }
 
   .seg-btn {

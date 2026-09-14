@@ -125,9 +125,9 @@ describe('ValuationChart 双轴对照线', () => {
     const p50 = markLineData.find((l) => l.name === '中位');
     expect(p50.yAxis).toBeCloseTo(11, 6);
     expect(p50.label.position).toBe('end');
-    expect(p50.label.align).toBe('left');
-    expect(p50.label.offset).toEqual([8, 0]);
-    expect(lastOption.grid.right).toBe(112);
+    expect(p50.label.align).toBe('right');
+    expect(p50.label.offset).toEqual([-6, 0]);
+    expect(lastOption.grid.right).toBe(60);
     // 对照线 series 不应有 markLine
     expect(lastOption.series[1].markLine).toBeUndefined();
   });
