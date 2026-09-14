@@ -68,6 +68,17 @@ const refLines = computed(() => {
 
 const fmt = (v) => (v == null ? '—' : Number(v).toFixed(2));
 
+// 当前点在所选时间窗口中的历史分位。相同值取中间秩，最小/最大值分别为 0/100。
+function valuePercentile(value, values) {
+  if (value == null || Number.isNaN(Number(value))) return null;
+  const valid = values.filter((v) => v != null && !Number.isNaN(Number(v))).map(Number).sort((a, b) => a - b);
+  if (!valid.length) return null;
+  const less = valid.filter((v) => v < Number(value)).length;
+  const equal = valid.filter((v) => v === Number(value)).length;
+  if (valid.length === 1) return 50;
+  return ((less + (equal - 1) / 2) / (valid.length - 1)) * 100;
+}
+
 // 对照序列(如十年期国债)是否有可用数据: 全部缺失时退回单轴单线
 const hasComparison = computed(() =>
   props.comparisonValues.some((v) => v != null && !Number.isNaN(v)),
@@ -79,7 +90,8 @@ function buildMarkLine(t) {
     symbol: 'none',
     // 标签贴右端显示具体数值, 与蛋卷"右侧标 30/中位/70 数值"一致
     label: {
-      position: 'insideEndTop',
+      position: 'end',
+      align: 'right',
       fontSize: 10,
       fontWeight: 600,
       formatter: (p) => `${p.name} ${fmt(p.value)}`,
@@ -87,7 +99,7 @@ function buildMarkLine(t) {
   };
   const lines = [
     { yAxis: p30, name: '30分位', lineStyle: { color: t.green, type: 'dashed', width: 1 } },
-    { yAxis: p50, name: '中位值', lineStyle: { color: t.medianGray, type: 'dashed', width: 1 } },
+    { yAxis: p50, name: '中位', lineStyle: { color: t.medianGray, type: 'dashed', width: 1 } },
     { yAxis: p70, name: '70分位', lineStyle: { color: t.red, type: 'dashed', width: 1 } },
   ];
   return {
@@ -181,12 +193,16 @@ function buildOption() {
       extraCssText: 'box-shadow: 0 8px 20px rgba(15,23,42,0.14); border-radius: 10px;',
       formatter: (params) => {
         if (!params?.length) return '';
+        const primary = params.find((p) => p.seriesName === props.metricLabel);
+        const pointIndex = primary?.dataIndex ?? props.dates.indexOf(params[0].axisValue);
+        const currentPct = pointIndex >= 0 ? valuePercentile(props.values[pointIndex], props.values) : null;
         const rows = params.map((p) => {
           const isComp = p.seriesName === props.comparisonLabel;
           const unit = isComp ? props.comparisonUnit : props.primaryUnit;
           return `${p.marker}${p.seriesName} <b>${fmt(p.data)}${unit}</b>`;
         });
-        return `${params[0].axisValue}<br/>${rows.join('<br/>')}`;
+        const percentileLine = currentPct == null ? '' : `<br/>当前分位 <b>${currentPct.toFixed(1)}%</b>`;
+        return `${params[0].axisValue}<br/>${rows.join('<br/>')}${percentileLine}`;
       },
     },
     legend:

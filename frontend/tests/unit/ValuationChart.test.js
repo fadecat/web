@@ -102,6 +102,7 @@ describe('ValuationChart 双轴对照线', () => {
       { seriesName: '十年期国债收益率', data: 2.5, axisValue: '2024-01-01', marker: '' },
     ]);
     expect(html).toContain('股债差');
+    expect(html).toContain('当前分位');
     expect(html).toContain('10.00百分点');
     expect(html).toContain('十年期国债收益率');
     expect(html).toContain('2.50%');
@@ -121,10 +122,25 @@ describe('ValuationChart 双轴对照线', () => {
     });
     const markLineData = lastOption.series[0].markLine.data;
     // 主指标 [10,11,12] 的中位值应为 11
-    const p50 = markLineData.find((l) => l.name === '中位值');
+    const p50 = markLineData.find((l) => l.name === '中位');
     expect(p50.yAxis).toBeCloseTo(11, 6);
+    expect(p50.label.position).toBe('end');
     // 对照线 series 不应有 markLine
     expect(lastOption.series[1].markLine).toBeUndefined();
+  });
+
+  it('tooltip 显示主指标当前点在窗口内的分位, 不把国债线纳入计算', async () => {
+    await mountChart({
+      comparisonValues: [1000, 1000, 1000],
+      comparisonLabel: '十年期国债收益率',
+      primaryUnit: '倍',
+      comparisonUnit: '%',
+    });
+    const html = lastOption.tooltip.formatter([
+      { seriesName: '股债差', data: 11, dataIndex: 1, axisValue: '2024-01-02', marker: '' },
+      { seriesName: '十年期国债收益率', data: 1000, dataIndex: 1, axisValue: '2024-01-02', marker: '' },
+    ]);
+    expect(html).toContain('当前分位 <b>50.0%</b>');
   });
 
   it('对照序列全部缺失时退回单轴, 不展示对照线', async () => {
