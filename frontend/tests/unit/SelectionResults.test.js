@@ -2,8 +2,8 @@ import { it, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import ElementPlus from 'element-plus';
 // 「相关讨论」依赖的两个 API 必须先 mock(挂载即触发当前页批量预热, 不能真发请求)
-vi.mock('../../src/api/index.js',()=>({getCbDiscussion:vi.fn(),warmCbDiscussions:vi.fn()}));
-import { getCbDiscussion, warmCbDiscussions } from '../../src/api/index.js';
+vi.mock('../../src/api/index.js',()=>({getCbDiscussion:vi.fn(),warmCbDiscussions:vi.fn(),getCbAdjustment:vi.fn()}));
+import { getCbDiscussion, warmCbDiscussions, getCbAdjustment } from '../../src/api/index.js';
 import Results from '../../src/components/selection/SelectionResults.vue';
 
 // jsdom 里 EP popover 的悬浮事件挂载不生效, 用直通 stub: 常显内容 + mouseenter 即触发 @show,
@@ -20,6 +20,7 @@ const rowsPage={rows:[{code:'1',name:'甲'},{code:'2',name:'乙'}],excluded_rows
 beforeEach(()=>{
  warmCbDiscussions.mockReset().mockResolvedValue({items:{}});
  getCbDiscussion.mockReset();
+ getCbAdjustment.mockReset();
 });
 
 it('renders zero, negative and missing yield distinctly with real table rows',async()=>{
@@ -75,5 +76,42 @@ it('shows error state and allows retry on hover after failure',async()=>{
  await flushPromises();
  expect(getCbDiscussion).toHaveBeenCalledTimes(2);
  expect(w.find('.popover-stub').text()).toContain('暂无相关讨论');
+ w.unmount();
+});
+
+it('marks revised bonds with stars and loads logs on click popover only',async()=>{
+ const adjRows={rows:[{code:'1',name:'甲',convert_price:3.47,adj_scnt:2},{code:'2',name:'乙',convert_price:10.5,adj_scnt:0}],excluded_rows:[],meta:{}};
+ getCbAdjustment.mockResolvedValue({bond_id:'1',items:[{meeting_date:'2026-07-16',price_before:5.26,price_after:3.47,effective_date:'2026-07-17',floor_price:3.47}]});
+ const w=mountResults({result:adjRows});
+ await flushPromises();
+ expect(w.text()).toContain('3.47'); // 转股价列渲染
+ const stars=w.findAll('.adj-stars'); // 星标只给下修过的行: 甲 ** 乙无
+ expect(stars).toHaveLength(1);
+ expect(stars[0].text()).toBe('**');
+ expect(getCbAdjustment).not.toHaveBeenCalled(); // 未点击不请求
+ // 触发转股价 popover 的 @show(stub 的 mouseenter 挂在外层, mouseenter 不冒泡,
+ // 须在含 .cp-cell 的 stub 上触发) → 惰性拉取
+ const cpStub=w.findAll('.popover-stub').find((s)=>s.find('.cp-cell').exists());
+ await cpStub.trigger('mouseenter');
+ await flushPromises();
+ expect(getCbAdjustment).toHaveBeenCalledWith('1');
+ expect(w.text()).toContain('2026-07-16'); // 明细表渲染
+ expect(w.text()).toContain('转股价下修记录');
+ w.unmount();
+});
+
+it('shows adjustment error state and retries on reopen',async()=>{
+ getCbAdjustment.mockRejectedValueOnce(new Error('boom'));
+ const w=mountResults({result:{rows:[{code:'1',name:'甲',convert_price:3.47,adj_scnt:1}],excluded_rows:[],meta:{}}});
+ await flushPromises();
+ const cpStub=()=>w.findAll('.popover-stub').find((s)=>s.find('.cp-cell').exists());
+ await cpStub().trigger('mouseenter');
+ await flushPromises();
+ expect(w.text()).toContain('加载失败'); // 弹窗内失败态
+ getCbAdjustment.mockResolvedValue({bond_id:'1',items:[]});
+ await cpStub().trigger('mouseenter'); // error 状态重新打开可重试
+ await flushPromises();
+ expect(getCbAdjustment).toHaveBeenCalledTimes(2);
+ expect(w.text()).toContain('暂无下修记录');
  w.unmount();
 });

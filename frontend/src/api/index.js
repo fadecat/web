@@ -61,6 +61,10 @@ export const getCbDiscussion = (bondId) =>
 export const warmCbDiscussions = (bondIds) =>
   api.post('/cb-discussion/batch', { bond_ids: bondIds }, { timeout: 30000 }).then((r) => r.data);
 
+// 转股价下修记录(集思录 adj_logs 公开接口按需代理): 点击转股价弹窗惰性拉取
+export const getCbAdjustment = (bondId) =>
+  api.get(`/cb-adjustment/${bondId}`, { timeout: 15000 }).then((r) => r.data);
+
 // 盘中选债: 实时拉集思录纯条件过滤(不读快照不落库不打分), 约 1~2s
 export const screenBondsIntraday = (filters = {}) =>
   api.get('/cb-list/screen/intraday', { params: filters, timeout: 30000 }).then((r) => r.data);

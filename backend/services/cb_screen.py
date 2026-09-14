@@ -59,6 +59,14 @@ def _safe_float(value: Any) -> float | None:
     return finite_number(value)
 
 
+def _safe_int(value: Any) -> int | None:
+    """安全转 int(集思录 adj_scnt 等计数字段 int/str 混返)。"""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def _cell_value(row: Any, field: str) -> Any:
     """从 DB 行取字段值。
 
@@ -334,7 +342,10 @@ def _to_dto(
         "dblow": finite_number(c.get("dblow")),
         "premium_rt": finite_number(c.get("premium_rt")),
         "curr_iss_amt": finite_number(c.get("curr_iss_amt")),
+        "convert_price": finite_number(c.get("convert_price")),
         "convert_value": finite_number(c.get("convert_value")),
+        # 成功下修次数(集思录 adj_scnt, int/str 混返, 前端据此渲染红色星标)
+        "adj_scnt": _safe_int(c.get("adj_scnt")),
         "year_left": finite_number(c.get("year_left")),
         "pb": finite_number(c.get("pb")),
         "rating": c.get("rating_cd", ""),
