@@ -91,7 +91,12 @@ function buildMarkLine(t) {
     // 标签贴右端显示具体数值, 与蛋卷"右侧标 30/中位/70 数值"一致
     label: {
       position: 'end',
-      align: 'right',
+      align: 'left',
+      // 参考线文字放入绘图区右侧留白，避免压住曲线和右轴刻度
+      offset: [8, 0],
+      backgroundColor: t.tooltipBg,
+      padding: [1, 3],
+      borderRadius: 2,
       fontSize: 10,
       fontWeight: 600,
       formatter: (p) => `${p.name} ${fmt(p.value)}`,
@@ -220,7 +225,8 @@ function buildOption() {
     grid: {
       top: comparison ? (mobile ? 44 : 52) : mobile ? 24 : 32,
       left: mobile ? 48 : 62,
-      right: comparison ? (mobile ? 44 : 60) : mobile ? 16 : 28,
+      // 双轴图为右侧分位标签预留空间，标签从绘图区末端向右展开
+      right: comparison ? (mobile ? 86 : 112) : mobile ? 16 : 28,
       bottom: mobile ? 26 : 34,
     },
     xAxis: {
