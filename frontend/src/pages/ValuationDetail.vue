@@ -238,8 +238,8 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- 核心指标带 -->
-        <div class="metric-band">
+        <!-- 基础估值摘要 -->
+        <div class="base-metric-band">
           <div class="mb-item">
             <div class="mb-label">PE</div>
             <div class="mb-value">{{ fmtNum(latest.pe) }}</div>
@@ -259,20 +259,27 @@ onBeforeUnmount(() => {
             <div class="mb-value">{{ fmtPct(pb5y) }}</div>
           </div>
           <div class="mb-item">
-            <div class="mb-label">股息率</div>
-            <div class="mb-value">{{ fmtNum(dividend?.dividend_yield) }}%</div>
-          </div>
-          <div class="mb-item">
             <div class="mb-label">PS</div>
             <div class="mb-value">{{ fmtNum(latest.ps) }}</div>
           </div>
-          <div class="mb-item">
-            <div class="mb-label">股债差</div>
-            <div class="mb-value">{{ fmtNum(ebData?.spread?.current) }}</div>
+        </div>
+
+        <!-- 用户关注的收益指标带：当前值 + 5 年分位 + 5 年均值 -->
+        <div class="focus-metric-band">
+          <div class="focus-item">
+            <div class="focus-label">股息率</div>
+            <div class="focus-value accent">{{ fmtNum(dividend?.dividend_yield) }}%</div>
+            <div class="focus-meta">5年分位 {{ fmtPct(dividend?.percentile?.['5y']) }} · 5年均值 {{ fmtNum(dividend?.average_5y) }}%</div>
           </div>
-          <div class="mb-item">
-            <div class="mb-label">股债比</div>
-            <div class="mb-value">{{ fmtNum(ebData?.ratio?.current) }}</div>
+          <div class="focus-item">
+            <div class="focus-label">股债收益差</div>
+            <div class="focus-value accent">{{ fmtNum(ebData?.spread?.current) }}%</div>
+            <div class="focus-meta">5年分位 {{ fmtPct(ebData?.spread?.percentiles?.['5y']) }} · 5年均值 {{ fmtNum(ebData?.spread?.average_5y) }}%</div>
+          </div>
+          <div class="focus-item">
+            <div class="focus-label">股债比</div>
+            <div class="focus-value">{{ fmtNum(ebData?.ratio?.current) }}x</div>
+            <div class="focus-meta">5年分位 {{ fmtPct(ebData?.ratio?.percentiles?.['5y']) }} · 5年均值 {{ fmtNum(ebData?.ratio?.average_5y) }}x</div>
           </div>
         </div>
       </div>
@@ -499,11 +506,12 @@ onBeforeUnmount(() => {
   line-height: 1.2;
 }
 
-/* ---- 核心指标带 ---- */
-.metric-band {
+/* ---- 基础估值摘要 ---- */
+.base-metric-band {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 12px;
+  margin-bottom: 18px;
 }
 
 .mb-item .mb-label {
@@ -516,6 +524,57 @@ onBeforeUnmount(() => {
   font-size: 16px;
   font-weight: 700;
   color: var(--el-text-color-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 用户关注的收益指标带 ---- */
+.focus-metric-band {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  border-top: 1px solid var(--el-border-color-lighter);
+  padding-top: 14px;
+}
+
+.focus-item {
+  min-width: 0;
+  padding: 0 20px;
+}
+
+.focus-item:first-child {
+  padding-left: 0;
+}
+
+.focus-item + .focus-item {
+  border-left: 1px solid var(--el-border-color-lighter);
+}
+
+.focus-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 2px;
+}
+
+.focus-value {
+  font-size: 22px;
+  line-height: 1.2;
+  font-weight: 800;
+  color: var(--el-text-color-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.focus-value.accent {
+  color: var(--el-color-danger);
+}
+
+.focus-meta {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-variant-numeric: tabular-nums;
 }
 
@@ -654,14 +713,34 @@ onBeforeUnmount(() => {
     font-size: 21px;
   }
 
-  /* 6 列在手机上挤成 3 列两行 */
-  .metric-band {
+  .base-metric-band {
     grid-template-columns: repeat(3, 1fr);
     gap: 10px;
+    margin-bottom: 14px;
   }
 
   .mb-item .mb-value {
     font-size: 15px;
+  }
+
+  .focus-metric-band {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .focus-item,
+  .focus-item:first-child {
+    padding: 0;
+  }
+
+  .focus-item + .focus-item {
+    border-left: none;
+    border-top: 1px solid var(--el-border-color-lighter);
+    padding-top: 12px;
+  }
+
+  .focus-meta {
+    white-space: normal;
   }
 
   .chart-controls {
