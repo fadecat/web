@@ -1,10 +1,10 @@
 # 指数日线收盘价(eod)标的配置
-# 用途: 易方达 CDN 指数日收盘价数据入库, 供风格轮动等板块使用。
+# 用途: 易方达 CDN 指数日收盘价数据入库, 供风格轮动、估值详情 PE 图叠加收盘价等板块使用。
 # 数据源: https://cdn.efunds.com.cn/etf-net/index_eod_price_{code}.json
 #         单文件全历史, 每次运行=全量同步(幂等, 已存在日期自动跳过)。
 # 字段:
 #   name   指数名称(仅日志展示用, 真实名称以接口返回为准)
-#   code   指数代码(即 index_eod_price_{code}.json 中的 {code})
+#   code   指数代码(即 index_eod_price_{code}.json 中的 {code}, 用真实指数代码)
 #   source 数据源标识, 当前固定 efunds(预留, 与腾讯源标的区分)
 #
 # 注意: 仅入库日线 close; 易方达 eod 接口无 OHLCV, open/high/low/volume 落库为空。
@@ -17,4 +17,36 @@ targets:
 
   - name: "创成长"
     code: "399296"
+    source: "efunds"
+
+  - name: "中证价值100"
+    code: "931052"
+    source: "efunds"
+
+  - name: "国证价值100"
+    code: "980081"
+    source: "efunds"
+
+  - name: "沪深300"
+    code: "000300"
+    source: "efunds"
+
+  - name: "国证2000"
+    code: "399303"
+    source: "efunds"
+
+  - name: "深证成长40指数"
+    code: "399326"
+    source: "efunds"
+
+  - name: "港股通央企红利"
+    code: "931233"
+    source: "efunds"
+
+  - name: "香港证券指数"
+    code: "930709"
+    source: "efunds"
+
+  - name: "成长100"
+    code: "980080"
     source: "efunds"

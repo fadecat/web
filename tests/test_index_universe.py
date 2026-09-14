@@ -44,6 +44,13 @@ def test_default_universe_merges_three_sources():
     assert indices["930955"]["datasets"][DATASET_QUOTE]["source"] == SOURCE_EFUNDS
     assert indices["399296"]["datasets"][DATASET_QUOTE]["source"] == SOURCE_EFUNDS
 
+    # eod 名单扩展后, 全部估值指数都带 efunds quote 数据集(存储键=真实指数代码)
+    for code in ("931052", "980081", "000300", "399303", "399326", "931233", "930709", "980080"):
+        quote = indices[code]["datasets"].get(DATASET_QUOTE)
+        assert quote is not None, f"{code} 应带 quote 数据集(PE 图叠加收盘价)"
+        assert quote["source"] == SOURCE_EFUNDS
+        assert quote["storage_code"] == code
+
 
 def test_default_universe_has_no_duplicate_codes():
     """默认名单无重复 code(980080 只出现一次)。"""
@@ -60,7 +67,12 @@ def test_datasets_for_job_routing():
     assert "399376" not in val_codes  # 腾讯不是估值任务
 
     eod_codes = {i["code"] for i, _d in datasets_for_job("index_eod_daily")}
-    assert eod_codes == {"930955", "399296"}
+    # 估值页 PE 图叠加收盘价: 全部估值指数 + 风格轮动对照(000300/399303)都纳入 eod
+    assert eod_codes == {
+        "930955", "399296", "931052", "980081",
+        "000300", "399303", "399326", "931233",
+        "930709", "980080",
+    }
 
     tencent_codes = {i["code"] for i, _d in datasets_for_job("style_rotation_daily")}
     assert tencent_codes == {"399376", "399373"}

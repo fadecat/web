@@ -28,19 +28,33 @@ from backend.utils import INDEX_DISPLAY_NAMES  # noqa: E402
 
 @router.get("/style-rotation/quotes")
 def list_index_quotes(
-    index_code: str | None = Query(None, description="按指数代码过滤,如 399376"),
+    index_code: str | None = Query(None, description="按指数代码过滤,如 399376; 传真实指数代码(931052)自动映射历史存储键(512040)"),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """返回指数日线 OHLCV 全量列表(可按 index_code 过滤)。
 
     按 index_code 升序、trade_date 升序排列(方便前端绘制时间序列)。
+    index_code 传入时做 canonical → 存储键归一化(估值页的 code 可能是
+    历史存储键如 512040, 而日线表按真实指数代码落库, 两个方向都兼容)。
     """
+    from backend.services.index_universe import (
+        DATASET_QUOTE,
+        resolve_storage,
+    )
+    from backend.services.catalog_entities import to_canonical
+
     stmt = select(IndexDailyQuote).order_by(
         IndexDailyQuote.index_code,
         IndexDailyQuote.trade_date,
     )
     if index_code:
-        stmt = stmt.where(IndexDailyQuote.index_code == index_code)
+        # 同一实体可能存在两套键(存储键=ETF 代码 / 真实指数代码), 全部纳入
+        keys = {
+            index_code,
+            resolve_storage(index_code, DATASET_QUOTE),
+            to_canonical(index_code),
+        }
+        stmt = stmt.where(IndexDailyQuote.index_code.in_(keys))
 
     rows = db.scalars(stmt).all()
     return [
