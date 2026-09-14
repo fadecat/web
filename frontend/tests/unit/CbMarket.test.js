@@ -1,14 +1,17 @@
 // CbMarket 页面状态与交互测试(T4):
 // 覆盖首次加载失败重试、空数据、最新字段缺失、刷新失败保留、按钮切换不请求网络、
-// 切窗口重置读数、最新摘要不随历史选择改变、API 调用次数。
-// 依赖 getCbIndexDaily(API) 用 mock; normalizeCbMarketRows / selectCbMarketWindow 用真实实现。
+// 切窗口重置读数、最新摘要不随历史选择改变、API 调用次数、利差模块独立加载。
+// 依赖 getCbIndexDaily / getCbIndexSpread(API) 用 mock;
+// normalizeCbMarketRows / selectCbMarketWindow / normalizeCbSpreadRows 用真实实现。
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { shallowMount, flushPromises } from '@vue/test-utils';
 
-// API 模块 mock(仅 getCbIndexDaily 命中网络)
+// API 模块 mock(两个接口均命中网络; spread 默认返回 null = 样本不足空态)
 const getCbIndexDailyMock = vi.fn();
+const getCbIndexSpreadMock = vi.fn();
 vi.mock('../../src/api/index.js', () => ({
   getCbIndexDaily: (...a) => getCbIndexDailyMock(...a),
+  getCbIndexSpread: (...a) => getCbIndexSpreadMock(...a),
   default: {},
 }));
 
@@ -46,13 +49,15 @@ async function mountPage() {
 describe('CbMarket 页面状态闭环', () => {
   beforeEach(() => {
     getCbIndexDailyMock.mockReset();
+    getCbIndexSpreadMock.mockReset();
+    getCbIndexSpreadMock.mockResolvedValue(null); // 默认: 样本不足空态
   });
 
-  it('默认窗口为 3 年, 首次加载只请求一次 API', async () => {
+  it('默认窗口为 5 年, 首次加载只请求一次 API', async () => {
     getCbIndexDailyMock.mockResolvedValue(makeRows());
     const wrapper = await mountPage();
     await flushPromises();
-    expect(wrapper.vm.range).toBe('3y');
+    expect(wrapper.vm.range).toBe('5y');
     expect(getCbIndexDailyMock).toHaveBeenCalledTimes(1);
     expect(wrapper.vm.allRows.length).toBe(50);
   });
@@ -210,5 +215,102 @@ describe('CbMarket 页面状态闭环', () => {
     expect(readLine).toContain(target.trade_date);
     expect(readLine).toContain('价格中位数');
     expect(readLine).toContain('平均到期收益率');
+  });
+
+  // ---- 转债-国债利差模块(独立加载) ----
+
+  // 生成 2022-01 起 56 个月的利差响应(与 makeRows 同期), 供 1y 窗口裁剪可见
+  function makeSpreadResponse() {
+    const series = [];
+    let y = 2022;
+    let mo = 1;
+    for (let i = 0; i < 56; i++) {
+      const d = new Date(Date.UTC(y, mo - 1, 1)).toISOString().slice(0, 10);
+      const avgYtm = -8 + i * 0.02;
+      series.push({ trade_date: d, avg_ytm: avgYtm, bond_yield: 2.5, spread: round4(avgYtm - 2.5) });
+      mo += 1;
+      if (mo > 12) {
+        mo = 1;
+        y += 1;
+      }
+    }
+    const last = series[series.length - 1];
+    return {
+      trade_date: last.trade_date,
+      avg_ytm: last.avg_ytm,
+      bond_yield: last.bond_yield,
+      spread: {
+        current: last.spread,
+        percentiles: { '1y': 95.0, '3y': 88.5, '5y': 76.25, '10y': 60.0 },
+        average_5y: -7.2,
+      },
+      series,
+    };
+  }
+  const round4 = (v) => Math.round(v * 10000) / 10000;
+
+  it('利差响应有数据: 渲染统计块, 分位统一由图表展示且走势图随窗口裁剪', async () => {
+    getCbIndexDailyMock.mockResolvedValue(makeRows());
+    getCbIndexSpreadMock.mockResolvedValue(makeSpreadResponse());
+    const wrapper = await mountPage();
+    await flushPromises();
+
+    expect(wrapper.vm.spreadRows.length).toBe(56);
+    const statTexts = wrapper.findAll('.sp-value').map((e) => e.text());
+    expect(statTexts[0]).toBe('-9.40'); // 当前利差 = (-8 + 55*0.02) - 2.5
+    expect(statTexts[1]).toBe('-7.20'); // 5年均值
+    expect(wrapper.find('.spread-bars').exists()).toBe(false);
+    expect(wrapper.find('.spread-empty').exists()).toBe(false);
+
+    // 默认 5y 窗口(60 个月)装得下 56 个月不裁剪; 切 1y 后裁到 13 条, all 恢复全量
+    expect(wrapper.vm.spreadWindowRows.length).toBe(56);
+    wrapper.vm.setRange('1y');
+    await flushPromises();
+    expect(wrapper.vm.spreadWindowRows.length).toBe(13); // 2025-08 ~ 2026-08 含两端
+    wrapper.vm.setRange('all');
+    await flushPromises();
+    expect(wrapper.vm.spreadWindowRows.length).toBe(56);
+  });
+
+  it('利差样本不足(响应 null): 模块空态但主数据正常', async () => {
+    getCbIndexDailyMock.mockResolvedValue(makeRows());
+    const wrapper = await mountPage();
+    await flushPromises();
+    expect(wrapper.find('.spread-empty').exists()).toBe(true);
+    expect(wrapper.find('.spread-empty').text()).toContain('利差样本不足');
+    expect(wrapper.vm.allRows.length).toBe(50);
+  });
+
+  it('利差请求失败: 模块内警告与重试, 不影响主数据', async () => {
+    getCbIndexDailyMock.mockResolvedValue(makeRows());
+    getCbIndexSpreadMock.mockRejectedValueOnce(new Error('spread down'));
+    const wrapper = await mountPage();
+    await flushPromises();
+
+    expect(wrapper.vm.allRows.length).toBe(50); // 主数据不受影响
+    expect(wrapper.vm.spreadErrorMsg).toContain('spread down');
+    const banners = wrapper.findAll('.spread-module .banner.warn');
+    expect(banners.length).toBe(1);
+    expect(banners[0].text()).toContain('利差数据加载失败');
+
+    // 模块内重试成功 → 恢复展示
+    getCbIndexSpreadMock.mockResolvedValue(makeSpreadResponse());
+    await wrapper.findAll('.spread-module .retry-btn')[0].trigger('click');
+    await flushPromises();
+    expect(wrapper.vm.spreadErrorMsg).toBe('');
+    expect(wrapper.vm.spreadRows.length).toBe(56);
+  });
+
+  it('刷新按钮同时重拉主数据与利差', async () => {
+    getCbIndexDailyMock.mockResolvedValue(makeRows());
+    getCbIndexSpreadMock.mockResolvedValue(makeSpreadResponse());
+    const wrapper = await mountPage();
+    await flushPromises();
+    expect(getCbIndexSpreadMock).toHaveBeenCalledTimes(1);
+
+    await wrapper.find('.refresh-btn').trigger('click');
+    await flushPromises();
+    expect(getCbIndexDailyMock).toHaveBeenCalledTimes(2);
+    expect(getCbIndexSpreadMock).toHaveBeenCalledTimes(2);
   });
 });

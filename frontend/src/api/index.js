@@ -9,6 +9,10 @@ const api = axios.create({
 export const getCbIndexDaily = () =>
   api.get('/cb-index/daily').then((r) => r.data);
 
+// 转债-国债利差(avg_ytm - 10Y 国债): 统计块 + 全历史序列; 样本不足返回 null
+export const getCbIndexSpread = () =>
+  api.get('/cb-index/spread').then((r) => r.data);
+
 // 可转债全量快照
 export const getCbListLatest = (params = {}) =>
   api.get('/cb-list/latest', { params }).then((r) => r.data);

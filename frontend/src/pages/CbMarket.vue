@@ -1,9 +1,17 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
-import { getCbIndexDaily } from '../api';
-import { normalizeCbMarketRows, selectCbMarketWindow } from '../utils/cbMarket.mjs';
+import { getCbIndexDaily, getCbIndexSpread } from '../api';
+import {
+  normalizeCbMarketRows,
+  selectCbMarketWindow,
+  summaryPercentile,
+  windowPercentile,
+  normalizeCbSpreadRows,
+} from '../utils/cbMarket.mjs';
+import { percentileTone, percentilePosition, fmtPct } from '../utils/valuation';
 import CbMarketChart from '../components/CbMarketChart.vue';
+import CbSpreadChart from '../components/CbSpreadChart.vue';
 
 const router = useRouter();
 
@@ -13,7 +21,7 @@ const errorMsg = ref(''); // 首次失败
 const refreshError = ref(false); // 刷新失败(已有数据时)
 const allRows = ref([]); // 规范化升序全量
 const invalidCounts = ref({ invalidDateCount: 0, duplicateDateCount: 0, invalidValueCount: 0 });
-const range = ref('3y'); // 默认 3 年
+const range = ref('5y'); // 默认 5 年
 const selectedDate = ref(''); // 历史游标(当前查看日期)
 
 // 递增请求标识: 防止旧响应覆盖新响应
@@ -30,6 +38,7 @@ const RANGE_OPTIONS = [
 async function loadData(isRefresh = false) {
   const token = ++reqToken;
   loading.value = true;
+  loadSpread(); // 利差模块独立加载(自带 try/catch, 失败不阻塞主数据)
   if (!isRefresh) {
     errorMsg.value = '';
     refreshError.value = false;
@@ -87,6 +96,21 @@ const asOfDate = computed(() => latest.value?.trade_date || '');
 const latestMedianDate = computed(() => [...allRows.value].reverse().find((r) => r.median_price != null)?.trade_date || '');
 const latestYtmDate = computed(() => [...allRows.value].reverse().find((r) => r.avg_ytm != null)?.trade_date || '');
 
+// ---- 摘要分位(固定 5 年口径, 不随游标/窗口变化; 历史不足 5 年按实际样本) ----
+const pricePctl = computed(() => summaryPercentile(allRows.value, 'median_price'));
+const ytmPctl = computed(() => summaryPercentile(allRows.value, 'avg_ytm'));
+
+// 分位颜色: 语义同市场估值页(绿 = 相对吸引力较强, 红 = 偏弱, 30~70 中性)。
+// median_price 同 PE(分位低=便宜); avg_ytm 同股息率(分位高=便宜)。
+function percentileColor(value, metric) {
+  const tone = percentileTone(value, metric);
+  return tone === 'green'
+    ? 'var(--el-color-success)'
+    : tone === 'red'
+      ? 'var(--el-color-danger)'
+      : 'var(--el-text-color-regular)';
+}
+
 // 数据新鲜度: 截至日期较今天超过 7 个自然日 → 中性提示
 const dataAgeDays = computed(() => {
   if (!asOfDate.value) return null;
@@ -124,12 +148,68 @@ function moveCursor(delta) {
   selectedDate.value = windowRows.value[ni].trade_date;
 }
 
+// ---- 读数分位(当前窗口内回看排名, 随 1y/3y/5y/all 窗口变化) ----
+const priceWinPctl = computed(() =>
+  windowPercentile(windowRows.value, selectedDate.value, 'median_price'),
+);
+const ytmWinPctl = computed(() =>
+  windowPercentile(windowRows.value, selectedDate.value, 'avg_ytm'),
+);
+
 // 窗口内两项核心指标全空 → 提示(保留时间按钮)
 const windowNoValid = computed(() => {
   const w = windowRows.value;
   if (!w.length) return false;
   return !w.some((r) => r.median_price != null || r.avg_ytm != null);
 });
+
+// ---- 转债-国债利差模块(独立加载, 失败/为空不阻塞主数据) ----
+const spreadLoading = ref(false);
+const spreadErrorMsg = ref('');
+const spreadRaw = ref(null); // 后端响应(统计块 + 全历史序列); 样本不足为 null
+const spreadRows = ref([]); // normalizeCbSpreadRows 输出的升序 rows
+const spreadInvalidCounts = ref({ invalidDateCount: 0, duplicateDateCount: 0, invalidValueCount: 0 });
+
+let spreadToken = 0;
+
+async function loadSpread() {
+  const token = ++spreadToken;
+  spreadLoading.value = true;
+  spreadErrorMsg.value = '';
+  try {
+    const raw = await getCbIndexSpread();
+    if (disposed || token !== spreadToken) return;
+    spreadRaw.value = raw || null; // 后端样本不足返回 null(空态)
+    const norm = normalizeCbSpreadRows(raw);
+    spreadRows.value = norm.rows;
+    spreadInvalidCounts.value = {
+      invalidDateCount: norm.invalidDateCount,
+      duplicateDateCount: norm.duplicateDateCount,
+      invalidValueCount: norm.invalidValueCount,
+    };
+  } catch (e) {
+    if (disposed || token !== spreadToken) return;
+    spreadErrorMsg.value = e?.message || '利差数据拉取失败';
+    spreadRaw.value = null;
+    spreadRows.value = [];
+  } finally {
+    if (!disposed && token === spreadToken) spreadLoading.value = false;
+  }
+}
+
+// 统计块: 当前利差 / 5Y 均值(分位统一放在图表参考线与悬浮提示中)
+const spreadSummary = computed(() => spreadRaw.value?.spread || null);
+const spreadAsOf = computed(() => spreadRaw.value?.trade_date || '');
+
+// 走势图窗口: 复用主图时间按钮(锚点=利差序列自身最新日期, 与主图可能差一天)
+const spreadWindowRows = computed(() => selectCbMarketWindow(spreadRows.value, range.value).rows);
+
+const spreadHasInvalid = computed(
+  () =>
+    spreadInvalidCounts.value.invalidDateCount > 0 ||
+    spreadInvalidCounts.value.duplicateDateCount > 0 ||
+    spreadInvalidCounts.value.invalidValueCount > 0,
+);
 
 // ---- 格式化(本页自用, 不依赖后端自定义口径) ----
 function fmtPrice(v) {
@@ -212,16 +292,30 @@ onBeforeUnmount(() => {
 
     <!-- 正常内容 -->
     <template v-else-if="!errorMsg && allRows.length > 0">
-      <!-- 3. 最新摘要(全量最新, 不随游标/窗口变化) -->
+      <!-- 3. 最新摘要(全量最新, 不随游标/窗口变化; 分位为固定 5 年口径) -->
       <div class="summary">
         <div class="sum-item">
           <div class="sum-label">价格中位数（元）</div>
           <div class="sum-value">{{ fmtPrice(latest.median_price) }}</div>
+          <div v-if="pricePctl?.percentile != null" class="sum-pctl">
+            5年分位
+            <span :style="{ color: percentileColor(pricePctl.percentile, 'pe') }">
+              {{ fmtPct(pricePctl.percentile) }} · {{ percentilePosition(pricePctl.percentile) }}
+            </span>
+            <span>（{{ pricePctl.since }} 起）</span>
+          </div>
           <div class="sum-date">最后有效日期：{{ latestMedianDate || '—' }}</div>
         </div>
         <div class="sum-item">
           <div class="sum-label">平均到期收益率（集思录口径，%）</div>
           <div class="sum-value">{{ fmtYtm(latest.avg_ytm) }}</div>
+          <div v-if="ytmPctl?.percentile != null" class="sum-pctl">
+            5年分位
+            <span :style="{ color: percentileColor(ytmPctl.percentile, 'dividend') }">
+              {{ fmtPct(ytmPctl.percentile) }} · {{ percentilePosition(ytmPctl.percentile) }}
+            </span>
+            <span>（{{ ytmPctl.since }} 起）</span>
+          </div>
           <div class="sum-date">最后有效日期：{{ latestYtmDate || '—' }}</div>
         </div>
         <div class="sum-item">
@@ -229,6 +323,13 @@ onBeforeUnmount(() => {
           <div class="sum-value">{{ fmtCount(latest.count) }}</div>
         </div>
       </div>
+      <p
+        v-if="pricePctl?.percentile != null || ytmPctl?.percentile != null"
+        class="pctl-legend"
+      >
+        分位颜色：红 = 相对吸引力偏弱，绿 = 相对吸引力较强；30～70 为中性。
+        价格中位数分位越低越便宜，到期收益率分位越高越便宜。
+      </p>
 
       <!-- 4. 时间按钮 -->
       <div class="seg-group">
@@ -261,12 +362,67 @@ onBeforeUnmount(() => {
         <div class="read-text">
           <template v-if="selectedRecord">
             当前查看 {{ selectedDate }}：价格中位数
-            {{ fmtPrice(selectedRecord.median_price) }}元；平均到期收益率
-            {{ fmtYtm(selectedRecord.avg_ytm) }}%
+            {{ fmtPrice(selectedRecord.median_price) }}元<template v-if="priceWinPctl != null">（本窗口 {{ fmtPct(priceWinPctl) }} 分位）</template>；平均到期收益率
+            {{ fmtYtm(selectedRecord.avg_ytm) }}%<template v-if="ytmWinPctl != null">（本窗口 {{ fmtPct(ytmWinPctl) }} 分位）</template>
           </template>
           <template v-else>请选择日期查看历史读数</template>
         </div>
         <button class="nav-btn" :disabled="!canNext" @click="moveCursor(1)" aria-label="下一天">›</button>
+      </div>
+
+      <!-- 7. 转债-国债利差模块(独立加载) -->
+      <div class="spread-module">
+        <div class="spread-head">
+          <h4 class="spread-title">转债-国债利差</h4>
+          <span class="spread-sub">
+            平均到期收益率 − 10Y 国债收益率（百分点）<template v-if="spreadAsOf"> · 截至 {{ spreadAsOf }}</template>
+          </span>
+        </div>
+
+        <div v-if="spreadErrorMsg" class="banner warn">
+          <span>利差数据加载失败：{{ spreadErrorMsg }}（不影响上方主数据）</span>
+          <button class="retry-btn" :disabled="spreadLoading" @click="loadSpread()">重试</button>
+        </div>
+
+        <div v-else-if="spreadLoading" class="spread-empty">利差数据加载中…</div>
+
+        <template v-else-if="spreadRaw">
+          <div class="spread-stats">
+            <div class="sp-item">
+              <div class="sp-label">当前利差（百分点）</div>
+              <div class="sp-value">{{ fmtYtm(spreadSummary?.current) }}</div>
+            </div>
+            <div class="sp-item">
+              <div class="sp-label">5年均值（百分点）</div>
+              <div class="sp-value">{{ fmtYtm(spreadSummary?.average_5y) }}</div>
+            </div>
+            <div class="sp-item">
+              <div class="sp-label">平均到期收益率（%）</div>
+              <div class="sp-value">{{ fmtYtm(spreadRaw.avg_ytm) }}</div>
+            </div>
+            <div class="sp-item">
+              <div class="sp-label">10Y国债收益率（%）</div>
+              <div class="sp-value">{{ fmtYtm(spreadRaw.bond_yield) }}</div>
+            </div>
+          </div>
+
+          <p class="spread-note">
+            分位统一在下方走势图中展示：30/50/70 分位线随时间窗口切换，悬浮时显示当前日期分位。
+            利差越高代表转债债底相对国债越便宜，负值表示转债整体比国债贵。
+          </p>
+
+          <CbSpreadChart :rows="spreadWindowRows" />
+
+          <div v-if="spreadHasInvalid" class="banner neutral">
+            利差数据存在 {{ spreadInvalidCounts.invalidDateCount }} 条无效日期、
+            {{ spreadInvalidCounts.duplicateDateCount }} 条重复日期、
+            {{ spreadInvalidCounts.invalidValueCount }} 个异常值，已忽略。
+          </div>
+        </template>
+
+        <div v-else class="spread-empty">
+          利差样本不足 20 个交易日，暂不展示（需转债指数与 10Y 国债收益率有足够重叠日期）。
+        </div>
       </div>
 
       <!-- 窗口无有效指标 -->
@@ -292,6 +448,23 @@ onBeforeUnmount(() => {
           <code>avg_ytm_rt</code>（%，集思录口径），允许 0 与负数，不乘 100；
           转债数量为来源只数。以上按来源统计值展示，<b>非本系统自定义选债收益率</b>，
           不承诺完整覆盖所有在市转债。缺失项显示 <code>—</code>，不从其他日期补值。
+        </p>
+        <p>
+          分位为本页按全量历史现算：摘要卡为固定 5 年口径（锚点 = 最新日期回看 5 年，
+          历史不足 5 年按实际样本，统计起点以卡片标注为准）；读数行、图上 30/70 分位虚线
+          与图表悬浮分位均为当前所选窗口内的回看排名，随窗口切换变化，两种口径统计范围不同。
+          分位 = 当前值高于窗口内 p% 的交易日，等值取中间秩，有效样本不足 20 条不显示；
+          分位线颜色：价格中位数低于 30 分位线偏便宜（绿）、高于 70 分位线偏贵（红），
+          平均到期收益率方向相反。
+        </p>
+        <p>
+          转债-国债利差 = 平均到期收益率（集思录口径）− 10 年期国债收益率（百分点），
+          国债期限与市场估值页股债收益差一致；转债为混合剩余期限的市场平均，不与 10 年精确匹配，
+          定位为市场温度计而非可交易利差，负值表示转债整体比国债贵。
+          利差分位由后端按最新交易日全历史回看计算（窗口 1/3/5/10 年，
+          分位 = 窗口内利差严格小于当前值的天数占比，有效样本不足 20 天该窗口跳过；
+          两序列重叠不足 20 天时整模块不展示）；利差走势图与图上 30/70 分位虚线、
+          悬浮分位为当前所选窗口内的回看排名，随时间按钮变化，两种口径统计范围不同。
         </p>
         <router-link class="link-btn" to="/status">查看数据状态</router-link>
       </details>
@@ -468,6 +641,18 @@ onBeforeUnmount(() => {
   color: var(--el-text-color-secondary);
   font-variant-numeric: tabular-nums;
 }
+/* 摘要卡 5 年分位行: 数值与位置着色, 起点为次要色 */
+.sum-pctl {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.pctl-legend {
+  margin: 0;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
 
 /* 时间按钮 */
 .seg-group {
@@ -533,6 +718,66 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
 }
 
+/* 转债-国债利差模块 */
+.spread-module {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--el-bg-color);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+.spread-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.spread-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--el-text-color-primary);
+}
+.spread-sub {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.spread-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+.sp-item {
+  background: var(--el-fill-color-light);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.sp-label {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 3px;
+}
+.sp-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--el-text-color-primary);
+  font-variant-numeric: tabular-nums;
+}
+.spread-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--el-text-color-secondary);
+}
+.spread-empty {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  padding: 8px 0;
+}
+
 /* 口径 */
 .caliber {
   border: 1px solid var(--el-border-color-lighter);
@@ -565,6 +810,8 @@ onBeforeUnmount(() => {
   .sum-value { font-size: 18px; }
   .sk-chart { height: 420px; }
   .sk-row { grid-template-columns: 1fr; }
+  .spread-stats { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .sp-value { font-size: 16px; }
 }
 
 /* ---------- 深色模式微调(语义色只提亮不换色相, 骨架屏换暗色微光) ---------- */

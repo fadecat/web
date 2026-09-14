@@ -6,14 +6,15 @@
 - contract_client 提供已隔离 lifespan 的 TestClient; thread_db 是与它
   共享同一内存库的独立会话, 供测试写入测试数据。
 - 不修改 backend/api/routes/cb_index.py 的解析逻辑, 只验证契约:
-  降序、负收益率原值、null 不变、空表返回 []。
+  降序、负收益率原值、null 不变、空表返回 [];
+  利差端点: 交集现算、样本不足返回 null。
 """
 from __future__ import annotations
 
 import pytest
-from datetime import date
+from datetime import date, timedelta
 
-from backend.models.valuation import CbIndexDaily
+from backend.models.valuation import CbIndexDaily, CnBondYield
 
 BASE = "/api/cb-index/daily"
 
@@ -88,3 +89,55 @@ class TestCbIndexDailyContract:
         r = contract_client.get(BASE)
         assert r.status_code == 200
         assert r.json() == []
+
+
+SPREAD_URL = "/api/cb-index/spread"
+
+
+class TestCbIndexSpreadContract:
+    def _seed(self, thread_db, n=20):
+        """写入 n 天转债指数 + 10Y 国债交集数据(avg_ytm=-3.5, 10Y=2.0)。"""
+        start = date(2026, 8, 1)
+        for i in range(n):
+            d = start + timedelta(days=i)
+            thread_db.add(CbIndexDaily(trade_date=d, avg_ytm=-3.5))
+            thread_db.add(CnBondYield(trade_date=d, yield_10y=2.0))
+        thread_db.commit()
+
+    def test_spread_summary_and_series(self, thread_db, contract_client):
+        """20 天交集: 返回统计块与全历史序列, spread = avg_ytm - 10Y。"""
+        self._seed(thread_db)
+        r = contract_client.get(SPREAD_URL)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["trade_date"] == "2026-08-20"
+        assert data["avg_ytm"] == -3.5
+        assert data["bond_yield"] == 2.0
+        assert data["spread"]["current"] == -5.5
+        assert isinstance(data["spread"]["percentiles"], dict)
+        assert data["spread"]["average_5y"] == -5.5
+        assert len(data["series"]) == 20
+        assert data["series"][0] == {
+            "trade_date": "2026-08-01",
+            "avg_ytm": -3.5,
+            "bond_yield": 2.0,
+            "spread": -5.5,
+        }
+
+    def test_spread_uses_date_intersection(self, thread_db, contract_client):
+        """单侧缺失的日期不参与: 转债 20 天 + 国债 19 天(缺首日) → 交集 19 天 < 20 → null。"""
+        start = date(2026, 8, 1)
+        for i in range(20):
+            thread_db.add(CbIndexDaily(trade_date=start + timedelta(days=i), avg_ytm=-1.0))
+        for i in range(1, 20):  # 国债缺 08-01
+            thread_db.add(CnBondYield(trade_date=start + timedelta(days=i), yield_10y=2.0))
+        thread_db.commit()
+        r = contract_client.get(SPREAD_URL)
+        assert r.status_code == 200
+        assert r.json() is None
+
+    def test_spread_null_on_empty_tables(self, contract_client):
+        """两表为空 → 样本不足返回 null。"""
+        r = contract_client.get(SPREAD_URL)
+        assert r.status_code == 200
+        assert r.json() is None

@@ -198,3 +198,170 @@ export function selectCbMarketWindow(rows, range) {
   );
   return { rows: sliced, from, to: anchor, insufficientHistory: false };
 }
+
+// ---------------------------------------------------------------------------
+// 历史分位
+// ---------------------------------------------------------------------------
+
+/** 分位最少有效样本数: 低于该值样本不可信, 一律返回 null(页面显示 —)。 */
+const PERCENTILE_MIN_SAMPLES = 20;
+
+/**
+ * 分位核心: value 在样本中的百分位(0~100)。
+ *
+ * 口径 = "当前高于窗口内 p% 的交易日"(与估值页一致):
+ *   p = (小于 value 的样本数 + 0.5 × 等于 value 的样本数) / 有效样本数 × 100,
+ *   等值取中间秩(与估值详情页图表悬停口径一致)。
+ *
+ * @param {Array<number|null>} samples 样本(含 null 会被剔除)
+ * @param {number|null} value 待定位的值
+ * @param {{minSamples?: number}} [opts] 最低有效样本数(默认 20)
+ * @returns {number|null} value 非有限数或有效样本不足 → null
+ */
+export function percentileRank(samples, value, { minSamples = PERCENTILE_MIN_SAMPLES } = {}) {
+  if (!isFiniteNumber(value)) return null;
+  const list = (Array.isArray(samples) ? samples : []).filter(isFiniteNumber);
+  if (list.length < minSamples) return null;
+  let below = 0;
+  let equal = 0;
+  for (const s of list) {
+    if (s < value) below += 1;
+    else if (s === value) equal += 1;
+  }
+  return ((below + equal / 2) / list.length) * 100;
+}
+
+/**
+ * 摘要分位(固定 5 年口径): 末条记录 key 字段值在"锚点(末条日期)回看 5 年"内的分位。
+ *
+ * 与估值详情页"顶部固定 5 年 · 历史不足时按实际样本"先例一致:
+ * 历史不足 5 年 → 用全部实际样本, since 返回窗口内实际最早日期。
+ * 不随窗口按钮/游标变化(调用方应传全量升序 rows)。
+ *
+ * @param {Array} rows normalizeCbMarketRows 输出的 rows(顺序不依赖, 内部会升序排列)
+ * @param {'median_price'|'avg_ytm'} key 指标字段
+ * @param {{years?: number}} [opts] 回看年数(默认 5)
+ * @returns {{percentile: number|null, since: string|null, samples: number}|null}
+ *   rows 为空 → null; 末条该字段缺失或样本不足 → percentile=null
+ *   (since/samples 仍返回, 供页面标注统计范围)。
+ */
+export function summaryPercentile(rows, key, { years = 5 } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (list.length === 0) return null;
+  const sorted = [...list].sort((a, b) => cmpTradeDate(a.trade_date, b.trade_date));
+  const anchor = sorted[sorted.length - 1].trade_date;
+  const from = shiftYear(anchor, years);
+  const inWindow = sorted.filter((r) => r.trade_date >= from && r.trade_date <= anchor);
+  const samples = inWindow.map((r) => r[key]).filter(isFiniteNumber);
+  return {
+    percentile: percentileRank(samples, sorted[sorted.length - 1][key]),
+    since: inWindow.length > 0 ? inWindow[0].trade_date : null,
+    samples: samples.length,
+  };
+}
+
+/**
+ * 读数分位(当前窗口口径): 指定日期的 key 字段值在传入窗口 rows 内的分位。
+ *
+ * 随 1y/3y/5y/all 窗口按钮变化, 与估值详情页悬停分位口径一致
+ * ("当日值在当前所选窗口内的回看排名, 不是历史当日向前滚动的排名")。
+ *
+ * @param {Array} windowRows 已按窗口裁剪的 rows(通常来自 selectCbMarketWindow)
+ * @param {string} tradeDate 游标日期
+ * @param {'median_price'|'avg_ytm'} key 指标字段
+ * @returns {number|null} 日期不存在/该行值缺失/有效样本不足 → null
+ */
+export function windowPercentile(windowRows, tradeDate, key) {
+  const list = Array.isArray(windowRows) ? windowRows : [];
+  const row = list.find((r) => r.trade_date === tradeDate);
+  if (!row) return null;
+  return percentileRank(list.map((r) => r[key]), row[key]);
+}
+
+/**
+ * 分位数(线性插值): samples 的 q% 分位值, q ∈ [0, 100]。
+ *
+ * 与 ValuationChart 的 percentile 同算法(索引 = (n-1)×q/100, 相邻位线性插值),
+ * 但面向原始样本: 内部过滤非有限数并升序排列。
+ * 图上 30/70 分位参考线基于此计算(当前窗口口径, 随窗口切换重算)。
+ *
+ * @param {Array<number|null>} samples 样本(含 null 会被剔除)
+ * @param {number} q 分位点(0~100)
+ * @returns {number|null} q 非有限数或有效样本为空 → null
+ */
+export function quantile(samples, q) {
+  if (!isFiniteNumber(q)) return null;
+  const sorted = (Array.isArray(samples) ? samples : [])
+    .filter(isFiniteNumber)
+    .sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const idx = (sorted.length - 1) * (q / 100);
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+}
+
+// ---------------------------------------------------------------------------
+// 转债-国债利差序列清洗
+// ---------------------------------------------------------------------------
+
+/**
+ * 清洗 GET /api/cb-index/spread 响应为可绘图 rows。
+ *
+ * @param {Object|null} raw 响应体; null(后端样本不足)或无 series → 空 rows
+ * @returns {{rows: Array, invalidDateCount: number, duplicateDateCount: number, invalidValueCount: number}}
+ *   rows: 按 trade_date 升序, 每条 {trade_date, avg_ytm, bond_yield, spread};
+ *   非法日期整条丢弃, 重复日期整组丢弃(与 normalizeCbMarketRows 同规则);
+ *   数值仅接受有限数(允许 0 与负数), 异常置 null 并计数。
+ */
+export function normalizeCbSpreadRows(raw) {
+  const empty = { rows: [], invalidDateCount: 0, duplicateDateCount: 0, invalidValueCount: 0 };
+  const series = raw && Array.isArray(raw.series) ? raw.series : [];
+  if (!series.length) return empty;
+
+  let invalidDateCount = 0;
+  let duplicateDateCount = 0;
+  let invalidValueCount = 0;
+
+  const byDate = new Map();
+  for (const rec of series) {
+    const td = rec && rec.trade_date;
+    if (!isValidIsoDate(td)) {
+      invalidDateCount += 1;
+      continue;
+    }
+    if (!byDate.has(td)) byDate.set(td, []);
+    byDate.get(td).push(rec);
+  }
+
+  const unique = [];
+  for (const [, recs] of byDate) {
+    if (recs.length > 1) {
+      duplicateDateCount += recs.length;
+      continue;
+    }
+    unique.push(recs[0]);
+  }
+
+  const rows = unique
+    .map((rec) => {
+      const clean = (v) => {
+        if (v === null) return null;
+        if (!isFiniteNumber(v)) {
+          invalidValueCount += 1;
+          return null;
+        }
+        return v;
+      };
+      return {
+        trade_date: rec.trade_date,
+        avg_ytm: clean(rec.avg_ytm),
+        bond_yield: clean(rec.bond_yield),
+        spread: clean(rec.spread),
+      };
+    })
+    .sort((a, b) => cmpTradeDate(a.trade_date, b.trade_date));
+
+  return { rows, invalidDateCount, duplicateDateCount, invalidValueCount };
+}

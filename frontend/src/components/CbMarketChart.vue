@@ -5,6 +5,8 @@ import { CanvasRenderer } from 'echarts/renderers';
 import { LineChart } from 'echarts/charts';
 import { useThemeStore } from '../stores/theme';
 import { chartTheme } from '../utils/chartTheme';
+import { quantile, percentileRank } from '../utils/cbMarket.mjs';
+import { percentileTone, fmtPct } from '../utils/valuation';
 import {
   AxisPointerComponent,
   DataZoomComponent,
@@ -16,7 +18,7 @@ import {
 } from 'echarts/components';
 
 // 借鉴 ValuationChart 的 ECharts 注册与生命周期写法;
-// 本页没有分位参考线业务, 不复用 refLines / buildMarkLine。
+// 30/70 分位参考线同样参考其 buildMarkLine 口径(窗口内计算, 线性插值)。
 use([
   CanvasRenderer,
   LineChart,
@@ -49,6 +51,17 @@ const dates = computed(() => props.rows.map((r) => r.trade_date));
 const medianData = computed(() => props.rows.map((r) => r.median_price));
 const ytmData = computed(() => props.rows.map((r) => r.avg_ytm));
 
+// 30/70 分位参考线: 在当前窗口内计算, 随 1y/3y/5y/all 切换重算
+// (与读数行"本窗口分位"同口径; ValuationChart 同理——切时间范围参考线跟着变)
+const priceRefLines = computed(() => ({
+  p30: quantile(medianData.value, 30),
+  p70: quantile(medianData.value, 70),
+}));
+const ytmRefLines = computed(() => ({
+  p30: quantile(ytmData.value, 30),
+  p70: quantile(ytmData.value, 70),
+}));
+
 // 用容器宽度判定移动端(jsdom 中 clientWidth 为 0, 回落到 window.innerWidth)。
 const isMobile = () => {
   const w = chartRef.value?.clientWidth || window.innerWidth;
@@ -77,20 +90,44 @@ function buildOption() {
   const symbol = single ? 'circle' : 'none';
   const symbolSize = single ? 8 : 0;
 
-  // 选中日期竖线(非均线/分位, 仅定位); 两图各自绘制以保持可见
-  // 颜色 #94a3b8 对浅/深两种表面对比度均 >=3:1(dataviz 校验), 双模式共用不换档
-  const selectedMarkLine = (axisIndex) =>
-    props.selectedDate
-      ? {
-          symbol: 'none',
-          silent: true,
-          lineStyle: { color: '#94a3b8', type: 'dashed', width: 1 },
-          label: { show: false },
-          data: [{ xAxis: props.selectedDate }],
-        }
-      : undefined;
-
+  // 选中日期竖线(定位, 非参考线)与窗口内 30/70 分位横线合入同系列 markLine;
+  // 两图各自绘制以保持可见。竖线颜色 #94a3b8 对浅/深两种表面对比度均 >=3:1
+  // (dataviz 校验), 双模式共用不换档。
+  // 分位线颜色语义同页面摘要/估值页: 价格中位数分位低=便宜(p30 绿/p70 红),
+  // 平均到期收益率方向相反(p30 红/p70 绿); 标签贴绘图区左端内侧,
+  // 避免与外侧 Y 轴刻度重叠(ValuationChart 同款布局)。
   const fmt = (v) => (v == null ? '—' : Number(v).toFixed(2));
+  const pctLabel = (color) => ({
+    position: 'start',
+    align: 'left',
+    offset: [6, 0],
+    backgroundColor: t.tooltipBg,
+    padding: [1, 3],
+    borderRadius: 2,
+    fontSize: 10,
+    fontWeight: 600,
+    color,
+    formatter: (p) => `${p.name} ${fmt(p.value)}`,
+  });
+  const pctLine = (yValue, name, color) => ({
+    yAxis: yValue,
+    name,
+    lineStyle: { color, type: 'dashed', width: 1 },
+    label: pctLabel(color),
+  });
+  const seriesMarkLine = (refLines, lowColor, highColor) => {
+    const data = [];
+    if (props.selectedDate) {
+      data.push({
+        xAxis: props.selectedDate,
+        lineStyle: { color: '#94a3b8', type: 'dashed', width: 1 },
+        label: { show: false },
+      });
+    }
+    if (refLines.p30 != null) data.push(pctLine(refLines.p30, '30分位', lowColor));
+    if (refLines.p70 != null) data.push(pctLine(refLines.p70, '70分位', highColor));
+    return data.length ? { symbol: 'none', silent: true, data } : undefined;
+  };
 
   return {
     animation: false,
@@ -131,8 +168,18 @@ function buildOption() {
         if (!params || !params.length) return '';
         const axisValue = params[0].axisValue;
         const lines = params.map((p) => {
-          const unit = p.seriesName.startsWith('平均到期收益率') ? '%' : '元';
-          return `${p.marker}${p.seriesName} <b>${fmt(p.data)}${unit}</b>`;
+          const isYtm = p.seriesName.startsWith('平均到期收益率');
+          const unit = isYtm ? '%' : '元';
+          const base = `${p.marker}${p.seriesName} <b>${fmt(p.data)}${unit}</b>`;
+          // 悬浮日值在当前窗口内的回看分位(与读数行同口径; 样本不足 20 条不显示)。
+          // 颜色语义同页面摘要: 价格同 PE(分位低=便宜), YTM 同股息率(分位高=便宜),
+          // 30~70 中性不着色(色即信号, 与图上分位线一致)。
+          const pctl = percentileRank(isYtm ? ytmData.value : medianData.value, p.data);
+          if (pctl == null) return base;
+          const tone = percentileTone(pctl, isYtm ? 'dividend' : 'pe');
+          const color = tone === 'green' ? t.green : tone === 'red' ? t.red : null;
+          const text = `（${fmtPct(pctl)} 分位）`;
+          return color ? `${base} <span style="color:${color}">${text}</span>` : `${base} ${text}`;
         });
         return `${axisValue}<br/>${lines.join('<br/>')}`;
       },
@@ -218,7 +265,7 @@ function buildOption() {
         smooth: false,
         lineStyle: { color: t.blue, width: 1.8 },
         itemStyle: { color: t.blue },
-        markLine: selectedMarkLine(0),
+        markLine: seriesMarkLine(priceRefLines.value, t.green, t.red),
       },
       {
         name: '平均到期收益率（集思录口径，%）',
@@ -232,7 +279,7 @@ function buildOption() {
         smooth: false,
         lineStyle: { color: t.peOrange, width: 1.8, type: 'dashed' },
         itemStyle: { color: t.peOrange },
-        markLine: selectedMarkLine(1),
+        markLine: seriesMarkLine(ytmRefLines.value, t.red, t.green),
       },
     ],
   };

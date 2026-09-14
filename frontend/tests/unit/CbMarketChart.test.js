@@ -1,5 +1,5 @@
 // CbMarketChart 双图同步测试(T3):
-// 覆盖两图同日期轴、缩放作用于两轴、负值与 null 保持、单点可见、无分位线、
+// 覆盖两图同日期轴、缩放作用于两轴、负值与 null 保持、单点可见、30/70 分位参考线、
 // date-select 事件有效、卸载释放。
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { shallowMount, flushPromises } from '@vue/test-utils';
@@ -161,22 +161,78 @@ describe('CbMarketChart 双图同步', () => {
     expect(lastOption.series[0].symbolSize).toBeGreaterThan(0);
   });
 
-  it('无分位/均线/买卖区间参考线(未选日期时)', async () => {
+  it('未选日期时仅 30/70 分位参考线, 无定位竖线', async () => {
     await mountChart();
-    // 没有 percentile / moving average 之类的 markLine
+    // ROWS: median 有效 [132.5, 128.0], ytm 有效 [-8.25, 0, -5.5]
     for (const s of lastOption.series) {
-      expect(s.markLine).toBeUndefined();
+      expect(s.markLine).toBeDefined();
+      expect(s.markLine.data).toHaveLength(2);
+      for (const d of s.markLine.data) {
+        expect(d.xAxis).toBeUndefined(); // 无选中日期竖线
+        expect(typeof d.yAxis).toBe('number');
+      }
     }
+    // 价格中位数: p30 绿 / p70 红(分位低=便宜, 同估值页语义)
+    const price = lastOption.series[0].markLine.data;
+    expect(price[0].name).toBe('30分位');
+    expect(price[0].lineStyle.color).toBe('#16a34a');
+    expect(price[0].yAxis).toBeCloseTo(129.35, 10); // 128 + 4.5 × 0.3
+    expect(price[1].name).toBe('70分位');
+    expect(price[1].lineStyle.color).toBe('#dc2626');
+    expect(price[1].yAxis).toBeCloseTo(131.15, 10); // 128 + 4.5 × 0.7
+    // 平均到期收益率: 方向相反(p30 红 / p70 绿)
+    const ytm = lastOption.series[1].markLine.data;
+    expect(ytm[0].lineStyle.color).toBe('#dc2626');
+    expect(ytm[0].yAxis).toBeCloseTo(-6.6, 10); // -8.25 + 2.75 × 0.6
+    expect(ytm[1].lineStyle.color).toBe('#16a34a');
+    expect(ytm[1].yAxis).toBeCloseTo(-3.3, 10); // -5.5 + 5.5 × 0.4
     // 只有两条业务线, 不附加额外 series
     expect(lastOption.series).toHaveLength(2);
     // 图例仅识别(选中模式关闭), 不提供隐藏
     expect(lastOption.legend.selectedMode).toBe(false);
   });
 
-  it('选中日期时仅绘制定位竖线, 仍非分位线', async () => {
+  it('选中日期时定位竖线在前, 分位参考线随其后', async () => {
     await mountChart({ selectedDate: '2024-01-02' });
     expect(lastOption.series[0].markLine.data[0].xAxis).toBe('2024-01-02');
     expect(lastOption.series[1].markLine.data[0].xAxis).toBe('2024-01-02');
+    // 竖线 + 30/70 两条分位线
+    expect(lastOption.series[0].markLine.data).toHaveLength(3);
+    expect(lastOption.series[0].markLine.data[1].yAxis).toBeCloseTo(129.35, 10);
+  });
+
+  it('悬浮 tooltip 展示当日窗口内百分位(样本足够时)', async () => {
+    // 25 条递增数据(日期均在 1 月内, 合法), 中位 100..124 / YTM -25..-1 均为精确整数
+    const rows = [];
+    for (let i = 0; i < 25; i += 1) {
+      rows.push({
+        trade_date: `2024-01-${String(i + 1).padStart(2, '0')}`,
+        median_price: 100 + i,
+        avg_ytm: -25 + i,
+        count: 400,
+      });
+    }
+    await mountChart({ rows });
+    const out = lastOption.tooltip.formatter([
+      { axisValue: '2024-01-25', seriesName: '价格中位数（元）', marker: '', data: 124 },
+      { axisValue: '2024-01-25', seriesName: '平均到期收益率（集思录口径，%）', marker: '', data: -1 },
+    ]);
+    expect(out).toContain('2024-01-25');
+    // 两条系列的末值均为窗口最大: below=24 + equal=1 → 24.5/25 = 98%
+    expect(out).toContain('（98.0% 分位）');
+    expect(out.match(/（98\.0% 分位）/g)).toHaveLength(2);
+    // 价格 98 分位为"贵"方向 → 红色标注; YTM 98 分位为"便宜"方向 → 绿色标注
+    expect(out).toContain('color:#dc2626');
+    expect(out).toContain('color:#16a34a');
+  });
+
+  it('样本不足 20 条时悬浮 tooltip 不展示分位', async () => {
+    await mountChart(); // ROWS 仅 3 条
+    const out = lastOption.tooltip.formatter([
+      { axisValue: '2024-01-01', seriesName: '价格中位数（元）', marker: '', data: 132.5 },
+    ]);
+    expect(out).toContain('132.50元');
+    expect(out).not.toContain('分位');
   });
 
   it('点击/触摸图表回传 ISO 日期(date-select)', async () => {
