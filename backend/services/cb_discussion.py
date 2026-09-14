@@ -92,7 +92,9 @@ def _fetch_with_retry(bond_id: str) -> str:
     cookie = jisilu.get_cookie()
     html = _fetch_detail(bond_id, cookie)
     if _LOGIN_MARKER in html:
-        # cookie 中途失效: get_cookie 探活会发现并重登, 拿新 cookie 重试一次
+        # cookie 中途失效: 先清进程内缓存(TTL 内 get_cookie 不会重新探活),
+        # 再走探活/重登拿新 cookie 重试一次
+        jisilu.invalidate_cookie(cookie)
         cookie = jisilu.get_cookie()
         html = _fetch_detail(bond_id, cookie)
     return html
@@ -138,6 +140,8 @@ def get_discussions_batch(bond_ids: list[str]) -> dict[str, list[dict]]:
             try:
                 html = _fetch_detail(b, cookie)
                 if _LOGIN_MARKER in html:
+                    # cookie 中途失效: 清缓存后重登取新 cookie(多线程下 invalidate 幂等)
+                    jisilu.invalidate_cookie(cookie)
                     html = _fetch_detail(b, jisilu.get_cookie())
                 items = _parse_discussions(html)
                 with _cache_lock:
