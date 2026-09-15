@@ -73,14 +73,18 @@ it('changes default and optional columns through real checkbox clicks in metadat
  await flushPromises();
  await w.findAll('button').find((b)=>b.text()==='列设置').trigger('click');
  const checkbox=(label)=>w.findAll('.el-checkbox').find((el)=>el.text().includes(label));
- await checkbox('市净率').find('input').setValue(false);
+ await checkbox('市净率').find('input').trigger('click');
  await flushPromises();
  expect(w.find('.el-table').text()).not.toContain('市净率');
- await checkbox('转股价').find('input').setValue(true);
+ w.vm.toggleColumn('pb');
+ await flushPromises();
+ expect(w.find('.el-table').text()).toContain('市净率');
+ await checkbox('转股价').find('input').trigger('click');
  await flushPromises();
  const text=w.find('.el-table').text();
  expect(text).toContain('转股价');
  expect(text).toContain('转股价值');
+ expect(checkbox('代码').classes()).toContain('is-disabled');
  w.unmount();
 });
 
