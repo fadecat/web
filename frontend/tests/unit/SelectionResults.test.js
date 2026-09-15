@@ -18,9 +18,42 @@ const mountResults=(props)=>mount(Results,{props,global:{plugins:[ElementPlus],s
 const rowsPage={rows:[{code:'1',name:'甲'},{code:'2',name:'乙'}],excluded_rows:[],meta:{}};
 
 beforeEach(()=>{
+ localStorage.clear();
  warmCbDiscussions.mockReset().mockResolvedValue({items:{}});
  getCbDiscussion.mockReset();
  getCbAdjustment.mockReset();
+});
+
+it('uses compact default columns in the requested order and keeps operation fixed right',async()=>{
+ const w=mountResults({result:{rows:[{code:'1',name:'很长的债券名称',stock_nm:'正股',stock_financial:{profit_average:12.345}}],excluded_rows:[],meta:{}}});
+ await flushPromises();
+ const tableText=w.find('.el-table').text();
+ expect(tableText.indexOf('代码')).toBeLessThan(tableText.indexOf('名称'));
+ expect(tableText.indexOf('名称')).toBeLessThan(tableText.indexOf('排名'));
+ expect(tableText.indexOf('排名')).toBeLessThan(tableText.indexOf('正股'));
+ expect(tableText).toContain('利润指标');
+ expect(tableText.lastIndexOf('操作')).toBeGreaterThan(tableText.indexOf('强赎'));
+ expect(w.find('.density-compact').exists()).toBe(true);
+ expect(w.text()).toContain('12.35%');
+ w.unmount();
+});
+
+it('persists density and optional columns while retaining defaults on reset',async()=>{
+ localStorage.setItem('cb-selection-results-preferences',JSON.stringify({density:'comfortable',columns:['code','name','rank','stock_nm','industry_name','rating','price','stock_financial_profit']}));
+ const w=mountResults({result:{rows:[{code:'1',name:'甲',stock_financial:{profit_average:1}}],excluded_rows:[],meta:{}}});
+ await flushPromises();
+ expect(w.find('.density-comfortable').exists()).toBe(true);
+ expect(localStorage.getItem('cb-selection-results-preferences')).toContain('comfortable');
+ const densityButton=w.findAll('button').find((b)=>b.text().includes('紧凑密度'));
+ await densityButton.trigger('click');
+ expect(w.find('.density-compact').exists()).toBe(true);
+ expect(localStorage.getItem('cb-selection-results-preferences')).toContain('compact');
+ await w.findAll('button').find((b)=>b.text()==='列设置').trigger('click');
+ w.vm.toggleColumn('total_score');
+ expect(JSON.parse(localStorage.getItem('cb-selection-results-preferences')).columns).toContain('total_score');
+ w.vm.resetColumns();
+ expect(JSON.parse(localStorage.getItem('cb-selection-results-preferences')).columns).not.toContain('total_score');
+ w.unmount();
 });
 
 it('renders zero, negative and missing yield distinctly with real table rows',async()=>{
