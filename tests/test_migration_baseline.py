@@ -10,6 +10,7 @@ import re
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+import sys
 
 from alembic import command
 from alembic.config import Config
@@ -101,6 +102,18 @@ class TestEmptyDatabaseUpgrade:
 
 
 class TestSchemaBaseline:
+    def test_unversioned_matching_baseline_advises_stamp_0001_then_upgrade(self, test_artifact_dir, capsys, monkeypatch):
+        db_path = test_artifact_dir / "baseline-advice.db"
+        engine = create_engine(f"sqlite:///{db_path.as_posix()}")
+        Base.metadata.create_all(engine)
+        engine.dispose()
+        from scripts import check_db_baseline
+
+        monkeypatch.setattr(sys, "argv", ["check_db_baseline", "--database-url", f"sqlite:///{db_path.as_posix()}"])
+        assert check_db_baseline.main() == 0
+        output = capsys.readouterr().out
+        assert "stamp 0001" in output
+        assert "upgrade head" in output
     def test_current_unversioned_database_matches_baseline(self, test_artifact_dir):
         """ORM create_all 的库与初始 revision 结构一致(比对为空)。"""
         db_path = test_artifact_dir / "current.db"

@@ -40,6 +40,24 @@ def _build_unversioned_source(db_path: Path) -> None:
     engine.dispose()
 
 
+def _build_old_0001_unversioned_source(db_path: Path) -> None:
+    """Construct a real 0001 schema copy with no version table."""
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config()
+    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path.as_posix()}")
+    command.upgrade(cfg, "0001")
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO app_setting (key, value, updated_at) "
+            "VALUES ('legacy', 'kept', '2026-01-01 00:00:00')"
+        )
+        conn.execute("DROP TABLE alembic_version")
+        conn.commit()
+
+
 def _snapshot(db_path: Path) -> "tuple[str, float, tuple]":
     """快照(字节哈希, mtime, 排序表集合), 用于证明库未被接管冒烟改写。"""
     with closing(sqlite3.connect(db_path)) as conn:
@@ -56,6 +74,64 @@ def _snapshot(db_path: Path) -> "tuple[str, float, tuple]":
 
 
 class TestDatabaseAdoption:
+    def test_empty_partial_commodity_schema_is_rebuilt_during_adoption(self, test_artifact_dir):
+        source = test_artifact_dir / "partial-source.db"
+        backup_copy = test_artifact_dir / "partial-backup.db"
+        _build_old_0001_unversioned_source(source)
+        with closing(sqlite3.connect(source)) as conn:
+            conn.execute("CREATE TABLE commodity_daily_price (id INTEGER PRIMARY KEY)")
+            conn.commit()
+        backup(source, backup_copy)
+
+        from scripts.adopt_db_copy import adopt_database_copy, build_dependencies
+
+        result = adopt_database_copy(
+            source, backup_copy, "0001", build_dependencies(source, backup_copy, "0001")
+        )
+        assert result.code == 0, [f"{s.name}:{s.status}:{s.detail}" for s in result.stages]
+        with closing(sqlite3.connect(backup_copy)) as conn:
+            assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == ("0002",)
+            assert conn.execute("SELECT count(*) FROM commodity_instrument").fetchone() == (75,)
+
+    def test_nonempty_commodity_schema_is_rejected_before_adoption_stamp(self, test_artifact_dir):
+        source = test_artifact_dir / "nonempty-source.db"
+        backup_copy = test_artifact_dir / "nonempty-backup.db"
+        _build_old_0001_unversioned_source(source)
+        with closing(sqlite3.connect(source)) as conn:
+            conn.execute("CREATE TABLE commodity_instrument (code TEXT PRIMARY KEY)")
+            conn.execute("INSERT INTO commodity_instrument VALUES ('KEEP')")
+            conn.commit()
+        backup(source, backup_copy)
+
+        from scripts.adopt_db_copy import adopt_database_copy, build_dependencies
+
+        result = adopt_database_copy(
+            source, backup_copy, "0001", build_dependencies(source, backup_copy, "0001")
+        )
+        assert result.code != 0
+        assert result.failed_stage == "schema_verified"
+        assert "non-empty" in result.stages[-1].detail
+        with closing(sqlite3.connect(backup_copy)) as conn:
+            assert conn.execute("SELECT code FROM commodity_instrument").fetchone() == ("KEEP",)
+            assert conn.execute("SELECT name FROM sqlite_master WHERE name='alembic_version'").fetchone() is None
+
+    def test_old_unversioned_0001_copy_adopts_and_seeds_commodities(self, test_artifact_dir):
+        source = test_artifact_dir / "old-source.db"
+        backup_copy = test_artifact_dir / "old-backup.db"
+        _build_old_0001_unversioned_source(source)
+        backup(source, backup_copy)
+
+        from scripts.adopt_db_copy import adopt_database_copy, build_dependencies
+
+        result = adopt_database_copy(
+            source, backup_copy, "0001", build_dependencies(source, backup_copy, "0001")
+        )
+        assert result.code == 0, [f"{s.name}:{s.status}:{s.detail}" for s in result.stages]
+        with closing(sqlite3.connect(backup_copy)) as conn:
+            assert conn.execute("SELECT value FROM app_setting WHERE key='legacy'").fetchone() == ("kept",)
+            assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == ("0002",)
+            assert conn.execute("SELECT count(*) FROM commodity_instrument").fetchone() == (75,)
+
     def test_unversioned_database_copy_can_be_adopted(self, test_artifact_dir):
         """完整接管链: 真实 build_dependencies()(含子进程 smoke)跑通;
         unrelated 哨兵(父进程 DATABASE_URL 指向的库)完全不变, copy 达到当前 head, 副本

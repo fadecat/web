@@ -95,3 +95,30 @@ def test_store_validates_entire_batch_before_adding_any_price():
     db.commit()
 
     assert db.scalars(select(CommodityDailyPrice)).all() == []
+
+
+def test_store_reuses_pending_price_same_key_and_retry_after_rollback():
+    db = _session()
+    db.autoflush = False
+    pending = CommodityDailyPrice(
+        instrument_code="RB0", trade_date=date(2026, 1, 1), close=1, source="pending"
+    )
+    db.add(pending)
+    result = CommodityStore(db).upsert_prices(
+        "RB0", [CommodityPriceRecord(date(2026, 1, 1), 2.0, source="test")]
+    )
+    db.commit()
+    assert result.revised_rows == 1
+    assert db.scalars(select(CommodityDailyPrice)).all().__len__() == 1
+
+    try:
+        CommodityStore(db).upsert_prices(
+            "RB0", [CommodityPriceRecord(date(2026, 1, 2), 0, source="test")]
+        )
+    except ValueError:
+        db.rollback()
+    retry = CommodityStore(db).upsert_prices(
+        "RB0", [CommodityPriceRecord(date(2026, 1, 2), 3.0, source="test")]
+    )
+    db.commit()
+    assert retry.inserted_rows == 1

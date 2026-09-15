@@ -93,6 +93,14 @@ class CommodityStore:
         by_date = {row.trade_date: row for row in records}
         inserted = revised = 0
         existing_by_date = {row.trade_date: row for row in existing}
+        existing_by_date.update(
+            {
+                pending.trade_date: pending
+                for pending in self.session.new
+                if isinstance(pending, CommodityDailyPrice)
+                and pending.instrument_code == instrument_code
+            }
+        )
         for trade_date, record in sorted(by_date.items()):
             current = existing_by_date.get(trade_date)
             values = {

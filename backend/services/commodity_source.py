@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import inspect
+import numbers
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Callable
@@ -48,6 +49,28 @@ def _optional_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _parse_trade_date(value: Any, index: Any) -> date:
+    """Parse dates without allowing numeric values to become Unix timestamps."""
+    if isinstance(value, numbers.Real) and not isinstance(value, bool):
+        numeric = float(value)
+        if not math.isfinite(numeric) or not numeric.is_integer():
+            raise CommoditySourceError(f"invalid date at row {index}")
+        digits = str(int(numeric))
+        if len(digits) != 8:
+            raise CommoditySourceError(f"invalid numeric date at row {index}")
+        try:
+            return datetime.strptime(digits, "%Y%m%d").date()
+        except ValueError:
+            raise CommoditySourceError(f"invalid date at row {index}") from None
+    parsed = pd.to_datetime(value, errors="coerce")
+    if not pd.isna(parsed):
+        return parsed.date()
+    try:
+        return datetime.fromisoformat(str(value).strip().replace("/", "-")).date()
+    except (TypeError, ValueError):
+        raise CommoditySourceError(f"invalid date at row {index}") from None
+
+
 def normalize_price_rows(frame: pd.DataFrame, source: str = "akshare") -> list[CommodityPriceRecord]:
     """识别中英文 OHLCV 列，验证后按日期升序去重。"""
     if frame is None or frame.empty:
@@ -68,14 +91,7 @@ def normalize_price_rows(frame: pd.DataFrame, source: str = "akshare") -> list[C
     # uses the current calendar day in Beijing time as the upper bound.
     latest_allowed = datetime.now(ZoneInfo("Asia/Shanghai")).date()
     for index, row in frame.iterrows():
-        parsed = pd.to_datetime(row[date_col], errors="coerce")
-        if pd.isna(parsed):
-            try:
-                trade_date = datetime.fromisoformat(str(row[date_col]).strip().replace("/", "-")).date()
-            except (TypeError, ValueError):
-                raise CommoditySourceError(f"invalid date at row {index}") from None
-        else:
-            trade_date = parsed.date()
+        trade_date = _parse_trade_date(row[date_col], index)
         if trade_date > latest_allowed:
             raise CommoditySourceError(f"future date at row {index}: {trade_date}")
         try:

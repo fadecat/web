@@ -151,6 +151,7 @@ def verify_restore(
     metadata=None,
     *,
     expected_backup_revision: "str | None" = None,
+    ignored_tables: "set[str] | None" = None,
 ) -> list[str]:
     """比较源库与备份副本, 返回差异列表(空 = 一致)。不修改文件。
 
@@ -237,7 +238,9 @@ def verify_restore(
     if metadata is not None:
         from scripts.check_db_baseline import compare_schema
 
-        for item in compare_schema(f"sqlite:///{backup.as_posix()}", metadata):
+        for item in compare_schema(
+            f"sqlite:///{backup.as_posix()}", metadata, ignored_tables=ignored_tables
+        ):
             differences.append(f"备份副本结构: {item}")
 
     return sorted(differences)

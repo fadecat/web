@@ -30,6 +30,19 @@ def test_source_rejects_beijing_tomorrow_as_future():
         normalize_price_rows(pd.DataFrame({"date": [tomorrow.isoformat()], "close": [1]}), source="test")
 
 
+def test_source_strictly_parses_numeric_yyyymmdd_dates():
+    rows = normalize_price_rows(
+        pd.DataFrame({"date": [20260101, 20260102], "close": [1, 2]}), source="test"
+    )
+    assert [row.trade_date for row in rows] == [date(2026, 1, 1), date(2026, 1, 2)]
+    rows = normalize_price_rows(pd.DataFrame({"date": [20260101.0], "close": [1]}), source="test")
+    assert rows[0].trade_date == date(2026, 1, 1)
+    with pytest.raises(CommoditySourceError):
+        normalize_price_rows(pd.DataFrame({"date": [20260101.0, float("nan")], "close": [1, 2]}), source="test")
+    with pytest.raises(CommoditySourceError):
+        normalize_price_rows(pd.DataFrame({"date": [202601], "close": [1]}), source="test")
+
+
 def test_source_selects_akshare_adapter_by_market_without_importing_on_construction():
     calls = []
 
