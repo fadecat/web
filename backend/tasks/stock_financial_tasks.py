@@ -73,6 +73,8 @@ def run_stock_financial_monthly(*, force: bool = False, state_path: Path = STATE
     done = set(state.get("completed") or [])
     try:
         for val in [v for v in state["partitions"] if v not in done][:MAX_PARTITIONS_PER_WINDOW]:
+            if not force and datetime.now(_CN).time() >= time(4, 50):
+                break
             part = fetch_dividend_snapshot(cookie, [{"val": val, "level": 1, "cnts": 0, "nm": val}], min_total_value=0)
             meta, rows = part.get("meta") or {}, part.get("rows") or []
             if int(meta.get("failed_queries") or 0):
