@@ -33,7 +33,8 @@ def initialize_stock_financial_bootstrap(created_at: datetime | None = None, sta
     """创建首次任务预约；9 月 15 日创建即预约 9 月 16 日 02:10。"""
     if state_path.exists():
         return json.loads(state_path.read_text(encoding="utf-8"))
-    payload = {"status": "SCHEDULED", "scheduled_for": next_monthly_window(created_at).isoformat(), "partitions": [], "completed": [], "rows": {}}
+    scheduled = next_monthly_window(created_at)
+    payload = {"target_month": scheduled.strftime("%Y-%m"), "status": "SCHEDULED", "scheduled_for": scheduled.isoformat(), "partitions": [], "completed": [], "rows": {}}
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return payload
@@ -50,13 +51,26 @@ def _load_state(path: Path) -> dict:
     except (OSError, ValueError):
         return initialize_stock_financial_bootstrap(state_path=path)
 
+
+def _state_for_month(state: dict, now: datetime, path: Path) -> dict:
+    """状态文件只承载当前月游标；历史 SUCCESS 批次永久留在数据库。"""
+    target = now.strftime("%Y-%m")
+    if state.get("target_month") == target and state.get("status") != "SUCCESS":
+        return state
+    if state.get("target_month") == target and state.get("status") == "SUCCESS":
+        return state
+    # 跨月创建新的周期任务，立即允许当前凌晨窗口执行。
+    fresh = {"target_month": target, "status": "SCHEDULED", "scheduled_for": now.replace(hour=2, minute=10, second=0, microsecond=0).isoformat(), "partitions": [], "completed": [], "rows": {}}
+    _save_state(fresh, path)
+    return fresh
+
 def _partition_nodes(tree: list[dict]) -> list[dict]:
     leaves = [n for n in tree if int(n.get("level") or 0) == 3]
     return leaves or [n for n in tree if int(n.get("level") or 0) == 1]
 
 def run_stock_financial_monthly(*, force: bool = False, state_path: Path = STATE_FILE) -> dict:
     now = datetime.now(_CN)
-    state = _load_state(state_path)
+    state = _state_for_month(_load_state(state_path), now, state_path)
     if not force and not in_monthly_window(now):
         return {"status": "skipped_window", "success_count": 0, "fail_count": 0}
     scheduled = state.get("scheduled_for")
