@@ -68,6 +68,22 @@ it('maps the virtual profit field to profit_average for positive and negative so
  w.unmount();
 });
 
+it('changes default and optional columns through real checkbox clicks in metadata order',async()=>{
+ const w=mountResults({result:{rows:[{code:'1',name:'甲',stock_nm:'股',pb:1,convert_price:10}],excluded_rows:[],meta:{}}});
+ await flushPromises();
+ await w.findAll('button').find((b)=>b.text()==='列设置').trigger('click');
+ const checkbox=(label)=>w.findAll('.el-checkbox').find((el)=>el.text().includes(label));
+ await checkbox('市净率').find('input').setValue(false);
+ await flushPromises();
+ expect(w.find('.el-table').text()).not.toContain('市净率');
+ await checkbox('转股价').find('input').setValue(true);
+ await flushPromises();
+ const text=w.find('.el-table').text();
+ expect(text).toContain('转股价');
+ expect(text).toContain('转股价值');
+ w.unmount();
+});
+
 it('renders zero, negative and missing yield distinctly with real table rows',async()=>{
  const w=mountResults({result:{selection_mode:'filter_only',rows:[{code:'1',name:'零',simple_maturity_yield_pct:0},{code:'2',name:'负',simple_maturity_yield_pct:-12},{code:'3',name:'缺',simple_maturity_yield_pct:null}],excluded_rows:[],meta:{}}});
  await flushPromises();
