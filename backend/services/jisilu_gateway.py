@@ -93,6 +93,8 @@ class JisiluGateway:
 
     def _send(self, method: str, url: str, headers: dict[str, str], **kwargs: Any) -> httpx.Response:
         if method.upper() == "GET":
+            # GET 无请求体; httpx.get 签名不接受 data(即使传 None 也 TypeError)
+            kwargs.pop("data", None)
             return httpx.get(url, headers=headers, **kwargs)
         if method.upper() == "POST":
             kwargs.pop("follow_redirects", None)

@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import inspect
 import threading
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -300,3 +301,22 @@ def test_production_handle_concurrent_empty_cookie_logs_in_once(monkeypatch, tmp
     assert not errors and logins["n"] == 1 and len(calls) == 8
     assert set(calls) == {"sid=new"} and row.daily_request_count == 8
     engine.dispose()
+
+
+def test_send_get_forwards_only_httpx_get_supported_kwargs(monkeypatch):
+    """回归: GET 分支曾把 data=None 透传给 httpx.get, 真实签名不接受 data 即 TypeError
+    (既有测试把 httpx.get mock 成 **k 全吞, 掩盖了该错误)。"""
+    allowed = set(inspect.signature(jisilu_gateway.httpx.get).parameters) - {"url"}
+    captured = {}
+
+    def fake_get(url, **kwargs):
+        captured.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr(jisilu_gateway.httpx, "get", fake_get)
+    jisilu_gateway.gateway._send(
+        "GET", "https://www.jisilu.cn/data/x", {"k": "v"},
+        data=None, params={}, timeout=5, follow_redirects=True,
+    )
+    assert set(captured) <= allowed
+    assert "data" not in captured
