@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
+from alembic import context, op
 from sqlalchemy import inspect
 
 
@@ -95,78 +95,30 @@ _SEED = [
     ("SM0", "锰硅主连", "domestic", "黑色建材"),
 ]
 
-_EXPECTED = {
-    "commodity_instrument": {
-        "columns": {"code", "name", "market", "category", "source", "enabled", "display_order", "created_at", "updated_at"},
-        "primary_key": ("code",),
-        "unique": set(),
-        "indexes": set(),
-        "foreign_keys": set(),
-    },
-    "commodity_daily_price": {
-        "columns": {"id", "instrument_code", "trade_date", "close", "open", "high", "low", "volume", "source", "ingest_run_id", "created_at", "updated_at"},
-        "primary_key": ("id",),
-        "unique": {("instrument_code", "trade_date")},
-        "indexes": {("ix_commodity_price_code_date", ("instrument_code", "trade_date")), ("ix_commodity_price_date", ("trade_date",))},
-        "foreign_keys": {("instrument_code", "commodity_instrument", "code")},
-    },
-    "commodity_percentile_daily": {
-        "columns": {"id", "instrument_code", "trade_date", "window_code", "window_days", "percentile", "sample_count", "signal", "algorithm_version", "created_at", "updated_at"},
-        "primary_key": ("id",),
-        "unique": {("instrument_code", "trade_date", "window_code", "algorithm_version")},
-        "indexes": {("ix_commodity_percentile_code_date", ("instrument_code", "trade_date")), ("ix_commodity_percentile_date", ("trade_date",))},
-        "foreign_keys": {("instrument_code", "commodity_instrument", "code")},
-    },
-    "commodity_sync_state": {
-        "columns": {"instrument_code", "last_attempt_at", "last_success_at", "source_latest_date", "status", "consecutive_failures", "last_error", "updated_at"},
-        "primary_key": ("instrument_code",),
-        "unique": set(),
-        "indexes": set(),
-        "foreign_keys": {("instrument_code", "commodity_instrument", "code")},
-    },
-}
+_TARGET_TABLES = (
+    "commodity_instrument",
+    "commodity_daily_price",
+    "commodity_percentile_daily",
+    "commodity_sync_state",
+)
 
 
-def _validate_existing_tables() -> None:
-    """Reject partial same-name tables before IF NOT EXISTS can hide them."""
+def _reject_existing_tables() -> None:
+    """Allow only a clean 0001 database for this schema revision."""
+    if context.is_offline_mode():
+        return
     inspector = inspect(op.get_bind())
-    for table_name, expected in _EXPECTED.items():
-        if not inspector.has_table(table_name):
-            continue
-        actual_columns = {column["name"] for column in inspector.get_columns(table_name)}
-        if actual_columns != expected["columns"]:
-            raise RuntimeError(
-                f"incompatible existing {table_name}: columns "
-                f"expected {sorted(expected['columns'])}, got {sorted(actual_columns)}"
-            )
-        actual_pk = tuple(inspector.get_pk_constraint(table_name).get("constrained_columns") or ())
-        if actual_pk != expected["primary_key"]:
-            raise RuntimeError(f"incompatible existing {table_name}: primary key {actual_pk}")
-        actual_unique = {
-            tuple(item["column_names"])
-            for item in inspector.get_unique_constraints(table_name)
-        }
-        if actual_unique != expected["unique"]:
-            raise RuntimeError(f"incompatible existing {table_name}: unique constraints {actual_unique}")
-        actual_indexes = {
-            (item["name"], tuple(item["column_names"]))
-            for item in inspector.get_indexes(table_name)
-            if item["name"]
-        }
-        if actual_indexes != expected["indexes"]:
-            raise RuntimeError(f"incompatible existing {table_name}: indexes {actual_indexes}")
-        actual_foreign_keys = {
-            (column, fk["referred_table"], referred_column)
-            for fk in inspector.get_foreign_keys(table_name)
-            for column, referred_column in zip(fk["constrained_columns"], fk["referred_columns"])
-        }
-        if actual_foreign_keys != expected["foreign_keys"]:
-            raise RuntimeError(f"incompatible existing {table_name}: foreign keys {actual_foreign_keys}")
+    existing = [name for name in _TARGET_TABLES if inspector.has_table(name)]
+    if existing:
+        raise RuntimeError(
+            "commodity migration refuses pre-existing target tables: "
+            + ", ".join(existing)
+        )
 
 
 def upgrade() -> None:
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    _validate_existing_tables()
+    _reject_existing_tables()
     op.create_table(
         "commodity_instrument",
         sa.Column("code", sa.String(length=16), nullable=False),
@@ -179,7 +131,6 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.PrimaryKeyConstraint("code"),
-        if_not_exists=True,
     )
     op.create_table(
         "commodity_daily_price",
@@ -199,10 +150,9 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["instrument_code"], ["commodity_instrument.code"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("instrument_code", "trade_date", name="uq_commodity_price_code_date"),
-        if_not_exists=True,
     )
-    op.create_index("ix_commodity_price_code_date", "commodity_daily_price", ["instrument_code", "trade_date"], if_not_exists=True)
-    op.create_index("ix_commodity_price_date", "commodity_daily_price", ["trade_date"], if_not_exists=True)
+    op.create_index("ix_commodity_price_code_date", "commodity_daily_price", ["instrument_code", "trade_date"])
+    op.create_index("ix_commodity_price_date", "commodity_daily_price", ["trade_date"])
     op.create_table(
         "commodity_percentile_daily",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
@@ -220,10 +170,9 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["instrument_code"], ["commodity_instrument.code"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("instrument_code", "trade_date", "window_code", "algorithm_version", name="uq_commodity_percentile_key"),
-        if_not_exists=True,
     )
-    op.create_index("ix_commodity_percentile_code_date", "commodity_percentile_daily", ["instrument_code", "trade_date"], if_not_exists=True)
-    op.create_index("ix_commodity_percentile_date", "commodity_percentile_daily", ["trade_date"], if_not_exists=True)
+    op.create_index("ix_commodity_percentile_code_date", "commodity_percentile_daily", ["instrument_code", "trade_date"])
+    op.create_index("ix_commodity_percentile_date", "commodity_percentile_daily", ["trade_date"])
     op.create_table(
         "commodity_sync_state",
         sa.Column("instrument_code", sa.String(length=16), nullable=False),
@@ -236,7 +185,6 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.ForeignKeyConstraint(["instrument_code"], ["commodity_instrument.code"]),
         sa.PrimaryKeyConstraint("instrument_code"),
-        if_not_exists=True,
     )
     op.bulk_insert(
         sa.table(

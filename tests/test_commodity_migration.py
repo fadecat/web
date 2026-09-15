@@ -2,7 +2,7 @@ from pathlib import Path
 import sqlite3
 from contextlib import closing
 import importlib.util
-import sys
+import json
 
 import pytest
 
@@ -86,9 +86,45 @@ def test_commodity_migration_rejects_incompatible_existing_table(test_artifact_d
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0001"
 
 
-def test_migration_seed_categories_match_reference_reporting_algorithm():
-    import yaml
+def test_commodity_migration_rejects_same_columns_with_wrong_close_definition(test_artifact_dir):
+    db_path = test_artifact_dir / "commodity-wrong-close.db"
+    cfg = Config()
+    cfg.set_main_option("script_location", str(Path(__file__).resolve().parents[1] / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path.as_posix()}")
 
+    command.upgrade(cfg, "0001")
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            "CREATE TABLE commodity_daily_price ("
+            "id INTEGER PRIMARY KEY, instrument_code VARCHAR(16) NOT NULL, "
+            "trade_date DATE NOT NULL, close VARCHAR(32), open FLOAT, high FLOAT, "
+            "low FLOAT, volume FLOAT, source VARCHAR(32) NOT NULL, "
+            "ingest_run_id INTEGER, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, "
+            "CONSTRAINT uq_commodity_price_code_date UNIQUE (instrument_code, trade_date), "
+            "FOREIGN KEY (instrument_code) REFERENCES commodity_instrument(code)"
+            ")"
+        )
+        conn.execute("CREATE INDEX ix_commodity_price_code_date ON commodity_daily_price (instrument_code, trade_date)")
+        conn.execute("CREATE INDEX ix_commodity_price_date ON commodity_daily_price (trade_date)")
+        conn.commit()
+
+    with pytest.raises(Exception, match="commodity_daily_price"):
+        command.upgrade(cfg, "head")
+
+
+def test_commodity_migration_supports_offline_sql_generation(tmp_path):
+    import io
+
+    cfg = Config()
+    cfg.set_main_option("script_location", str(Path(__file__).resolve().parents[1] / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{(tmp_path / 'offline.db').as_posix()}")
+    cfg.output_buffer = io.StringIO()
+
+    command.upgrade(cfg, "0001:head", sql=True)
+    assert "CREATE TABLE commodity_instrument" in cfg.output_buffer.getvalue()
+
+
+def test_migration_seed_categories_match_reference_reporting_algorithm():
     migration = importlib.util.spec_from_file_location(
         "commodity_migration",
         Path(__file__).resolve().parents[1] / "migrations/versions/0002_add_commodity_monitor_tables.py",
@@ -97,29 +133,10 @@ def test_migration_seed_categories_match_reference_reporting_algorithm():
     module = importlib.util.module_from_spec(migration)
     migration.loader.exec_module(module)
 
-    reporting_path = Path(r"D:\gitub_codes\market-daily")
-    sys.path.insert(0, str(reporting_path))
-    try:
-        from src.commodity.reporting import _normalize_code_root, _section_name
-    finally:
-        sys.path.pop(0)
-
-    def reference_category(code):
-        upper = code.upper()
-        if upper == "SM":
-            return "农产品"
-        if upper == "SM0":
-            return "黑色建材"
-        return _section_name(_normalize_code_root(upper))
-
-    configured = yaml.safe_load(
-        open(r"D:\gitub_codes\market-daily\config\commodity.yaml", encoding="utf-8")
-    )["symbols"]
-    configured_by_code = {item["code"]: item for item in configured}
-    assert len(module._SEED) == len(configured_by_code) == 75
-    assert all(
-        category == reference_category(code)
-        for code, _name, _market, category in module._SEED
-    )
-    assert dict((code, category) for code, _name, _market, category in module._SEED)["BC0"] == "其他"
-    assert dict((code, category) for code, _name, _market, category in module._SEED)["CS0"] == "其他"
+    fixture_path = Path(__file__).parent / "fixtures" / "commodity_seed.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    assert len(fixture) == 75
+    assert module._SEED == [tuple(item) for item in fixture]
+    categories = dict((code, category) for code, _name, _market, category in module._SEED)
+    assert categories["BC0"] == "其他"
+    assert categories["CS0"] == "其他"

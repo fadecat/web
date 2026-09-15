@@ -233,7 +233,7 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
     from alembic.config import Config
     from alembic.runtime.migration import MigrationContext
     from alembic.script import ScriptDirectory
-    from sqlalchemy import create_engine
+    from sqlalchemy import create_engine, inspect
 
     from backend.models.database import Base
     from backend.models import app_setting, data_status, jisilu_account, jisilu_stock, valuation  # noqa: F401
@@ -278,8 +278,30 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
             eng.dispose()
 
     def _upgrade():
-        command.upgrade(_cfg(), "head")
         heads = ScriptDirectory.from_config(_cfg()).get_heads()
+        # A legacy unversioned copy may already contain the complete current
+        # ORM schema (create_all creates commodity tables).  It passed the
+        # exact schema comparison above, so record the head without replaying
+        # the additive migration, which intentionally rejects pre-existing
+        # commodity tables.
+        eng = create_engine(f"sqlite:///{backup_copy.as_posix()}")
+        try:
+            with eng.connect() as conn:
+                existing = set(inspect(conn).get_table_names())
+        finally:
+            eng.dispose()
+        commodity_tables = {
+            "commodity_instrument",
+            "commodity_daily_price",
+            "commodity_percentile_daily",
+            "commodity_sync_state",
+        }
+        if commodity_tables.isdisjoint(existing):
+            command.upgrade(_cfg(), "head")
+        elif commodity_tables.issubset(existing):
+            command.stamp(_cfg(), heads[0])
+        else:
+            raise RuntimeError("副本商品表结构不完整，拒绝跳过商品迁移")
         current = _current_revision()
         if current not in heads:
             raise RuntimeError(
