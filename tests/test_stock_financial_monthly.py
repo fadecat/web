@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from backend.tasks.stock_financial_tasks import next_monthly_window, _state_for_month, _majority_trade_date
+from backend.tasks.stock_financial_tasks import next_monthly_window, _state_for_month, _majority_trade_date, initialize_stock_financial_bootstrap
 
 
 def test_bootstrap_runs_next_beijing_midnight_window():
@@ -36,3 +36,13 @@ def test_failed_state_in_same_month_is_resumable():
 
 def test_trade_date_uses_majority_of_partition_dates():
     assert _majority_trade_date(["2026-09-11", "2026-09-11", "2026-09-10"]) == "2026-09-11"
+
+
+def test_bootstrap_state_tracks_request_cost(tmp_path=None):
+    path = Path("data/state/.test_stock_financial_state.json")
+    if path.exists():
+        path.unlink()
+    state = initialize_stock_financial_bootstrap(datetime(2026, 9, 15, 14, 24, 4, tzinfo=ZoneInfo("Asia/Shanghai")), path)
+    assert state["request_count"] == 0
+    assert state["failed_queries"] == 0
+    path.unlink()

@@ -35,7 +35,7 @@ def initialize_stock_financial_bootstrap(created_at: datetime | None = None, sta
     if state_path.exists():
         return json.loads(state_path.read_text(encoding="utf-8"))
     scheduled = next_monthly_window(created_at)
-    payload = {"target_month": scheduled.strftime("%Y-%m"), "status": "SCHEDULED", "scheduled_for": scheduled.isoformat(), "partitions": [], "completed": [], "rows": {}}
+    payload = {"target_month": scheduled.strftime("%Y-%m"), "status": "SCHEDULED", "scheduled_for": scheduled.isoformat(), "partitions": [], "completed": [], "rows": {}, "request_count": 0, "failed_queries": 0}
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return payload
@@ -61,7 +61,7 @@ def _state_for_month(state: dict, now: datetime, path: Path) -> dict:
     if state.get("target_month") == target and state.get("status") == "SUCCESS":
         return state
     # 跨月创建新的周期任务，立即允许当前凌晨窗口执行。
-    fresh = {"target_month": target, "status": "SCHEDULED", "scheduled_for": now.replace(hour=2, minute=10, second=0, microsecond=0).isoformat(), "partitions": [], "completed": [], "rows": {}}
+    fresh = {"target_month": target, "status": "SCHEDULED", "scheduled_for": now.replace(hour=2, minute=10, second=0, microsecond=0).isoformat(), "partitions": [], "completed": [], "rows": {}, "request_count": 0, "failed_queries": 0}
     _save_state(fresh, path)
     return fresh
 
@@ -98,7 +98,10 @@ def run_stock_financial_monthly(*, force: bool = False, state_path: Path = STATE
             # 行业树页面使用一次 cookie；数据分片不传 cookie，让网关按账号池自主选择账号。
             part = fetch_dividend_snapshot(None, [{"val": val, "level": 1, "cnts": 0, "nm": val}], min_total_value=0)
             meta, rows = part.get("meta") or {}, part.get("rows") or []
+            state["request_count"] = int(state.get("request_count") or 0) + int(meta.get("request_count") or 0)
+            state["failed_queries"] = int(state.get("failed_queries") or 0) + int(meta.get("failed_queries") or 0)
             if int(meta.get("failed_queries") or 0):
+                _save_state(state, state_path)
                 continue
             for row in rows:
                 sid = str(row.get("stock_id") or "").strip()
@@ -120,7 +123,7 @@ def run_stock_financial_monthly(*, force: bool = False, state_path: Path = STATE
             raise ValueError(f"全市场财务快照数量不足: {len(rows)}")
         db = SessionLocal()
         try:
-            batch = save_stock_financial_snapshot(db, rows, snapshot_month=(source_date or now.date()).strftime("%Y-%m"), source_trade_date=source_date, min_count=5200)
+            batch = save_stock_financial_snapshot(db, rows, snapshot_month=(source_date or now.date()).strftime("%Y-%m"), source_trade_date=source_date, request_count=int(state.get("request_count") or 0), failed_queries=int(state.get("failed_queries") or 0), min_count=5200)
         finally:
             db.close()
         state["status"] = "SUCCESS"

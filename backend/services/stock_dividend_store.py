@@ -139,7 +139,7 @@ def save_stock_financial_snapshot(
     unique: dict[str, dict[str, Any]] = {
         str(c["stock_id"]).strip(): c for c in valid
     }
-    if len(unique) < min_count or failed_queries:
+    if len(unique) < min_count:
         raise ValueError(f"月度财务快照质量校验失败: count={len(unique)}, failed={failed_queries}")
     batch = StockFinancialSnapshotBatch(
         snapshot_month=snapshot_month, source_trade_date=source_trade_date,
