@@ -173,8 +173,11 @@ def latest_financial_map(db: Session, *, as_of_date: date | None = None) -> tupl
     if as_of_date:
         q = q.filter((StockFinancialSnapshotBatch.source_trade_date == None) | (StockFinancialSnapshotBatch.source_trade_date <= as_of_date))  # noqa: E711
     # 业务口径按源数据日期选择；发布晚的旧源快照不能遮蔽较新的源数据。
+    # null 沉底用「IS NULL」布尔升序表达而非 NULLS LAST —— 后者需 SQLite≥3.30,
+    # ECS 系统库 3.26 会 near "NULLS" 语法错直接 500(同 queries/stock_dividend.py 约定)。
     batch = q.order_by(
-        StockFinancialSnapshotBatch.source_trade_date.desc().nullslast(),
+        StockFinancialSnapshotBatch.source_trade_date.is_(None).asc(),
+        StockFinancialSnapshotBatch.source_trade_date.desc(),
         StockFinancialSnapshotBatch.published_at.desc(),
     ).first()
     if not batch:

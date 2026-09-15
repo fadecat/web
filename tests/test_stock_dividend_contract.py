@@ -208,6 +208,29 @@ class TestStockDividendContract:
         assert "NULLS" not in sql.upper()
         assert "IS NULL" in sql.upper()
 
+    def test_latest_financial_map_sql_portable_no_nulls_last(self, thread_db):
+        """latest_financial_map 同守则: 曾用 .nullslast() 在 ECS 3.26 上
+        把 /api/cb-list/screen 打成 500。用真实执行路径捕获 SQL 断言。"""
+        from sqlalchemy import event
+
+        from backend.services.stock_dividend_store import latest_financial_map
+
+        captured: list[str] = []
+
+        def _capture(conn, cursor, statement, parameters, context, executemany):
+            captured.append(statement)
+
+        bind = thread_db.get_bind()
+        event.listen(bind, "before_cursor_execute", _capture)
+        try:
+            latest_financial_map(thread_db, as_of_date=date(2026, 9, 15))
+        finally:
+            event.remove(bind, "before_cursor_execute", _capture)
+
+        assert captured, "应至少发出一条批次查询"
+        assert "NULLS" not in " ".join(captured).upper()
+        assert "IS NULL" in " ".join(captured).upper()
+
 
 def _preset(id_, name, form):
     return {"id": id_, "name": name, "form": form}
