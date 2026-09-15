@@ -295,7 +295,7 @@ def _next_run_times(now: datetime) -> dict[str, str]:
     """
     from datetime import timedelta
 
-    from backend.tasks.registry import DAILY_JOBS, EVERYDAY_JOB_IDS
+    from backend.tasks.registry import DAILY_JOBS, EVERYDAY_JOB_IDS, MONTHLY_JOBS
 
     out: dict[str, str] = {}
     for job_id, _func, _name, hour, minute in DAILY_JOBS:
@@ -315,6 +315,11 @@ def _next_run_times(now: datetime) -> dict[str, str]:
                 )
             ):
                 candidate += timedelta(days=1)
+        out[job_id] = candidate.isoformat(timespec="seconds")
+    for job_id, _func, _name, hour, minute in MONTHLY_JOBS:
+        candidate = datetime.combine(now.date(), datetime.min.time()).replace(hour=hour, minute=minute)
+        if candidate <= now:
+            candidate += timedelta(days=1)
         out[job_id] = candidate.isoformat(timespec="seconds")
     return out
 
