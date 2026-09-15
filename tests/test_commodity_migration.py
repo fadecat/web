@@ -76,6 +76,11 @@ def test_commodity_migration_rejects_incompatible_existing_table(test_artifact_d
             "ingest_run_id INTEGER, created_at DATETIME NOT NULL"
             ")"
         )
+        conn.execute(
+            "INSERT INTO commodity_daily_price "
+            "(id, instrument_code, trade_date, close, source, created_at) "
+            "VALUES (1, 'BAD', '2026-01-01', 1, 'test', '2026-01-01')"
+        )
         conn.commit()
 
     with pytest.raises(Exception, match="commodity_daily_price"):
@@ -106,6 +111,11 @@ def test_commodity_migration_rejects_same_columns_with_wrong_close_definition(te
         )
         conn.execute("CREATE INDEX ix_commodity_price_code_date ON commodity_daily_price (instrument_code, trade_date)")
         conn.execute("CREATE INDEX ix_commodity_price_date ON commodity_daily_price (trade_date)")
+        conn.execute(
+            "INSERT INTO commodity_daily_price "
+            "(id, instrument_code, trade_date, source, created_at, updated_at) "
+            "VALUES (1, 'BAD', '2026-01-01', 'test', '2026-01-01', '2026-01-01')"
+        )
         conn.commit()
 
     with pytest.raises(Exception, match="commodity_daily_price"):
@@ -140,3 +150,48 @@ def test_migration_seed_categories_match_reference_reporting_algorithm():
     categories = dict((code, category) for code, _name, _market, category in module._SEED)
     assert categories["BC0"] == "其他"
     assert categories["CS0"] == "其他"
+
+
+def test_empty_incompatible_existing_table_is_rebuilt_with_constraints_and_seed(test_artifact_dir):
+    db_path = test_artifact_dir / "commodity-empty-rebuild.db"
+    cfg = Config()
+    cfg.set_main_option("script_location", str(Path(__file__).resolve().parents[1] / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path.as_posix()}")
+
+    command.upgrade(cfg, "0001")
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("CREATE TABLE commodity_instrument (code VARCHAR(16) PRIMARY KEY)")
+        conn.execute("CREATE TABLE commodity_daily_price (id INTEGER PRIMARY KEY)")
+        conn.commit()
+
+    command.upgrade(cfg, "head")
+    with closing(sqlite3.connect(db_path)) as conn:
+        assert conn.execute("SELECT count(*) FROM commodity_instrument").fetchone() == (75,)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(commodity_daily_price)")}
+        assert "close" in columns
+        checks = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='commodity_daily_price'"
+        ).fetchone()[0]
+        assert "ck_commodity_price_close_positive" in checks
+        foreign_keys = conn.execute("PRAGMA foreign_key_list(commodity_daily_price)").fetchall()
+        assert any(row[2] == "commodity_instrument" for row in foreign_keys)
+
+
+def test_nonempty_existing_commodity_table_is_rejected_and_preserved(test_artifact_dir):
+    db_path = test_artifact_dir / "commodity-nonempty-reject.db"
+    cfg = Config()
+    cfg.set_main_option("script_location", str(Path(__file__).resolve().parents[1] / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path.as_posix()}")
+
+    command.upgrade(cfg, "0001")
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("CREATE TABLE commodity_instrument (code VARCHAR(16) PRIMARY KEY)")
+        conn.execute("INSERT INTO commodity_instrument VALUES ('KEEP')")
+        conn.commit()
+
+    with pytest.raises(Exception, match="non-empty"):
+        command.upgrade(cfg, "head")
+
+    with closing(sqlite3.connect(db_path)) as conn:
+        assert conn.execute("SELECT code FROM commodity_instrument").fetchone() == ("KEEP",)
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0001"

@@ -103,22 +103,32 @@ _TARGET_TABLES = (
 )
 
 
-def _reject_existing_tables() -> None:
-    """Allow only a clean 0001 database for this schema revision."""
+def _reset_existing_empty_tables() -> None:
+    """Rebuild empty pre-existing tables; preserve any table containing data."""
     if context.is_offline_mode():
         return
-    inspector = inspect(op.get_bind())
+    bind = op.get_bind()
+    inspector = inspect(bind)
     existing = [name for name in _TARGET_TABLES if inspector.has_table(name)]
-    if existing:
+    nonempty = [
+        name
+        for name in existing
+        if bind.execute(sa.text(f"SELECT 1 FROM {name} LIMIT 1")).first() is not None
+    ]
+    if nonempty:
         raise RuntimeError(
-            "commodity migration refuses pre-existing target tables: "
-            + ", ".join(existing)
+            "commodity migration refuses non-empty target tables: "
+            + ", ".join(nonempty)
         )
+    # Child-to-parent order keeps SQLite foreign-key enforcement safe.
+    for name in ("commodity_sync_state", "commodity_percentile_daily", "commodity_daily_price", "commodity_instrument"):
+        if name in existing:
+            op.drop_table(name)
 
 
 def upgrade() -> None:
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    _reject_existing_tables()
+    _reset_existing_empty_tables()
     op.create_table(
         "commodity_instrument",
         sa.Column("code", sa.String(length=16), nullable=False),

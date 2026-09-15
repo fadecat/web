@@ -95,6 +95,7 @@ class TestDatabaseAdoption:
                 "select value from app_setting where key='smtp_host'"
             ).fetchone() == ("example.invalid",)
             assert conn.execute("select version_num from alembic_version").fetchone() == ("0002",)
+            assert conn.execute("select count(*) from commodity_instrument").fetchone() == (75,)
 
     def test_adopt_module_cli_leaves_unrelated_untouched(self, test_artifact_dir):
         """R7-01: 真实模块 adopt CLI 的 smoke 必须放进绑定副本的全新子进程,
