@@ -175,6 +175,17 @@ def _register_daily_jobs() -> None:
             coalesce=True,
         )
 
+    # 月度任务每天检查一次，任务内部只在凌晨窗口执行并按月份幂等；
+    # 这样服务在首次部署后的次日即可完成初始化，跨窗口也可继续运行。
+    from backend.tasks.registry import MONTHLY_JOBS
+    for job_id, func, name, hour, minute in MONTHLY_JOBS:
+        scheduler.add_job(
+            logged_daily_job(job_id, func),
+            trigger=CronTrigger(day_of_week="*", hour=hour, minute=minute, timezone="Asia/Shanghai"),
+            id=job_id, name=name, replace_existing=True,
+            misfire_grace_time=3600, coalesce=True,
+        )
+
 
 def start_scheduler() -> None:
     """启动调度器并注册任务。

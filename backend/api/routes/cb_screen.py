@@ -52,6 +52,7 @@ from backend.services.cb_screen import (
     screen_bonds,
     screen_bonds_live,
 )
+from backend.services.stock_dividend_store import latest_financial_map
 
 router = APIRouter()
 
@@ -348,7 +349,25 @@ def _execute_db_screen(db: Session, template: dict[str, Any]) -> dict[str, Any]:
     result["source"] = "db"
     result["template_id"] = template.get("id")
     result["template_name"] = template.get("name")
+    _attach_stock_financial(result, db, trade_date)
     return result
+
+
+def _attach_stock_financial(result: dict[str, Any], db: Session, as_of_date: Any = None) -> None:
+    """按正股代码补充月度财务信息；展示字段不参与筛选/评分。"""
+    financial, batch = latest_financial_map(db, as_of_date=as_of_date)
+    for row in (result.get("rows") or []) + (result.get("excluded_rows") or []):
+        item = financial.get(str(row.get("stock_id") or "").strip())
+        row["stock_financial"] = ({
+            "profit_average": item.profit_average,
+            "eps_growth_ttm": item.eps_growth_ttm,
+            "snapshot_date": item.snapshot_date.isoformat(),
+            "source": "jisilu_stock_dividend",
+        } if item else None)
+    meta = result.setdefault("meta", {})
+    meta["financial_snapshot_date"] = batch.source_trade_date.isoformat() if batch and batch.source_trade_date else None
+    meta["financial_coverage_count"] = sum(1 for r in result.get("rows", []) if r.get("stock_financial"))
+    meta["financial_missing_count"] = sum(1 for r in result.get("rows", []) if not r.get("stock_financial"))
 
 
 @router.post("/cb-list/screen")
@@ -392,6 +411,7 @@ def screen(body: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, Any
         result["source"] = "live"
         result["template_id"] = template.get("id")
         result["template_name"] = template.get("name")
+        _attach_stock_financial(result, db, _cn_now().date())
         return result
 
     return _execute_db_screen(db, template)

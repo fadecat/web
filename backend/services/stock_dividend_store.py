@@ -8,12 +8,12 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from backend.models.jisilu_stock import StockDividendDaily
+from backend.models.jisilu_stock import StockDividendDaily, StockFinancialSnapshot, StockFinancialSnapshotBatch
 from backend.utils import parse_float
 
 
@@ -122,3 +122,57 @@ def save_stock_dividend_snapshot(
         db.add(_row_from_cell(cell, trade_date))
     db.commit()
     return len(valid)
+
+
+def save_stock_financial_snapshot(
+    db: Session,
+    cells: list[dict[str, Any]],
+    *,
+    snapshot_month: str,
+    source_trade_date: date | None,
+    request_count: int = 0,
+    failed_queries: int = 0,
+    min_count: int = 1,
+) -> StockFinancialSnapshotBatch:
+    """以批次原子发布全市场快照；不触碰每日高股息表。"""
+    valid = [c for c in cells if str(c.get("stock_id") or "").strip()]
+    unique: dict[str, dict[str, Any]] = {
+        str(c["stock_id"]).strip(): c for c in valid
+    }
+    if len(unique) < min_count or failed_queries:
+        raise ValueError(f"月度财务快照质量校验失败: count={len(unique)}, failed={failed_queries}")
+    batch = StockFinancialSnapshotBatch(
+        snapshot_month=snapshot_month, source_trade_date=source_trade_date,
+        status="RUNNING", expected_count=min_count, actual_count=len(unique),
+        request_count=request_count, failed_queries=failed_queries,
+    )
+    db.add(batch)
+    db.flush()
+    for sid, cell in unique.items():
+        db.add(StockFinancialSnapshot(
+            batch_id=batch.id, stock_id=sid, stock_nm=_clean_str(cell.get("stock_nm")),
+            snapshot_date=source_trade_date or date.today(),
+            profit_average=parse_float(cell.get("profit_average")),
+            eps_growth_ttm=parse_float(cell.get("eps_growth_ttm")),
+            roe=parse_float(cell.get("roe")), roe_average=parse_float(cell.get("roe_average")),
+            revenue_average=parse_float(cell.get("revenue_average")),
+            cashflow_average=parse_float(cell.get("cashflow_average")),
+            debt_rate=parse_float(cell.get("debt_rate")), int_debt_rate=parse_float(cell.get("int_debt_rate")),
+            raw_json=json.dumps(cell, ensure_ascii=False),
+        ))
+    batch.status = "SUCCESS"
+    batch.finished_at = datetime.utcnow()
+    batch.published_at = datetime.utcnow()
+    db.commit()
+    return batch
+
+
+def latest_financial_map(db: Session, *, as_of_date: date | None = None) -> tuple[dict[str, StockFinancialSnapshot], StockFinancialSnapshotBatch | None]:
+    """返回截至日期的最新成功批次，避免历史查询产生前视偏差。"""
+    q = db.query(StockFinancialSnapshotBatch).filter(StockFinancialSnapshotBatch.status == "SUCCESS")
+    if as_of_date:
+        q = q.filter((StockFinancialSnapshotBatch.source_trade_date == None) | (StockFinancialSnapshotBatch.source_trade_date <= as_of_date))  # noqa: E711
+    batch = q.order_by(StockFinancialSnapshotBatch.published_at.desc()).first()
+    if not batch:
+        return {}, None
+    return {r.stock_id: r for r in db.query(StockFinancialSnapshot).filter(StockFinancialSnapshot.batch_id == batch.id).all()}, batch

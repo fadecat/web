@@ -107,3 +107,54 @@ class StockDividendDaily(Base):
         Index("ix_stock_dividend_date", "trade_date"),
         Index("ix_stock_dividend_sw_cd", "sw_cd"),
     )
+
+
+class StockFinancialSnapshotBatch(Base):
+    """可供其他模块使用的全市场股票财务快照批次。
+
+    与 ``stock_dividend_daily`` 分离，避免全市场补数覆盖每日高股息成员集。
+    只有 SUCCESS 批次才允许被转债查询使用。
+    """
+
+    __tablename__ = "stock_financial_snapshot_batch"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    snapshot_month: Mapped[str] = mapped_column(String(7), nullable=False, comment="快照所属月份 YYYY-MM")
+    source_trade_date: Mapped[date | None] = mapped_column(Date, nullable=True, comment="源数据交易日")
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="RUNNING", comment="RUNNING/SUCCESS/FAILED")
+    expected_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    actual_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_queries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (Index("ix_stock_financial_batch_month_status", "snapshot_month", "status"),)
+
+
+class StockFinancialSnapshot(Base):
+    """全市场股票财务快照明细；一批次一只股票一行。"""
+
+    __tablename__ = "stock_financial_snapshot"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    batch_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    stock_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    stock_nm: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    profit_average: Mapped[float | None] = mapped_column(Float, nullable=True, comment="集思录利润均值口径，暂不等同归母利润同比")
+    eps_growth_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    roe: Mapped[float | None] = mapped_column(Float, nullable=True)
+    roe_average: Mapped[float | None] = mapped_column(Float, nullable=True)
+    revenue_average: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cashflow_average: Mapped[float | None] = mapped_column(Float, nullable=True)
+    debt_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    int_debt_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    raw_json: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("batch_id", "stock_id", name="uq_stock_financial_batch_stock"),
+        Index("ix_stock_financial_stock_date", "stock_id", "snapshot_date"),
+    )

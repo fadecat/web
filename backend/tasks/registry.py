@@ -11,6 +11,7 @@ from backend.tasks.cb_list_tasks import run_cb_list_daily
 from backend.tasks.cb_redeem_tasks import run_cb_redeem_daily
 from backend.tasks.index_eod_tasks import run_index_eod_daily
 from backend.tasks.stock_dividend_tasks import run_stock_dividend_daily
+from backend.tasks.stock_financial_tasks import run_stock_financial_monthly
 from backend.tasks.style_rotation_tasks import run_style_rotation_daily
 from backend.tasks.valuation_tasks import run_valuation_daily
 
@@ -37,4 +38,10 @@ DAILY_JOBS: list[tuple[str, object, str, int, int]] = [
     ("index_eod_daily", run_index_eod_daily, "指数收盘价（易方达）抓取", 22, 9),
 ]
 
+# 低峰全市场财务快照：任务函数自行检查 02:00-05:00 窗口并按批次幂等。
+MONTHLY_JOBS: list[tuple[str, object, str, int, int]] = [
+    ("stock_financial_monthly", run_stock_financial_monthly, "全市场正股财务快照", 2, 10),
+]
+
 JOB_FUNCS: dict[str, object] = {job_id: func for job_id, func, _, _, _ in DAILY_JOBS}
+JOB_FUNCS.update({job_id: func for job_id, func, _, _, _ in MONTHLY_JOBS})

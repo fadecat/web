@@ -5,7 +5,7 @@ import { getCbDiscussion, warmCbDiscussions, getCbAdjustment } from '../../api/i
 const props=defineProps({result:Object,stale:Boolean});
 const emit=defineEmits(['blacklist']);
 const view=ref('all'),search=ref(''),page=ref(1),size=ref(50),sort=ref({prop:'rank',order:'ascending'});
-const columns=[{field:'rank',label:'排名',width:62},{field:'code',label:'代码',width:64},{field:'name',label:'名称',width:112},{field:'industry_name',label:'行业',width:96},{field:'rating',label:'评级',width:62},{field:'stock_nm',label:'正股名称',width:104},{field:'sprice',label:'正股',width:62},{field:'price',label:'价格',width:62},{field:'premium_rt',label:'溢价',width:62},{field:'simple_maturity_yield_pct',label:'收益率',width:88},{field:'year_left',label:'年限',width:62},{field:'curr_iss_amt',label:'规模(亿)',width:86},{field:'convert_price',label:'转股价',width:80},{field:'convert_value',label:'转股价值',width:86},{field:'dblow',label:'双低',width:62},{field:'redeem_price',label:'赎回价',width:74},{field:'pb',label:'市净率',width:74},{field:'redeem',label:'强赎',width:88},{field:'total_score',label:'得分',width:62}];
+const columns=[{field:'rank',label:'排名',width:62},{field:'code',label:'代码',width:64},{field:'name',label:'名称',width:112},{field:'industry_name',label:'行业',width:96},{field:'rating',label:'评级',width:62},{field:'stock_nm',label:'正股名称',width:104},{field:'stock_financial_profit',label:'归母利润同比',width:94},{field:'sprice',label:'正股',width:62},{field:'price',label:'价格',width:62},{field:'premium_rt',label:'溢价',width:62},{field:'simple_maturity_yield_pct',label:'收益率',width:88},{field:'year_left',label:'年限',width:62},{field:'curr_iss_amt',label:'规模(亿)',width:86},{field:'convert_price',label:'转股价',width:80},{field:'convert_value',label:'转股价值',width:86},{field:'dblow',label:'双低',width:62},{field:'redeem_price',label:'赎回价',width:74},{field:'pb',label:'市净率',width:74},{field:'redeem',label:'强赎',width:88},{field:'total_score',label:'得分',width:62}];
 // 列序: 标识(排名/代码/名称/行业/评级)→股侧(正股名称/正股)→核心五联(价格/溢价/收益率/年限/规模相邻)
 // →转换链(转股价/转股价值)→打分(双低)→债性(赎回价)→属性(市净率/强赎)→得分。
 // 重点列标题着色: 溢价/收益率是选债核心输出, 表头橙加粗突出; 价格列数值加粗。
@@ -14,7 +14,7 @@ const numberFields=new Set(['price','sprice','redeem_price','simple_maturity_yie
 const redeemBadges={'NO_REDEEM_ANNOUNCED':{text:'不强赎',cls:'b-green'},'TRIGGER_MET':{text:'已满足',cls:'b-blue'},'ANNOUNCED_INTENT':{text:'拟强赎',cls:'b-orange'},'ANNOUNCED_REDEEM':{text:'已强赎',cls:'b-red'},'NEAR_MATURITY':{text:'临期',cls:'b-red'}};
 const badge=row=>redeemBadges[row?.redeem_state?.status_code];
 const soeFlag=row=>({'中央国有企业':{t:'央',c:'soe-central'},'地方国有企业':{t:'国',c:'soe-local'}})[row?.enterprise_nature];
-function display(row,field){const v=row[field];if(v==null||v==='')return field==='rating'?'无评级':'—';return numberFields.has(field)?`${Number(v).toFixed(2)}${['simple_maturity_yield_pct','premium_rt'].includes(field)?'%':''}`:v;}
+function display(row,field){if(field==='stock_financial_profit'){const v=row.stock_financial?.profit_average;return v==null?'—':`${Number(v).toFixed(2)}%`;}const v=row[field];if(v==null||v==='')return field==='rating'?'无评级':'—';return numberFields.has(field)?`${Number(v).toFixed(2)}${['simple_maturity_yield_pct','premium_rt'].includes(field)?'%':''}`:v;}
 const rows=computed(()=>{
  let a=view.value==='excluded'?props.result.excluded_rows||[]:props.result.rows||[];
  const q=search.value.trim().toLowerCase();a=a.filter(r=>!q||`${r.code} ${r.name}`.toLowerCase().includes(q));
