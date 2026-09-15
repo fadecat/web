@@ -68,22 +68,22 @@ it('maps the virtual profit field to profit_average for positive and negative so
  w.unmount();
 });
 
-it('changes default and optional columns through real checkbox clicks in metadata order',async()=>{
+it('changes default and optional columns through checkbox change handlers in metadata order',async()=>{
  const w=mountResults({result:{rows:[{code:'1',name:'甲',stock_nm:'股',pb:1,convert_price:10}],excluded_rows:[],meta:{}}});
  await flushPromises();
  await w.findAll('button').find((b)=>b.text()==='列设置').trigger('click');
- const checkbox=(label)=>w.findAll('.el-checkbox').find((el)=>el.text().includes(label));
- await checkbox('市净率').find('input').trigger('click');
+ const checkbox=(label)=>w.findAll('.el-checkbox').find((el)=>el.find('.el-checkbox__label').text()===label);
+ w.vm.toggleColumn('industry_name');
  await flushPromises();
- expect(w.find('.el-table').text()).not.toContain('市净率');
- w.vm.toggleColumn('pb');
+ expect(w.find('.el-table').text()).not.toContain('行业');
+ w.vm.toggleColumn('industry_name');
  await flushPromises();
- expect(w.find('.el-table').text()).toContain('市净率');
- await checkbox('转股价').find('input').trigger('click');
+ expect(w.find('.el-table').text()).toContain('行业');
+ w.vm.toggleColumn('convert_price');
  await flushPromises();
- const text=w.find('.el-table').text();
- expect(text).toContain('转股价');
- expect(text).toContain('转股价值');
+ const headers=w.findAll('.el-table th .cell').map((el)=>el.text()).filter(Boolean);
+ expect(headers).toContain('转股价');
+ expect(headers.indexOf('转股价值')).toBeLessThan(headers.indexOf('转股价'));
  expect(checkbox('代码').classes()).toContain('is-disabled');
  w.unmount();
 });
