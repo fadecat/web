@@ -58,7 +58,7 @@ def _snapshot(db_path: Path) -> "tuple[str, float, tuple]":
 class TestDatabaseAdoption:
     def test_unversioned_database_copy_can_be_adopted(self, test_artifact_dir):
         """完整接管链: 真实 build_dependencies()(含子进程 smoke)跑通;
-        unrelated 哨兵(父进程 DATABASE_URL 指向的库)完全不变, copy 达到 0001, 副本
+        unrelated 哨兵(父进程 DATABASE_URL 指向的库)完全不变, copy 达到当前 head, 副本
         数据/版本号正确落库。"""
         source = test_artifact_dir / "source.db"
         backup_copy = test_artifact_dir / "backup.db"
@@ -94,7 +94,7 @@ class TestDatabaseAdoption:
             assert conn.execute(
                 "select value from app_setting where key='smtp_host'"
             ).fetchone() == ("example.invalid",)
-            assert conn.execute("select version_num from alembic_version").fetchone() == ("0001",)
+            assert conn.execute("select version_num from alembic_version").fetchone() == ("0002",)
 
     def test_adopt_module_cli_leaves_unrelated_untouched(self, test_artifact_dir):
         """R7-01: 真实模块 adopt CLI 的 smoke 必须放进绑定副本的全新子进程,
@@ -137,9 +137,9 @@ class TestDatabaseAdoption:
         after = _snapshot(unrelated)
         assert after == before, f"unrelated 被接管冒烟改写: {before} -> {after}"
 
-        # copy 应达到 0001
+        # copy 应达到当前 head
         with closing(sqlite3.connect(backup_copy)) as conn:
-            assert conn.execute("select version_num from alembic_version").fetchone() == ("0001",)
+            assert conn.execute("select version_num from alembic_version").fetchone() == ("0002",)
 
     def test_drifted_database_never_calls_stamp(self, test_artifact_dir):
         """缺列漂移库: 真实 adopt_database_copy 在 schema_verified 阶段失败,

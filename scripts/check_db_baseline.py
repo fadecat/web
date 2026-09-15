@@ -14,7 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from sqlalchemy import inspect
+from sqlalchemy import UniqueConstraint, inspect
 
 from scripts.sqlite_readonly import readonly_engine
 
@@ -86,9 +86,9 @@ def compare_schema(url: str, metadata) -> list[str]:
 
             db_uq = {tuple(sorted(u["column_names"])) for u in inspector.get_unique_constraints(t)}
             model_uq = {
-                tuple(sorted([c.name for c in u.columns]))
+                tuple(sorted(c.name for c in u.columns))
                 for u in metadata.tables[t].constraints
-                if hasattr(u, "columns") and getattr(u, "name", None) is not None
+                if isinstance(u, UniqueConstraint) and u.name is not None
             }
             if db_uq != model_uq:
                 differences.append(
@@ -129,7 +129,7 @@ def main() -> int:
     if differences:
         print(f"共 {len(differences)} 处结构差异: 禁止 stamp/upgrade, 先对齐结构或走备份恢复")
         return 1
-    print("结构匹配(只读核对通过), 可显式 stamp 0001")
+    print("结构匹配(只读核对通过), 可显式 stamp 当前迁移 head")
     return 0
 
 
