@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from backend.tasks.stock_financial_tasks import next_monthly_window, _state_for_month
+from backend.tasks.stock_financial_tasks import next_monthly_window, _state_for_month, _majority_trade_date
 
 
 def test_bootstrap_runs_next_beijing_midnight_window():
@@ -32,3 +32,7 @@ def test_failed_state_in_same_month_is_resumable():
     same = _state_for_month(old, datetime(2026, 9, 20, 2, 10, tzinfo=ZoneInfo("Asia/Shanghai")), path)
     assert same["status"] == "FAILED"
     assert same["completed"] == ["x"]
+
+
+def test_trade_date_uses_majority_of_partition_dates():
+    assert _majority_trade_date(["2026-09-11", "2026-09-11", "2026-09-10"]) == "2026-09-11"

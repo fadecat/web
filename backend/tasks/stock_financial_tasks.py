@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -68,6 +69,10 @@ def _partition_nodes(tree: list[dict]) -> list[dict]:
     leaves = [n for n in tree if int(n.get("level") or 0) == 3]
     return leaves or [n for n in tree if int(n.get("level") or 0) == 1]
 
+def _majority_trade_date(dates: list[str]) -> str | None:
+    valid = [d for d in dates if d]
+    return Counter(valid).most_common(1)[0][0] if valid else None
+
 def run_stock_financial_monthly(*, force: bool = False, state_path: Path = STATE_FILE) -> dict:
     now = datetime.now(_CN)
     state = _state_for_month(_load_state(state_path), now, state_path)
@@ -85,11 +90,13 @@ def run_stock_financial_monthly(*, force: bool = False, state_path: Path = STATE
     else:
         cookie = get_cookie()
     done = set(state.get("completed") or [])
+    trade_dates: list[str] = []
     try:
         for val in [v for v in state["partitions"] if v not in done][:MAX_PARTITIONS_PER_WINDOW]:
             if not force and datetime.now(_CN).time() >= time(4, 50):
                 break
-            part = fetch_dividend_snapshot(cookie, [{"val": val, "level": 1, "cnts": 0, "nm": val}], min_total_value=0)
+            # 行业树页面使用一次 cookie；数据分片不传 cookie，让网关按账号池自主选择账号。
+            part = fetch_dividend_snapshot(None, [{"val": val, "level": 1, "cnts": 0, "nm": val}], min_total_value=0)
             meta, rows = part.get("meta") or {}, part.get("rows") or []
             if int(meta.get("failed_queries") or 0):
                 continue
@@ -97,6 +104,8 @@ def run_stock_financial_monthly(*, force: bool = False, state_path: Path = STATE
                 sid = str(row.get("stock_id") or "").strip()
                 if sid:
                     state.setdefault("rows", {})[sid] = row
+            if meta.get("trade_date"):
+                trade_dates.append(str(meta["trade_date"]))
             done.add(val)
             state["completed"] = sorted(done)
             _save_state(state, state_path)
@@ -105,7 +114,7 @@ def run_stock_financial_monthly(*, force: bool = False, state_path: Path = STATE
             _save_state(state, state_path)
             return {"status": state["status"], "success_count": len(state.get("rows", {})), "remaining": len(state["partitions"]) - len(done), "fail_count": 0}
         rows = list(state.get("rows", {}).values())
-        trade = next((r.get("last_dt") for r in rows if r.get("last_dt")), None)
+        trade = _majority_trade_date(trade_dates) or _majority_trade_date([str(r.get("last_dt") or "") for r in rows])
         source_date = date.fromisoformat(trade) if trade else None
         if len(rows) < 5200:
             raise ValueError(f"全市场财务快照数量不足: {len(rows)}")
