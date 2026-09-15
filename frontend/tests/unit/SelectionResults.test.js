@@ -39,10 +39,11 @@ it('uses compact default columns in the requested order and keeps operation fixe
 });
 
 it('persists density and optional columns while retaining defaults on reset',async()=>{
- localStorage.setItem('cb-selection-results-preferences',JSON.stringify({density:'comfortable',columns:['code','name','rank','stock_nm','industry_name','rating','price','stock_financial_profit']}));
+ localStorage.setItem('cb-selection-results-preferences',JSON.stringify({density:'comfortable',columns:['price','stock_financial_profit']}));
  const w=mountResults({result:{rows:[{code:'1',name:'甲',stock_financial:{profit_average:1}}],excluded_rows:[],meta:{}}});
  await flushPromises();
  expect(w.find('.density-comfortable').exists()).toBe(true);
+ expect(w.text()).toContain('代码'); expect(w.text()).toContain('名称');
  expect(localStorage.getItem('cb-selection-results-preferences')).toContain('comfortable');
  const densityButton=w.findAll('button').find((b)=>b.text().includes('紧凑密度'));
  await densityButton.trigger('click');
@@ -53,6 +54,14 @@ it('persists density and optional columns while retaining defaults on reset',asy
  expect(JSON.parse(localStorage.getItem('cb-selection-results-preferences')).columns).toContain('total_score');
  w.vm.resetColumns();
  expect(JSON.parse(localStorage.getItem('cb-selection-results-preferences')).columns).not.toContain('total_score');
+ w.unmount();
+});
+
+it('maps the virtual profit field to profit_average for positive and negative sorting',async()=>{
+ const w=mountResults({result:{rows:[{code:'1',name:'正',stock_financial:{profit_average:8}},{code:'2',name:'负',stock_financial:{profit_average:-3}}],excluded_rows:[],meta:{}}});
+ await flushPromises();
+ expect(w.vm.sortValue({stock_financial:{profit_average:8}},'stock_financial_profit')).toBe(8);
+ expect(w.vm.sortValue({stock_financial:{profit_average:-3}},'stock_financial_profit')).toBe(-3);
  w.unmount();
 });
 
@@ -113,6 +122,7 @@ it('shows error state and allows retry on hover after failure',async()=>{
 });
 
 it('marks revised bonds with stars and loads logs on click popover only',async()=>{
+ localStorage.setItem('cb-selection-results-preferences',JSON.stringify({columns:['convert_price']}));
  const adjRows={rows:[{code:'1',name:'甲',convert_price:3.47,adj_scnt:2},{code:'2',name:'乙',convert_price:10.5,adj_scnt:0}],excluded_rows:[],meta:{}};
  getCbAdjustment.mockResolvedValue({bond_id:'1',items:[{meeting_date:'2026-07-16',price_before:5.26,price_after:3.47,effective_date:'2026-07-17',floor_price:3.47}]});
  const w=mountResults({result:adjRows});
@@ -134,6 +144,7 @@ it('marks revised bonds with stars and loads logs on click popover only',async()
 });
 
 it('shows adjustment error state and retries on reopen',async()=>{
+ localStorage.setItem('cb-selection-results-preferences',JSON.stringify({columns:['convert_price']}));
  getCbAdjustment.mockRejectedValueOnce(new Error('boom'));
  const w=mountResults({result:{rows:[{code:'1',name:'甲',convert_price:3.47,adj_scnt:1}],excluded_rows:[],meta:{}}});
  await flushPromises();

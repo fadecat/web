@@ -19,24 +19,26 @@ const columns=[
  {field:'simple_maturity_yield_pct',label:'到期收益',width:82,default:true,align:'right',sortable:true},
  {field:'dblow',label:'双低',width:68,default:true,align:'right',sortable:true},
  {field:'convert_value',label:'转股价值',width:82,default:true,align:'right',sortable:true},
- {field:'convert_price',label:'转股价',width:78,default:true,align:'right',sortable:true},
- {field:'year_left',label:'剩余年限',width:78,default:true,align:'right',sortable:true},
- {field:'curr_iss_amt',label:'规模(亿)',width:78,default:true,align:'right',sortable:true},
- {field:'pb',label:'市净率',width:70,default:true,align:'right',sortable:true},
+ {field:'convert_price',label:'转股价',width:78,optional:true,align:'right',sortable:true},
+ {field:'year_left',label:'剩余年限',width:78,optional:true,align:'right',sortable:true},
+ {field:'curr_iss_amt',label:'规模(亿)',width:78,optional:true,align:'right',sortable:true},
+ {field:'pb',label:'市净率',width:70,optional:true,align:'right',sortable:true},
  {field:'redeem',label:'强赎',width:78,default:true,align:'center',sortable:false},
  {field:'stock_financial_profit',label:'利润指标',width:82,default:true,align:'right',sortable:true},
- {field:'redeem_price',label:'赎回价',width:74,default:true,align:'right',sortable:true},
+ {field:'redeem_price',label:'赎回价',width:74,optional:true,align:'right',sortable:true},
  {field:'total_score',label:'得分',width:62,optional:true,align:'right',sortable:true},
 ];
 const defaultFields=columns.filter(c=>c.default).map(c=>c.field);
+const requiredFields=['code','name','rank','stock_nm'];
 const saved=(()=>{try{return JSON.parse(localStorage.getItem(storageKey)||'{}')}catch{return {}}})();
 const density=ref(saved.density==='comfortable'?'comfortable':'compact');
-const selectedFields=ref(Array.isArray(saved.columns)&&saved.columns.length?saved.columns.filter(f=>columns.some(c=>c.field===f)):defaultFields);
+const savedFields=Array.isArray(saved.columns)?saved.columns.filter(f=>columns.some(c=>c.field===f)):[];
+const selectedFields=ref(savedFields.length?[...requiredFields,...savedFields.filter(f=>!requiredFields.includes(f))].filter((f,i,a)=>a.indexOf(f)===i):defaultFields);
 const visibleColumns=computed(()=>selectedFields.value.map(f=>columns.find(c=>c.field===f)).filter(Boolean));
 function persist(){localStorage.setItem(storageKey,JSON.stringify({density:density.value,columns:selectedFields.value}));}
 function resetColumns(){selectedFields.value=[...defaultFields];persist();}
-function toggleColumn(field){if(selectedFields.value.includes(field))selectedFields.value=selectedFields.value.filter(f=>f!==field);else selectedFields.value=[...selectedFields.value,field];persist();}
-defineExpose({toggleColumn,resetColumns});
+function toggleColumn(field){if(requiredFields.includes(field))return;if(selectedFields.value.includes(field))selectedFields.value=selectedFields.value.filter(f=>f!==field);else selectedFields.value=[...selectedFields.value,field];persist();}
+defineExpose({toggleColumn,resetColumns,sortValue});
 watch(density,persist);
 // 列序: 标识(排名/代码/名称/行业/评级)→股侧(正股名称/正股)→核心五联(价格/溢价/收益率/年限/规模相邻)
 // →转换链(转股价/转股价值)→打分(双低)→债性(赎回价)→属性(市净率/强赎)→得分。
@@ -47,11 +49,12 @@ const redeemBadges={'NO_REDEEM_ANNOUNCED':{text:'不强赎',cls:'b-green'},'TRIG
 const badge=row=>redeemBadges[row?.redeem_state?.status_code];
 const soeFlag=row=>({'中央国有企业':{t:'央',c:'soe-central'},'地方国有企业':{t:'国',c:'soe-local'}})[row?.enterprise_nature];
 function display(row,field){if(field==='stock_financial_profit'){const v=row.stock_financial?.profit_average;return v==null?'—':`${Number(v).toFixed(2)}%`;}const v=row[field];if(v==null||v==='')return field==='rating'?'无评级':'—';return numberFields.has(field)?`${Number(v).toFixed(2)}${['simple_maturity_yield_pct','premium_rt','stock_financial_profit'].includes(field)?'%':''}`:v;}
+function sortValue(row,field){return field==='stock_financial_profit'?row.stock_financial?.profit_average:row[field];}
 const rows=computed(()=>{
  let a=view.value==='excluded'?props.result.excluded_rows||[]:props.result.rows||[];
  const q=search.value.trim().toLowerCase();a=a.filter(r=>!q||`${r.code} ${r.name}`.toLowerCase().includes(q));
  const {prop,order}=sort.value;
- return [...a].sort((x,y)=>{const av=x[prop],bv=y[prop];if(av==null)return bv==null?0:1;if(bv==null)return -1;const c=typeof av==='number'?av-bv:String(av).localeCompare(String(bv));return (order==='descending'?-c:c)||((x.rank||0)-(y.rank||0));});
+ return [...a].sort((x,y)=>{const av=sortValue(x,prop),bv=sortValue(y,prop);if(av==null)return bv==null?0:1;if(bv==null)return -1;const c=typeof av==='number'?av-bv:String(av).localeCompare(String(bv));return (order==='descending'?-c:c)||((x.rank||0)-(y.rank||0));});
 });
 const paged=computed(()=>rows.value.slice((page.value-1)*size.value,page.value*size.value));
 watch([view,search,size,()=>props.result],()=>{page.value=1;});
@@ -101,7 +104,7 @@ function ensureAdjustment(code){
   <div class="tools"><el-radio-group v-model="view"><el-radio-button value="all">全部符合</el-radio-button><el-radio-button value="excluded">排除明细</el-radio-button></el-radio-group><el-input v-model="search" placeholder="当前结果内查找代码/名称" clearable/><el-button @click="sort={prop:'rank',order:'ascending'}">恢复默认排序</el-button><el-button @click="density=density==='compact'?'comfortable':'compact'">{{ density==='compact'?'舒适密度':'紧凑密度' }}</el-button><el-dropdown trigger="click"><el-button>列设置</el-button><template #dropdown><el-dropdown-menu><div class="column-settings"><div class="column-group-title">默认列</div><label v-for="c in columns.filter(x=>x.default)" :key="c.field"><el-checkbox :model-value="selectedFields.includes(c.field)" disabled>{{ c.label }}</el-checkbox></label><div class="column-group-title optional-title">可选列</div><label v-for="c in columns.filter(x=>x.optional)" :key="c.field"><el-checkbox :model-value="selectedFields.includes(c.field)" @change="toggleColumn(c.field)">{{ c.label }}</el-checkbox></label><el-button link type="primary" @click="resetColumns">恢复默认</el-button></div></el-dropdown-menu></template></el-dropdown></div>
   <el-table :class="['density-'+density]" :data="paged" stripe highlight-current-row max-height="620" @sort-change="sort=$event.prop&&$event.order?$event:{prop:'rank',order:'ascending'}">
    <el-table-column v-for="c in visibleColumns" :key="c.field" :prop="c.field" :label="c.label" :width="c.width" :min-width="c.min" :fixed="c.fixed||false" :align="c.align||'left'" :sortable="c.sortable?'custom':false" :show-overflow-tooltip="c.field!=='name'">
-    <template #header><el-tooltip v-if="c.field==='simple_maturity_yield_pct'" content="(到期赎回价－当前价格) / 当前价格 ×100；未年化，不含票息和税"><span :class="{'hl-head':hlHeads.has(c.field)}">{{c.label}} ⓘ</span></el-tooltip><span v-else :class="{'hl-head':hlHeads.has(c.field)}">{{c.label}}</span></template>
+    <template #header><el-tooltip v-if="c.field==='simple_maturity_yield_pct'" content="(到期赎回价－当前价格) / 当前价格 ×100；未年化，不含票息和税"><span :class="{'hl-head':hlHeads.has(c.field)}">{{c.label}} ⓘ</span></el-tooltip><el-tooltip v-else-if="c.field==='stock_financial_profit'" content="来源：集思录高股息字段 profit_average；仅展示，不参与筛选或因子计算"><span>{{c.label}} ⓘ</span></el-tooltip><span v-else :class="{'hl-head':hlHeads.has(c.field)}">{{c.label}}</span></template>
     <template #default="{row}"><el-tooltip v-if="c.field==='industry_name'&&row.industry_is_fallback" :content="`使用申万 ${row.industry_level} 级回退映射，原始码 ${row.industry_code}`"><span>{{ display(row,c.field) }} ⓘ</span></el-tooltip><a v-else-if="c.field==='code'&&row.code" class="ext-link" :href="`https://www.jisilu.cn/data/convert_bond_detail/${row.code}`" target="_blank" rel="noopener">{{ display(row,c.field) }}</a><a v-else-if="c.field==='stock_nm'&&eastmoneyF10Url(row.stock_id)" class="ext-link" :href="eastmoneyF10Url(row.stock_id)" target="_blank" rel="noopener">{{ display(row,c.field) }}<span v-if="soeFlag(row)" class="soe-badge" :class="soeFlag(row).c" :title="row.enterprise_nature">{{ soeFlag(row).t }}</span></a><el-popover v-else-if="c.field==='name'" trigger="hover" placement="top" :width="300" :show-after="200" @show="ensureDiscussion(row.code)"><template #reference><span class="name-cell" :title="display(row,c.field)">{{ display(row,c.field) }}<span v-if="badge(row)" class="redeem-badge" :class="badge(row).cls" :title="row.redeem_state?.status_label">{{ badge(row).text }}</span></span></template><div v-if="disc[row.code]?.status!=='ok'" class="disc-tip">{{ disc[row.code]?.status==='error'?'加载失败，稍后重试':'讨论加载中…' }}</div><ul v-else-if="disc[row.code].items.length" class="disc-list"><li v-for="t in disc[row.code].items" :key="t.url"><a class="disc-link" :href="t.url" target="_blank" rel="noopener">{{ t.title }}</a><span class="disc-meta">{{ t.replies }} · {{ t.views }}<template v-if="t.date"> · {{ t.date }}</template></span></li></ul><div v-else class="disc-tip">暂无相关讨论</div></el-popover><el-popover v-else-if="c.field==='convert_price'&&row.adj_scnt>0" trigger="click" placement="top" :width="400" @show="ensureAdjustment(row.code)"><template #reference><span class="cp-cell" title="点击查看下修记录">{{ display(row,c.field) }}<span class="adj-stars">{{ '*'.repeat(row.adj_scnt) }}</span></span></template><div class="adj-cap">转股价下修记录 · {{ row.name }}</div><div v-if="adj[row.code]?.status!=='ok'" class="adj-tip">{{ adj[row.code]?.status==='error'?'加载失败，重新打开重试':'下修记录加载中…' }}</div><table v-else-if="adj[row.code].items.length" class="adj-tbl"><thead><tr><th>股东大会日</th><th>下修前</th><th>下修后</th><th>生效日</th><th>下修底价</th></tr></thead><tbody><tr v-for="t in adj[row.code].items" :key="t.meeting_date+t.effective_date"><td>{{ t.meeting_date }}</td><td class="num">{{ t.price_before?.toFixed(2)??'—' }}</td><td class="num down">{{ t.price_after?.toFixed(2)??'—' }}</td><td>{{ t.effective_date }}</td><td class="num">{{ t.floor_price?.toFixed(2)??'—' }}</td></tr></tbody></table><div v-else class="adj-tip">暂无下修记录</div></el-popover><span v-else :class="{'price-cell':c.field==='price'}">{{ display(row,c.field) }}</span></template>
    </el-table-column>
    <el-table-column v-if="view==='excluded'" label="排除原因" min-width="300"><template #default="{row}">{{reasons(row)}}</template></el-table-column>
