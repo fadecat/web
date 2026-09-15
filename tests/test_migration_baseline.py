@@ -22,7 +22,7 @@ EXPECTED_TABLES = {
     "app_setting", "task_run_log", "index_valuation_snapshot",
     "index_dividend_yield", "cn_bond_yield", "index_daily_quote",
     "cb_index_daily", "cb_daily_snapshot", "cb_redeem_daily", "cb_blacklist",
-    "stock_dividend_daily", "jisilu_account",
+    "stock_dividend_daily", "stock_financial_snapshot_batch", "stock_financial_snapshot", "jisilu_account",
 }
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"

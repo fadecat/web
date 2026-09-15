@@ -304,6 +304,43 @@ def upgrade() -> None:
         batch_op.create_index('ix_stock_dividend_date', ['trade_date'], unique=False)
         batch_op.create_index('ix_stock_dividend_sw_cd', ['sw_cd'], unique=False)
 
+    op.create_table('stock_financial_snapshot_batch',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('snapshot_month', sa.String(length=7), nullable=False, comment='快照所属月份 YYYY-MM'),
+    sa.Column('source_trade_date', sa.Date(), nullable=True, comment='源数据交易日'),
+    sa.Column('status', sa.String(length=24), nullable=False),
+    sa.Column('expected_count', sa.Integer(), nullable=True),
+    sa.Column('actual_count', sa.Integer(), nullable=False),
+    sa.Column('request_count', sa.Integer(), nullable=False),
+    sa.Column('failed_queries', sa.Integer(), nullable=False),
+    sa.Column('error_summary', sa.String(), nullable=True),
+    sa.Column('started_at', sa.DateTime(), nullable=False),
+    sa.Column('finished_at', sa.DateTime(), nullable=True),
+    sa.Column('published_at', sa.DateTime(), nullable=True),
+    sa.PrimaryKeyConstraint('id'))
+    with op.batch_alter_table('stock_financial_snapshot_batch', schema=None) as batch_op:
+        batch_op.create_index('ix_stock_financial_batch_month_status', ['snapshot_month', 'status'], unique=False)
+
+    op.create_table('stock_financial_snapshot',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('batch_id', sa.Integer(), nullable=False),
+    sa.Column('stock_id', sa.String(length=16), nullable=False),
+    sa.Column('stock_nm', sa.String(length=64), nullable=True),
+    sa.Column('snapshot_date', sa.Date(), nullable=False),
+    sa.Column('profit_average', sa.Float(), nullable=True, comment='集思录利润均值口径，暂不等同归母利润同比'),
+    sa.Column('eps_growth_ttm', sa.Float(), nullable=True),
+    sa.Column('roe', sa.Float(), nullable=True),
+    sa.Column('roe_average', sa.Float(), nullable=True),
+    sa.Column('revenue_average', sa.Float(), nullable=True),
+    sa.Column('cashflow_average', sa.Float(), nullable=True),
+    sa.Column('debt_rate', sa.Float(), nullable=True),
+    sa.Column('int_debt_rate', sa.Float(), nullable=True),
+    sa.Column('raw_json', sa.String(), nullable=True),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('batch_id', 'stock_id', name='uq_stock_financial_batch_stock'))
+    with op.batch_alter_table('stock_financial_snapshot', schema=None) as batch_op:
+        batch_op.create_index('ix_stock_financial_stock_date', ['stock_id', 'snapshot_date'], unique=False)
+
     op.create_table('task_run_log',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('job_id', sa.String(length=32), nullable=False, comment='任务ID,如 valuation_daily'),
@@ -328,6 +365,12 @@ def downgrade() -> None:
         batch_op.drop_index('ix_task_run_job_started')
 
     op.drop_table('task_run_log')
+    with op.batch_alter_table('stock_financial_snapshot', schema=None) as batch_op:
+        batch_op.drop_index('ix_stock_financial_stock_date')
+    op.drop_table('stock_financial_snapshot')
+    with op.batch_alter_table('stock_financial_snapshot_batch', schema=None) as batch_op:
+        batch_op.drop_index('ix_stock_financial_batch_month_status')
+    op.drop_table('stock_financial_snapshot_batch')
     with op.batch_alter_table('stock_dividend_daily', schema=None) as batch_op:
         batch_op.drop_index('ix_stock_dividend_sw_cd')
         batch_op.drop_index('ix_stock_dividend_date')
