@@ -30,7 +30,19 @@ def _now(value: datetime | None) -> datetime:
 
 
 def _state(session: Session, code: str, timestamp: datetime) -> CommoditySyncState:
-    state = session.get(CommoditySyncState, code)
+    # Session.get may not flush when callers deliberately disable autoflush.
+    # Reuse a pending same-key state before issuing a database lookup.
+    state = next(
+        (
+            pending
+            for pending in session.new
+            if isinstance(pending, CommoditySyncState)
+            and pending.instrument_code == code
+        ),
+        None,
+    )
+    if state is None:
+        state = session.get(CommoditySyncState, code)
     if state is None:
         state = CommoditySyncState(instrument_code=code, status="never", consecutive_failures=0, updated_at=timestamp)
         session.add(state)
@@ -57,6 +69,13 @@ class CommodityStore:
         records = list(records)
         if not records:
             raise ValueError("commodity source result is empty")
+        # Validate the complete batch before mutating the session.  A caller
+        # may catch this error, record a failure, and commit the same session.
+        for record in records:
+            if record.trade_date is None:
+                raise ValueError(f"invalid trade date for {instrument_code}")
+            if not math.isfinite(record.close) or record.close <= 0:
+                raise ValueError(f"invalid close for {instrument_code} on {record.trade_date}")
         source_latest_date = source_latest_date or max(row.trade_date for row in records)
         existing = list(self.session.scalars(select(CommodityDailyPrice).where(CommodityDailyPrice.instrument_code == instrument_code)))
         db_latest = max((row.trade_date for row in existing), default=None)
@@ -75,8 +94,6 @@ class CommodityStore:
         inserted = revised = 0
         existing_by_date = {row.trade_date: row for row in existing}
         for trade_date, record in sorted(by_date.items()):
-            if not math.isfinite(record.close) or record.close <= 0:
-                raise ValueError(f"invalid close for {instrument_code} on {trade_date}")
             current = existing_by_date.get(trade_date)
             values = {
                 "close": record.close,

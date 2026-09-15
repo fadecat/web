@@ -3,7 +3,7 @@ from datetime import date
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from backend.models.commodity import CommodityDailyPrice, CommodityInstrument
+from backend.models.commodity import CommodityDailyPrice, CommodityInstrument, CommoditySyncState
 from backend.models.database import Base
 from backend.services.commodity_source import CommodityPriceRecord
 from backend.services.commodity_store import CommodityStore
@@ -57,3 +57,41 @@ def test_store_failure_state_increments_and_success_clears_error():
     db.commit()
     succeeded = store.mark_success("RB0", source_latest_date=date(2026, 1, 1), status="unchanged")
     assert succeeded.status == "unchanged" and succeeded.consecutive_failures == 0 and succeeded.last_error is None
+
+
+def test_store_reuses_pending_failure_state_without_flush_or_commit(monkeypatch):
+    db = _session()
+    store = CommodityStore(db)
+    original_get = db.get
+
+    def no_autoflush_get(*args, **kwargs):
+        with db.no_autoflush:
+            return original_get(*args, **kwargs)
+
+    monkeypatch.setattr(db, "get", no_autoflush_get)
+
+    first = store.mark_failed("RB0", "first")
+    second = store.mark_failed("RB0", "second")
+    db.commit()
+
+    state = db.get(CommoditySyncState, "RB0")
+    assert first.consecutive_failures == 1
+    assert second.consecutive_failures == 2
+    assert state is not None and state.consecutive_failures == 2 and state.last_error == "second"
+
+
+def test_store_validates_entire_batch_before_adding_any_price():
+    db = _session()
+    store = CommodityStore(db)
+    records = [
+        CommodityPriceRecord(date(2026, 1, 1), 1.0, source="test"),
+        CommodityPriceRecord(date(2026, 1, 2), 0.0, source="test"),
+    ]
+
+    try:
+        store.upsert_prices("RB0", records)
+    except ValueError:
+        store.mark_failed("RB0", "invalid close")
+    db.commit()
+
+    assert db.scalars(select(CommodityDailyPrice)).all() == []

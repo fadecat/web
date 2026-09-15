@@ -1,4 +1,5 @@
-from datetime import date
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
@@ -21,6 +22,12 @@ def test_source_rejects_empty_nonfinite_nonpositive_and_future_rows():
             normalize_price_rows(pd.DataFrame({"date": ["2026-01-01"], "close": [close]}), source="test")
     with pytest.raises(CommoditySourceError, match="future"):
         normalize_price_rows(pd.DataFrame({"date": ["2999-01-01"], "close": [1]}), source="test")
+
+
+def test_source_rejects_beijing_tomorrow_as_future():
+    tomorrow = datetime.now(ZoneInfo("Asia/Shanghai")).date() + timedelta(days=1)
+    with pytest.raises(CommoditySourceError, match="future"):
+        normalize_price_rows(pd.DataFrame({"date": [tomorrow.isoformat()], "close": [1]}), source="test")
 
 
 def test_source_selects_akshare_adapter_by_market_without_importing_on_construction():

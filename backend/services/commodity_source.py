@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import inspect
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -65,8 +65,8 @@ def normalize_price_rows(frame: pd.DataFrame, source: str = "akshare") -> list[C
     optional_cols = {name: _column(list(frame.columns), names) for name, names in aliases.items()}
     rows: list[CommodityPriceRecord] = []
     # AkShare returns exchange-local dates; the product's freshness contract
-    # uses the next calendar day in Beijing time as the upper bound.
-    latest_allowed = datetime.now(ZoneInfo("Asia/Shanghai")).date() + timedelta(days=1)
+    # uses the current calendar day in Beijing time as the upper bound.
+    latest_allowed = datetime.now(ZoneInfo("Asia/Shanghai")).date()
     for index, row in frame.iterrows():
         parsed = pd.to_datetime(row[date_col], errors="coerce")
         if pd.isna(parsed):
