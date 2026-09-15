@@ -20,9 +20,8 @@ import time
 from collections import Counter
 from typing import Any
 
-import httpx
-
-from backend.services.jisilu import get_cookie
+import httpx  # compatibility export for existing tests; transport is gateway-owned
+from backend.services.jisilu_gateway import gateway
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -142,8 +141,10 @@ def fetch_industry_tree(cookie: str | None = None) -> list[dict[str, Any]]:
     本函数只抓与解析, 不落盘(月度缓存归任务层)。
     """
     headers = dict(DIVIDEND_HEADERS)
-    headers["Cookie"] = cookie if cookie else get_cookie()
-    resp = httpx.get(DIVIDEND_PAGE_URL, headers=headers, timeout=15, follow_redirects=True)
+    if cookie:
+        headers["Cookie"] = cookie
+    with gateway.lease(cookie=cookie) as client:
+        resp = client.request("GET", DIVIDEND_PAGE_URL, headers=headers, timeout=15, follow_redirects=True, request_type="page")
     resp.raise_for_status()
     nodes = parse_industry_options(resp.text)
     if not nodes:
@@ -179,11 +180,12 @@ def _parse_count_info(count_info: object) -> int:
     return int(m.group(1)) if m else 0
 
 
-def fetch_dividend_snapshot(
+def _run_dividend_snapshot(
     cookie: str | None = None,
     tree: list[dict[str, Any]] | None = None,
     *,
     min_total_value: float = 200,
+    _client: Any = None,
 ) -> dict[str, Any]:
     """执行行业树 x 市值下限的自适应覆盖抓取, 返回当日快照。
 
@@ -209,7 +211,9 @@ def fetch_dividend_snapshot(
     if tree is None:
         tree = fetch_industry_tree(cookie)
     headers = dict(DIVIDEND_HEADERS)
-    headers["Cookie"] = cookie if cookie else get_cookie()
+    if cookie:
+        headers["Cookie"] = cookie
+    client = _client or gateway.lease(cookie=cookie)
 
     by_val = {n["val"]: n for n in tree}
     roots, children = build_tree_index(tree)
@@ -227,13 +231,7 @@ def fetch_dividend_snapshot(
         for attempt in range(1 + RETRY_TIMES):
             stats["requests"] += 1
             try:
-                resp = httpx.post(
-                    DIVIDEND_LIST_URL,
-                    headers=headers,
-                    params={"___jsl": f"LST___t={int(time.time() * 1000)}"},
-                    data=form,
-                    timeout=30,
-                )
+                resp = client.request("POST", DIVIDEND_LIST_URL, headers=headers, params={"___jsl": f"LST___t={int(time.time() * 1000)}"}, data=form, timeout=30)
                 resp.raise_for_status()
                 payload = resp.json()
                 if not isinstance(payload, dict):
@@ -339,7 +337,7 @@ def fetch_dividend_snapshot(
     )
     trade_date = last_dt_counts.most_common(1)[0][0] if last_dt_counts else None
 
-    return {
+    result = {
         "rows": list(cells.values()),
         "meta": {
             "trade_date": trade_date,
@@ -351,3 +349,19 @@ def fetch_dividend_snapshot(
             "tree_drift": bool(stats["drift"]),
         },
     }
+    if _client is None:
+        client.close()
+    return result
+
+
+def fetch_dividend_snapshot(
+    cookie: str | None = None,
+    tree: list[dict[str, Any]] | None = None,
+    *,
+    min_total_value: float = 200,
+) -> dict[str, Any]:
+    """执行整批股息抓取，并保证 lease 在所有异常路径关闭。"""
+    with gateway.lease(cookie=cookie) as client:
+        return _run_dividend_snapshot(
+            cookie, tree, min_total_value=min_total_value, _client=client
+        )

@@ -10,9 +10,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-import httpx
-
-from backend.services.jisilu import get_cookie
+from backend.services.jisilu_gateway import gateway
 from backend.utils import parse_float
 
 # ---------------------------------------------------------------------------
@@ -59,11 +57,10 @@ def fetch_cb_list() -> list[dict[str, Any]]:
     返回: [{bond_id, bond_nm, price, convert_value, premium_rt, ...}, ...]
     字段为集思录原始 cell 字段(64 个),全量保存不做筛选。
     """
-    cookie = get_cookie()
-    headers = {**CB_HEADERS, "Cookie": cookie}
+    headers = CB_HEADERS
     params = {"___jsl": f"LST___t={int(time.time() * 1000)}"}
 
-    resp = httpx.post(CB_LIST_URL, headers=headers, params=params, data=CB_FORM_DATA, timeout=15)
+    resp = gateway.request("POST", CB_LIST_URL, headers=headers, params=params, data=CB_FORM_DATA, timeout=15)
     resp.raise_for_status()
     data = resp.json()
     rows = data.get("rows", [])

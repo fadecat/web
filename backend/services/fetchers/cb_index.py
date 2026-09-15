@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from backend.services.jisilu import fetch_with_auth
+from backend.services.jisilu_gateway import gateway
 from backend.utils import parse_float
 
 # ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ def _split_series_values(values: str) -> list[str]:
 
 def fetch_cb_index_page() -> str:
     """抓取集思录 cb_index 页面 HTML(自动带登录 cookie)。"""
-    resp = fetch_with_auth(CB_INDEX_URL, timeout=15)
+    resp = gateway.request("GET", CB_INDEX_URL, timeout=15, request_type="page")
     resp.raise_for_status()
     return resp.text
 

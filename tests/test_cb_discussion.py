@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 
 from backend.services import cb_discussion
+from backend.services import jisilu_gateway
 
 # ---------------------------------------------------------------------------
 # 测试夹具: 真实详情页板块结构的浓缩样本
@@ -75,6 +76,7 @@ def fetch_state(monkeypatch):
         return _FakeResp(state["pages"].get(bond_id, _DETAIL_HTML))
 
     monkeypatch.setattr(cb_discussion.jisilu, "get_cookie", _fake_get_cookie)
+    monkeypatch.setattr(jisilu_gateway, "get_account_pool", lambda: None)
     monkeypatch.setattr(cb_discussion.httpx, "get", _fake_get)
     return state
 

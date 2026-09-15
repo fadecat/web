@@ -29,6 +29,30 @@ def upgrade() -> None:
     sa.Column('updated_at', sa.DateTime(), nullable=False),
     sa.PrimaryKeyConstraint('key')
     )
+    op.create_table('jisilu_account',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('name', sa.String(length=128), nullable=False),
+    sa.Column('username', sa.String(length=128), nullable=False),
+    sa.Column('password', sa.String(length=512), nullable=False),
+    sa.Column('enabled', sa.Boolean(), nullable=False),
+    sa.Column('status', sa.String(length=16), nullable=False),
+    sa.Column('cookie', sa.String(length=4096), nullable=True),
+    sa.Column('cookie_saved_at', sa.DateTime(), nullable=True),
+    sa.Column('last_request_at', sa.DateTime(), nullable=True),
+    sa.Column('last_success_at', sa.DateTime(), nullable=True),
+    sa.Column('last_failure_at', sa.DateTime(), nullable=True),
+    sa.Column('cooldown_until', sa.DateTime(), nullable=True),
+    sa.Column('daily_request_date', sa.Date(), nullable=True),
+    sa.Column('daily_request_count', sa.Integer(), nullable=False),
+    sa.Column('daily_login_date', sa.Date(), nullable=True),
+    sa.Column('daily_login_count', sa.Integer(), nullable=False),
+    sa.Column('consecutive_failures', sa.Integer(), nullable=False),
+    sa.Column('last_error', sa.String(length=2000), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), nullable=False),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('username', name='uq_jisilu_account_username')
+    )
     op.create_table('cb_blacklist',
     sa.Column('bond_id', sa.String(length=16), nullable=False, comment='转债代码'),
     sa.Column('bond_nm', sa.String(length=64), nullable=True, comment='转债名称(拉黑时快照)'),
@@ -340,5 +364,6 @@ def downgrade() -> None:
 
     op.drop_table('cb_daily_snapshot')
     op.drop_table('cb_blacklist')
+    op.drop_table('jisilu_account')
     op.drop_table('app_setting')
     # ### end Alembic commands ###

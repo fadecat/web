@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.api.routes import app_settings, cb_adjustment, cb_discussion, cb_index, cb_list, cb_screen, data_management, data_status, health, stock_dividend, style_rotation, valuation
+from backend.api.routes import app_settings, cb_adjustment, cb_discussion, cb_index, cb_list, cb_screen, data_management, data_status, health, jisilu_accounts, stock_dividend, style_rotation, valuation
 from backend.config import settings
 from backend.models.database import init_db
 from backend.scheduler import start_scheduler, stop_scheduler
@@ -48,7 +48,7 @@ def create_app() -> FastAPI:
         allow_origins=[
             o.strip() for o in settings.cors_origins.split(",") if o.strip()
         ],
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["*"],
     )
 
@@ -65,6 +65,7 @@ def create_app() -> FastAPI:
     app.include_router(data_status.router, prefix=prefix, tags=["data-status"])
     app.include_router(data_management.router, prefix=prefix, tags=["data-management"])
     app.include_router(app_settings.router, prefix=prefix, tags=["settings"])
+    app.include_router(jisilu_accounts.router, prefix=prefix, tags=["jisilu-accounts"])
 
     @app.api_route(
         "/api/{path:path}",

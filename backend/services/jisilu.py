@@ -40,6 +40,12 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+class LoginNetworkError(RuntimeError):
+    pass
+
+class LoginRejectedError(RuntimeError):
+    pass
+
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
@@ -201,8 +207,7 @@ def _login(username: str, password: str) -> str:
         resp.raise_for_status()
         result = resp.json()
         if result.get("code") != 200:
-            logger.error("集思录登录失败(账密): %s", result.get("msg", "未知错误"))
-            return ""
+            raise LoginRejectedError("login rejected")
         # 从 Set-Cookie 头拼装 cookie 字符串
         cookies = resp.cookies
         if cookies:
@@ -221,9 +226,21 @@ def _login(username: str, password: str) -> str:
                 return "; ".join(parts)
         logger.error("集思录登录成功但未获取到 Cookie")
         return ""
+    except (httpx.RequestError, OSError) as exc:
+        raise LoginNetworkError("login network error") from exc
+    except LoginRejectedError:
+        raise
     except Exception as exc:
-        logger.exception("集思录登录异常: %s", exc)
-        return ""
+        raise LoginRejectedError("login failed") from exc
+
+
+def login_account(username: str, password: str) -> str:
+    try:
+        return _login(username, password)
+    except LoginNetworkError:
+        raise
+    except (httpx.RequestError, OSError) as exc:
+        raise LoginNetworkError("login network error") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +295,14 @@ def get_cookie(username: Optional[str] = None, password: Optional[str] = None) -
     else:
         logger.info("无落盘会话,首次登录(今日第 %d 次)", count + 1)
 
-    cookie = _login(username, password)
+    try:
+        cookie = _login(username, password)
+    except LoginRejectedError as exc:
+        _last_login_fail_at = time.monotonic()
+        raise RuntimeError("集思录登录失败,请检查网络或 JISILU_USERNAME/JISILU_PASSWORD") from exc
+    except LoginNetworkError as exc:
+        _last_login_fail_at = time.monotonic()
+        raise RuntimeError("集思录登录失败,请检查网络或 JISILU_USERNAME/JISILU_PASSWORD") from exc
     if not cookie:
         _last_login_fail_at = time.monotonic()
         raise RuntimeError(
@@ -313,14 +337,6 @@ def get_auth_headers() -> dict[str, str]:
 
 
 def fetch_with_auth(url: str, *, headers: dict | None = None, **kwargs) -> httpx.Response:
-    """带集思录登录态的 HTTP GET。
-
-    自动注入 Cookie,调用方不需手动处理登录。
-    """
-    auth_headers = {
-        "User-Agent": LOGIN_HEADERS["User-Agent"],
-        "Cookie": get_cookie(),
-    }
-    if headers:
-        auth_headers.update(headers)
-    return httpx.get(url, headers=auth_headers, follow_redirects=True, **kwargs)
+    """兼容入口，延迟导入统一网关避免循环依赖。"""
+    from backend.services.jisilu_gateway import gateway
+    return gateway.request("GET", url, headers=headers, follow_redirects=True, **kwargs)

@@ -10,9 +10,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-import httpx
-
-from backend.services.jisilu import get_cookie
+from backend.services.jisilu_gateway import gateway
 
 CB_REDEEM_LIST_URL = "https://www.jisilu.cn/data/cbnew/redeem_list/"
 
@@ -36,15 +34,11 @@ def fetch_redeem_list() -> list[dict[str, Any]]:
     返回: [{bond_id, bond_nm, redeem_icon, redeem_remain_days, ...}, ...]
     字段为集思录原始 cell 字段, 全量保存不做筛选。
     """
-    cookie = get_cookie()
-    headers = {**CB_REDEEM_HEADERS, "Cookie": cookie}
     params = {"___jsl": f"LST___t={int(time.time() * 1000)}"}
     # rp=page size: 接口当前忽略该参数默认全量, 但显式给大值防哪天开始尊重分页时静默截断
     payload = {"rp": 1000, "page": 1}
 
-    resp = httpx.post(
-        CB_REDEEM_LIST_URL, headers=headers, params=params, data=payload, timeout=15
-    )
+    resp = gateway.request("POST", CB_REDEEM_LIST_URL, headers=CB_REDEEM_HEADERS, params=params, data=payload, timeout=15)
     resp.raise_for_status()
     data = resp.json()
     # 强赎列表可以合法为空(当日无强赎相关转债), 所以不能用「空」判失败;

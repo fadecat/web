@@ -688,10 +688,12 @@ def test_cb_index_malformed_array_does_not_partially_persist():
 def test_redeem_list_empty_rows_is_legal_empty(monkeypatch):
     """强赎接口结构正常但 rows 为空 -> 合法空,返回 [] 不抛错。"""
     from backend.services.fetchers import cb_redeem
+    from backend.services import jisilu_gateway
 
-    monkeypatch.setattr(cb_redeem, "get_cookie", lambda: "cookie")
+    monkeypatch.setattr(jisilu_gateway, "get_account_pool", lambda: None)
+    monkeypatch.setattr(jisilu_gateway.jisilu, "get_cookie", lambda: "cookie")
     monkeypatch.setattr(
-        cb_redeem.httpx, "post",
+        jisilu_gateway.httpx, "post",
         lambda url, **_k: _fake_response(json_body={"rows": []}, method="POST", url=url),
     )
 
@@ -701,10 +703,12 @@ def test_redeem_list_empty_rows_is_legal_empty(monkeypatch):
 def test_redeem_list_missing_rows_key_raises(monkeypatch):
     """强赎接口缺少 rows(未登录/接口变更) -> 解析失败必须抛错,不能伪装成合法空。"""
     from backend.services.fetchers import cb_redeem
+    from backend.services import jisilu_gateway
 
-    monkeypatch.setattr(cb_redeem, "get_cookie", lambda: "cookie")
+    monkeypatch.setattr(jisilu_gateway, "get_account_pool", lambda: None)
+    monkeypatch.setattr(jisilu_gateway.jisilu, "get_cookie", lambda: "cookie")
     monkeypatch.setattr(
-        cb_redeem.httpx, "post",
+        jisilu_gateway.httpx, "post",
         lambda url, **_k: _fake_response(
             json_body={"code": 401, "msg": "请登录"}, method="POST", url=url
         ),
@@ -717,10 +721,12 @@ def test_redeem_list_missing_rows_key_raises(monkeypatch):
 def test_cb_list_rows_without_cell_raises(monkeypatch):
     """转债列表行数够但一条 cell 都没有 -> 抛错,不能返回空列表。"""
     from backend.services.fetchers import cb_list
+    from backend.services import jisilu_gateway
 
-    monkeypatch.setattr(cb_list, "get_cookie", lambda: "cookie")
+    monkeypatch.setattr(jisilu_gateway, "get_account_pool", lambda: None)
+    monkeypatch.setattr(jisilu_gateway.jisilu, "get_cookie", lambda: "cookie")
     monkeypatch.setattr(
-        cb_list.httpx, "post",
+        jisilu_gateway.httpx, "post",
         lambda url, **_k: _fake_response(
             json_body={"rows": [{"id": i} for i in range(40)]}, method="POST", url=url
         ),

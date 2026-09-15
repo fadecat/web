@@ -17,9 +17,14 @@ import httpx
 import pytest
 
 from backend.services.fetchers import stock_dividend
+from backend.services import jisilu_gateway
 from backend.tasks import stock_dividend_tasks
 
 _CST = ZoneInfo("Asia/Shanghai")
+
+@pytest.fixture(autouse=True)
+def _legacy_gateway(monkeypatch):
+    monkeypatch.setattr(jisilu_gateway, "get_account_pool", lambda: None)
 
 
 def _today_cst() -> str:
@@ -46,6 +51,23 @@ def _cell(sid: str, sw_cd: str, *, last_dt: str | None = None) -> dict:
         "last_dt": last_dt or _today_cst(),
         "last_time": "15:00:30",
     }
+
+
+def test_snapshot_closes_lease_when_algorithm_raises(monkeypatch):
+    class FakeLease:
+        closed = False
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            self.closed = True
+        def request(self, *args, **kwargs):
+            raise AssertionError("algorithm should fail before request")
+    lease = FakeLease()
+    monkeypatch.setattr(stock_dividend.gateway, "lease", lambda **kwargs: lease)
+    monkeypatch.setattr(stock_dividend, "build_tree_index", lambda tree: (_ for _ in ()).throw(ValueError("bad tree")))
+    with pytest.raises(ValueError, match="bad tree"):
+        stock_dividend.fetch_dividend_snapshot(tree=[{"val": "10", "level": 1}], min_total_value=200)
+    assert lease.closed is True
 
 
 def _rows(sw_prefix: str, n: int, seg: int = 0) -> list[dict]:

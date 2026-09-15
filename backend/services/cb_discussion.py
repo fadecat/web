@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx
 
 from backend.services import jisilu
+from backend.services.jisilu_gateway import gateway
 
 _DETAIL_URL = "https://www.jisilu.cn/data/convert_bond_detail/{bond_id}"
 _BASE = "https://www.jisilu.cn"
@@ -77,27 +78,14 @@ def _parse_discussions(html: str) -> list[dict]:
 
 def _fetch_detail(bond_id: str, cookie: str) -> str:
     """用给定 cookie 拉详情页 HTML(cookie 由调用方单线程获取)。"""
-    resp = httpx.get(
-        _DETAIL_URL.format(bond_id=bond_id),
-        headers={"User-Agent": jisilu.LOGIN_HEADERS["User-Agent"], "Cookie": cookie},
-        timeout=_FETCH_TIMEOUT,
-        follow_redirects=True,
-    )
+    resp = gateway.request("GET", _DETAIL_URL.format(bond_id=bond_id), headers={"User-Agent": jisilu.LOGIN_HEADERS["User-Agent"], "Cookie": cookie}, timeout=_FETCH_TIMEOUT, follow_redirects=True, request_type="page")
     resp.raise_for_status()
     return resp.text
 
 
 def _fetch_with_retry(bond_id: str) -> str:
     """拉详情页; 命中登录页说明 cookie 失效, 重取 cookie 重试一次。"""
-    cookie = jisilu.get_cookie()
-    html = _fetch_detail(bond_id, cookie)
-    if _LOGIN_MARKER in html:
-        # cookie 中途失效: 先清进程内缓存(TTL 内 get_cookie 不会重新探活),
-        # 再走探活/重登拿新 cookie 重试一次
-        jisilu.invalidate_cookie(cookie)
-        cookie = jisilu.get_cookie()
-        html = _fetch_detail(bond_id, cookie)
-    return html
+    return gateway.request("GET", _DETAIL_URL.format(bond_id=bond_id), timeout=_FETCH_TIMEOUT, request_type="page").text
 
 
 def get_discussions(bond_id: str) -> list[dict]:
@@ -134,23 +122,23 @@ def get_discussions_batch(bond_ids: list[str]) -> dict[str, list[dict]]:
     missing = [b for b in ids if not _fresh(b)]
     if missing:
         # 先单线程取 cookie(探活/重登只发生一次), 线程内直接复用
-        cookie = jisilu.get_cookie()
+        client = gateway.lease()
+        cookie = ""
 
         def _work(b: str) -> None:
             try:
-                html = _fetch_detail(b, cookie)
-                if _LOGIN_MARKER in html:
-                    # cookie 中途失效: 清缓存后重登取新 cookie(多线程下 invalidate 幂等)
-                    jisilu.invalidate_cookie(cookie)
-                    html = _fetch_detail(b, jisilu.get_cookie())
+                html = client.request("GET", _DETAIL_URL.format(bond_id=b), timeout=_FETCH_TIMEOUT, request_type="page").text
                 items = _parse_discussions(html)
                 with _cache_lock:
                     _cache[b] = (time.monotonic(), items)
             except Exception:  # noqa: BLE001 单只失败跳过, 悬浮惰性兜底
                 pass
 
-        with ThreadPoolExecutor(max_workers=_FETCH_CONCURRENCY) as ex:
-            list(ex.map(_work, missing))
+        try:
+            with ThreadPoolExecutor(max_workers=_FETCH_CONCURRENCY) as ex:
+                list(ex.map(_work, missing))
+        finally:
+            client.close()
 
     with _cache_lock:
         return {b: _cache[b][1] for b in ids if b in _cache}

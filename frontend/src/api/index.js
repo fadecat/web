@@ -141,4 +141,23 @@ export const saveSettings = (values) =>
 export const sendTestMail = () =>
   api.post('/settings/test-mail', null, { timeout: 60000 }).then((r) => r.data);
 
+// 集思录账号池管理(响应只含脱敏账号状态, 不回传密码/Cookie)
+export const getJisiluAccounts = () =>
+  api.get('/jisilu/accounts').then((r) => r.data);
+
+export const createJisiluAccount = (data) =>
+  api.post('/jisilu/accounts', data).then((r) => r.data);
+
+export const updateJisiluAccount = (accountId, data) =>
+  api.put(`/jisilu/accounts/${accountId}`, data).then((r) => r.data);
+
+export const deleteJisiluAccount = (accountId) =>
+  api.delete(`/jisilu/accounts/${accountId}`).then((r) => r.data);
+
+export const checkJisiluAccount = (accountId) =>
+  api.post(`/jisilu/accounts/${accountId}/check`).then((r) => r.data);
+
+export const resetJisiluAccountStatus = (accountId) =>
+  api.post(`/jisilu/accounts/${accountId}/reset-status`).then((r) => r.data);
+
 export default api;

@@ -16,13 +16,13 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect
 
 from backend.models.database import Base
-from backend.models import app_setting, data_status, jisilu_stock, valuation  # noqa: F401
+from backend.models import app_setting, data_status, jisilu_account, jisilu_stock, valuation  # noqa: F401
 
 EXPECTED_TABLES = {
     "app_setting", "task_run_log", "index_valuation_snapshot",
     "index_dividend_yield", "cn_bond_yield", "index_daily_quote",
     "cb_index_daily", "cb_daily_snapshot", "cb_redeem_daily", "cb_blacklist",
-    "stock_dividend_daily",
+    "stock_dividend_daily", "jisilu_account",
 }
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
@@ -138,9 +138,21 @@ class TestSchemaBaseline:
         engine = create_engine(f"sqlite:///{db_path.as_posix()}")
         Base.metadata.create_all(engine)
         engine.dispose()
-        # 把 app_setting.updated_at 改成可空(nullable 漂移)
+        # SQLite 不支持 ALTER COLUMN; 重建最小表制造 nullable 漂移。
         with closing(sqlite3.connect(db_path)) as conn:
-            conn.execute("alter table app_setting alter column updated_at drop not null")
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("ALTER TABLE app_setting RENAME TO app_setting_original")
+            conn.execute(
+                "CREATE TABLE app_setting ("
+                "key VARCHAR(64) NOT NULL PRIMARY KEY, "
+                "value VARCHAR(2000), updated_at DATETIME)"
+            )
+            conn.execute(
+                "INSERT INTO app_setting SELECT key, value, updated_at "
+                "FROM app_setting_original"
+            )
+            conn.execute("DROP TABLE app_setting_original")
+            conn.commit()
         from scripts.check_db_baseline import compare_schema
 
         differences = compare_schema(f"sqlite:///{db_path.as_posix()}", Base.metadata)
