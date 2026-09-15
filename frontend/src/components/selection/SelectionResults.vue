@@ -20,7 +20,7 @@ const columns=[
  {field:'dblow',label:'双低',width:68,default:true,align:'right',sortable:true},
  {field:'convert_value',label:'转股价值',width:82,default:true,align:'right',sortable:true},
  {field:'convert_price',label:'转股价',width:78,optional:true,align:'right',sortable:true},
- {field:'year_left',label:'剩余年限',width:78,optional:true,align:'right',sortable:true},
+ {field:'year_left',label:'剩余年限',width:78,default:true,align:'right',sortable:true},
  {field:'curr_iss_amt',label:'规模(亿)',width:78,optional:true,align:'right',sortable:true},
  {field:'pb',label:'市净率',width:70,optional:true,align:'right',sortable:true},
  {field:'redeem',label:'强赎',width:78,default:true,align:'center',sortable:false},
@@ -38,7 +38,6 @@ const visibleColumns=computed(()=>selectedFields.value.map(f=>columns.find(c=>c.
 function persist(){localStorage.setItem(storageKey,JSON.stringify({density:density.value,columns:selectedFields.value}));}
 function resetColumns(){selectedFields.value=[...defaultFields];persist();}
 function toggleColumn(field){if(requiredFields.includes(field))return;if(selectedFields.value.includes(field))selectedFields.value=selectedFields.value.filter(f=>f!==field);else selectedFields.value=[...selectedFields.value,field];persist();}
-defineExpose({toggleColumn,resetColumns,sortValue});
 watch(density,persist);
 // 列序: 标识(排名/代码/名称/行业/评级)→股侧(正股名称/正股)→核心五联(价格/溢价/收益率/年限/规模相邻)
 // →转换链(转股价/转股价值)→打分(双低)→债性(赎回价)→属性(市净率/强赎)→得分。
@@ -50,12 +49,14 @@ const badge=row=>redeemBadges[row?.redeem_state?.status_code];
 const soeFlag=row=>({'中央国有企业':{t:'央',c:'soe-central'},'地方国有企业':{t:'国',c:'soe-local'}})[row?.enterprise_nature];
 function display(row,field){if(field==='stock_financial_profit'){const v=row.stock_financial?.profit_average;return v==null?'—':`${Number(v).toFixed(2)}%`;}const v=row[field];if(v==null||v==='')return field==='rating'?'无评级':'—';return numberFields.has(field)?`${Number(v).toFixed(2)}${['simple_maturity_yield_pct','premium_rt','stock_financial_profit'].includes(field)?'%':''}`:v;}
 function sortValue(row,field){return field==='stock_financial_profit'?row.stock_financial?.profit_average:row[field];}
+function sortBy(field,order='ascending'){sort.value={prop:field,order};}
 const rows=computed(()=>{
  let a=view.value==='excluded'?props.result.excluded_rows||[]:props.result.rows||[];
  const q=search.value.trim().toLowerCase();a=a.filter(r=>!q||`${r.code} ${r.name}`.toLowerCase().includes(q));
  const {prop,order}=sort.value;
  return [...a].sort((x,y)=>{const av=sortValue(x,prop),bv=sortValue(y,prop);if(av==null)return bv==null?0:1;if(bv==null)return -1;const c=typeof av==='number'?av-bv:String(av).localeCompare(String(bv));return (order==='descending'?-c:c)||((x.rank||0)-(y.rank||0));});
 });
+defineExpose({toggleColumn,resetColumns,sortValue,sortBy,rows});
 const paged=computed(()=>rows.value.slice((page.value-1)*size.value,page.value*size.value));
 watch([view,search,size,()=>props.result],()=>{page.value=1;});
 watch(()=>props.result,()=>{view.value='all';});
@@ -101,7 +102,7 @@ function ensureAdjustment(code){
   <el-alert v-if="result.meta?.data_status==='no_snapshot'" title="尚无行情快照，请前往数据管理同步或改用实时行情" type="info" :closable="false"/>
   <el-alert v-for="w in result.meta?.warnings||[]" :key="w" :title="w" type="warning" :closable="false"/>
   <p class="meta">{{ result.source==='live'?'实时行情':'数据库快照' }} · 行情日期 {{ result.meta?.trade_date || (result.source==='live' ? '实时' : '未确认') }} · 赎回日期 {{ result.meta?.redeem_trade_date || (result.source==='live' ? '实时' : '未确认') }}<span v-if="result.meta?.fetched_at"> · 请求时间 {{ result.meta.fetched_at }}</span></p>
-  <div class="tools"><el-radio-group v-model="view"><el-radio-button value="all">全部符合</el-radio-button><el-radio-button value="excluded">排除明细</el-radio-button></el-radio-group><el-input v-model="search" placeholder="当前结果内查找代码/名称" clearable/><el-button @click="sort={prop:'rank',order:'ascending'}">恢复默认排序</el-button><el-button @click="density=density==='compact'?'comfortable':'compact'">{{ density==='compact'?'舒适密度':'紧凑密度' }}</el-button><el-dropdown trigger="click"><el-button>列设置</el-button><template #dropdown><el-dropdown-menu><div class="column-settings"><div class="column-group-title">默认列</div><label v-for="c in columns.filter(x=>x.default)" :key="c.field"><el-checkbox :model-value="selectedFields.includes(c.field)" disabled>{{ c.label }}</el-checkbox></label><div class="column-group-title optional-title">可选列</div><label v-for="c in columns.filter(x=>x.optional)" :key="c.field"><el-checkbox :model-value="selectedFields.includes(c.field)" @change="toggleColumn(c.field)">{{ c.label }}</el-checkbox></label><el-button link type="primary" @click="resetColumns">恢复默认</el-button></div></el-dropdown-menu></template></el-dropdown></div>
+  <div class="tools"><el-radio-group v-model="view"><el-radio-button value="all">全部符合</el-radio-button><el-radio-button value="excluded">排除明细</el-radio-button></el-radio-group><el-input v-model="search" placeholder="当前结果内查找代码/名称" clearable/><el-button @click="sort={prop:'rank',order:'ascending'}">恢复默认排序</el-button><el-button @click="density=density==='compact'?'comfortable':'compact'">{{ density==='compact'?'舒适密度':'紧凑密度' }}</el-button><el-dropdown trigger="click" :hide-on-click="false"><el-button>列设置</el-button><template #dropdown><el-dropdown-menu><div class="column-settings"><div class="column-group-title">默认列</div><label v-for="c in columns.filter(x=>x.default)" :key="c.field"><el-checkbox :model-value="selectedFields.includes(c.field)" :disabled="requiredFields.includes(c.field)">{{ c.label }}</el-checkbox></label><div class="column-group-title optional-title">可选列</div><label v-for="c in columns.filter(x=>x.optional)" :key="c.field"><el-checkbox :model-value="selectedFields.includes(c.field)" @change="toggleColumn(c.field)">{{ c.label }}</el-checkbox></label><el-button link type="primary" @click="resetColumns">恢复默认</el-button></div></el-dropdown-menu></template></el-dropdown></div>
   <el-table :class="['density-'+density]" :data="paged" stripe highlight-current-row max-height="620" @sort-change="sort=$event.prop&&$event.order?$event:{prop:'rank',order:'ascending'}">
    <el-table-column v-for="c in visibleColumns" :key="c.field" :prop="c.field" :label="c.label" :width="c.width" :min-width="c.min" :fixed="c.fixed||false" :align="c.align||'left'" :sortable="c.sortable?'custom':false" :show-overflow-tooltip="c.field!=='name'">
     <template #header><el-tooltip v-if="c.field==='simple_maturity_yield_pct'" content="(到期赎回价－当前价格) / 当前价格 ×100；未年化，不含票息和税"><span :class="{'hl-head':hlHeads.has(c.field)}">{{c.label}} ⓘ</span></el-tooltip><el-tooltip v-else-if="c.field==='stock_financial_profit'" content="来源：集思录高股息字段 profit_average；仅展示，不参与筛选或因子计算"><span>{{c.label}} ⓘ</span></el-tooltip><span v-else :class="{'hl-head':hlHeads.has(c.field)}">{{c.label}}</span></template>

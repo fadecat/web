@@ -62,6 +62,9 @@ it('maps the virtual profit field to profit_average for positive and negative so
  await flushPromises();
  expect(w.vm.sortValue({stock_financial:{profit_average:8}},'stock_financial_profit')).toBe(8);
  expect(w.vm.sortValue({stock_financial:{profit_average:-3}},'stock_financial_profit')).toBe(-3);
+ w.vm.sortBy('stock_financial_profit','ascending');
+ await flushPromises();
+ expect(w.vm.rows.map((row)=>row.code)).toEqual(['2','1']);
  w.unmount();
 });
 
