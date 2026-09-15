@@ -175,6 +175,29 @@ def _register_daily_jobs() -> None:
             coalesce=True,
         )
 
+    # 晚间补跑档(见 registry.EVENING_RERUN_JOBS): 集思录当日值盘后才发布,
+    # 15:0x 档抓到的是昨日口径; 22:0x 再跑一次, 同日覆盖写当日行(幂等)。
+    # 与 15:0x 档共用 job_id —— run_logger 互斥锁/task_run_log/手动触发端点
+    # 天然同源; APScheduler 注册 id 需唯一, 故加 _evening 后缀。
+    from backend.tasks.registry import EVENING_RERUN_JOBS, JOB_FUNCS
+
+    names = {job_id: name for job_id, _func, name, _h, _m in DAILY_JOBS}
+    for job_id, (hour, minute) in EVENING_RERUN_JOBS.items():
+        scheduler.add_job(
+            logged_daily_job(job_id, JOB_FUNCS[job_id]),
+            trigger=CronTrigger(
+                day_of_week="*" if job_id in EVERYDAY_JOB_IDS else "mon-fri",
+                hour=hour,
+                minute=minute,
+                timezone="Asia/Shanghai",
+            ),
+            id=f"{job_id}_evening",
+            name=f"{names.get(job_id, job_id)}（晚间补跑）",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            coalesce=True,
+        )
+
     # 月度任务每天检查一次，任务内部只在凌晨窗口执行并按月份幂等；
     # 这样服务在首次部署后的次日即可完成初始化，跨窗口也可继续运行。
     from backend.tasks.registry import MONTHLY_JOBS
@@ -214,7 +237,8 @@ def start_scheduler() -> None:
     logger.info(
         "scheduler started: cb_redeem@15:03, cb_index@15:04, cb_list@15:06, "
         "stock_dividend@15:08, "
-        "style_rotation@22:03, valuation@22:06, index_eod@22:09 "
+        "style_rotation@22:03, valuation@22:06, index_eod@22:09; "
+        "evening rerun: cb_redeem@22:00, cb_index@22:01 "
         "(cb_redeem/cb_index/valuation/index_eod 每个自然日; "
         "misfire_grace_time=3600, coalesce=True)"
     )

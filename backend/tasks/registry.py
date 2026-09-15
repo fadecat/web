@@ -38,6 +38,14 @@ DAILY_JOBS: list[tuple[str, object, str, int, int]] = [
     ("index_eod_daily", run_index_eod_daily, "指数收盘价（易方达）抓取", 22, 9),
 ]
 
+# 晚间补跑档(job_id → 时刻, 函数复用 DAILY_JOBS 同一份): 集思录源的当日值
+# (强赎 15 日计数重算/等权指数当日行)盘后才发布, 15:0x 档抓到的还是昨日口径;
+# 晚间再跑一次, store 层按 (bond_id, trade_date)/(trade_date) 同日覆盖写, 幂等。
+EVENING_RERUN_JOBS: dict[str, tuple[int, int]] = {
+    "cb_redeem_daily": (22, 0),
+    "cb_index_daily": (22, 1),
+}
+
 # 低峰全市场财务快照：任务函数自行检查 02:00-05:00 窗口并按批次幂等。
 MONTHLY_JOBS: list[tuple[str, object, str, int, int]] = [
     ("stock_financial_monthly", run_stock_financial_monthly, "全市场正股财务快照", 2, 10),

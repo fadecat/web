@@ -113,3 +113,25 @@ def test_historical_sync_jobs_are_scheduled_every_day(monkeypatch):
     assert "day_of_week='mon-fri'" in str(by_id["style_rotation_daily"]["trigger"])
     assert "day_of_week='mon-fri'" in str(by_id["cb_list_daily"]["trigger"])
     assert "day_of_week='mon-fri'" in str(by_id["stock_dividend_daily"]["trigger"])
+
+
+def test_evening_rerun_jobs_share_job_id_and_run_every_day(monkeypatch):
+    """晚间补跑档: 15:0x 档照常注册, 另注册 {job_id}_evening, 同为每个自然日。"""
+    import backend.tasks.registry as registry
+
+    calls = []
+    monkeypatch.setattr(
+        scheduler_module.scheduler,
+        "add_job",
+        lambda func, **kwargs: calls.append(kwargs),
+    )
+    scheduler_module._register_daily_jobs()
+
+    by_id = {c["id"]: c for c in calls}
+    assert set(registry.EVENING_RERUN_JOBS) <= set(registry.JOB_FUNCS)
+    for job_id in registry.EVENING_RERUN_JOBS:
+        assert job_id in by_id, "15:0x 主档仍在"
+        evening = by_id.get(f"{job_id}_evening")
+        assert evening is not None, "晚间补跑档已注册"
+        assert str(evening["trigger"]).startswith("cron[day_of_week='*'")
+        assert "晚间补跑" in evening["name"]

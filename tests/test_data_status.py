@@ -312,6 +312,21 @@ def test_everyday_jobs_next_run_on_weekend():
     assert times["cb_list_daily"].startswith("2026-09-14T15:06")
 
 
+def test_evening_rerun_picks_earliest_next_run():
+    """带晚间补跑档的任务取多档最早: 盘后取当晚 22:0x, 晚间档过后取次日 15:0x。"""
+    from datetime import datetime
+
+    from backend.services.data_status import _next_run_times
+
+    before_evening = _next_run_times(datetime(2026, 9, 15, 16, 0))  # 周二盘后
+    assert before_evening["cb_redeem_daily"].startswith("2026-09-15T22:00")
+    assert before_evening["cb_index_daily"].startswith("2026-09-15T22:01")
+
+    after_evening = _next_run_times(datetime(2026, 9, 15, 22, 30))  # 晚间档已过
+    assert after_evening["cb_redeem_daily"].startswith("2026-09-16T15:03")
+    assert after_evening["cb_index_daily"].startswith("2026-09-16T15:04")
+
+
 def test_success_rate_window(db, log_db):
     statuses = ["success"] * 28 + ["failed", "partial"]
     for i, s in enumerate(statuses):

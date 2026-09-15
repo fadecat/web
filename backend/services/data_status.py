@@ -291,14 +291,19 @@ def _next_run_times(now: datetime) -> dict[str, str]:
 
     每个自然日运行的任务(历史同步 + 集思录晚发布补抓)按自然日推算；
     其余当日快照任务仅在下一交易日运行。
+    带晚间补跑档的任务(cb_redeem/cb_index)取多档中最早的一次。
     这里表达的是程序计划执行时间(next_run_at)，不与数据目录的应就绪期限混用。
     """
     from datetime import timedelta
 
-    from backend.tasks.registry import DAILY_JOBS, EVERYDAY_JOB_IDS, MONTHLY_JOBS
+    from backend.tasks.registry import DAILY_JOBS, EVENING_RERUN_JOBS, EVERYDAY_JOB_IDS, MONTHLY_JOBS
 
+    schedules = [
+        *((job_id, hour, minute) for job_id, _f, _n, hour, minute in DAILY_JOBS),
+        *((job_id, hour, minute) for job_id, (hour, minute) in EVENING_RERUN_JOBS.items()),
+    ]
     out: dict[str, str] = {}
-    for job_id, _func, _name, hour, minute in DAILY_JOBS:
+    for job_id, hour, minute in schedules:
         day = now.date()
         candidate = datetime.combine(day, datetime.min.time()).replace(
             hour=hour, minute=minute
@@ -315,7 +320,9 @@ def _next_run_times(now: datetime) -> dict[str, str]:
                 )
             ):
                 candidate += timedelta(days=1)
-        out[job_id] = candidate.isoformat(timespec="seconds")
+        prev = out.get(job_id)
+        if prev is None or candidate.isoformat(timespec="seconds") < prev:
+            out[job_id] = candidate.isoformat(timespec="seconds")
     for job_id, _func, _name, hour, minute in MONTHLY_JOBS:
         candidate = datetime.combine(now.date(), datetime.min.time()).replace(hour=hour, minute=minute)
         if candidate <= now:
