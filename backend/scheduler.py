@@ -202,6 +202,9 @@ def start_scheduler() -> None:
     if recovered:
         logger.warning(f"启动: 结转 {recovered} 条中断的任务运行记录(interrupted)")
 
+    # 首次部署创建预约状态；例如 9 月 15 日服务启动，首次全量安排到 9 月 16 日 02:10。
+    from backend.tasks.stock_financial_tasks import initialize_stock_financial_bootstrap
+    initialize_stock_financial_bootstrap()
     _register_daily_jobs()
     scheduler.start()
     # 启动后异步检查风格轮动数据,空表自动回补(不阻塞启动)

@@ -172,7 +172,11 @@ def latest_financial_map(db: Session, *, as_of_date: date | None = None) -> tupl
     q = db.query(StockFinancialSnapshotBatch).filter(StockFinancialSnapshotBatch.status == "SUCCESS")
     if as_of_date:
         q = q.filter((StockFinancialSnapshotBatch.source_trade_date == None) | (StockFinancialSnapshotBatch.source_trade_date <= as_of_date))  # noqa: E711
-    batch = q.order_by(StockFinancialSnapshotBatch.published_at.desc()).first()
+    # 业务口径按源数据日期选择；发布晚的旧源快照不能遮蔽较新的源数据。
+    batch = q.order_by(
+        StockFinancialSnapshotBatch.source_trade_date.desc().nullslast(),
+        StockFinancialSnapshotBatch.published_at.desc(),
+    ).first()
     if not batch:
         return {}, None
     return {r.stock_id: r for r in db.query(StockFinancialSnapshot).filter(StockFinancialSnapshot.batch_id == batch.id).all()}, batch
