@@ -44,7 +44,7 @@ const ADVANCED_THRESHOLDS = [
   { key: 'revenueAvgMin', label: '5年营收复合 ≥' },
   { key: 'profitAvgMin', label: '5年利润复合 ≥' },
   { key: 'cashflowAvgMin', label: '5年现金流复合 ≥' },
-  { key: 'epsGrowthTtmMin', label: '净利同比增长 ≥' },
+  { key: 'epsGrowthTtmMin', label: '净利润增长 ≥' },
 ];
 
 // 高级区激活条件数( markets/行业/地域/7 阈值/流通市值区间 )

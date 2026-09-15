@@ -25,13 +25,14 @@ beforeEach(()=>{
 });
 
 it('uses compact default columns in the requested order and keeps operation fixed right',async()=>{
- const w=mountResults({result:{rows:[{code:'1',name:'很长的债券名称',stock_nm:'正股',stock_financial:{profit_average:12.345}}],excluded_rows:[],meta:{}}});
+ const w=mountResults({result:{rows:[{code:'1',name:'很长的债券名称',stock_nm:'正股',stock_financial:{eps_growth_ttm:12.345}}],excluded_rows:[],meta:{}}});
  await flushPromises();
  const tableText=w.find('.el-table').text();
  expect(tableText.indexOf('代码')).toBeLessThan(tableText.indexOf('名称'));
  expect(tableText.indexOf('名称')).toBeLessThan(tableText.indexOf('排名'));
  expect(tableText.indexOf('排名')).toBeLessThan(tableText.indexOf('正股'));
- expect(tableText).toContain('利润指标');
+ expect(tableText).toContain('净利润增长');
+ expect(tableText).not.toContain('利润指标');
  expect(tableText.lastIndexOf('操作')).toBeGreaterThan(tableText.indexOf('强赎'));
  expect(w.find('.density-compact').exists()).toBe(true);
  expect(w.text()).toContain('12.35%');
@@ -39,11 +40,12 @@ it('uses compact default columns in the requested order and keeps operation fixe
 });
 
 it('persists density and optional columns while retaining defaults on reset',async()=>{
- localStorage.setItem('cb-selection-results-preferences',JSON.stringify({density:'comfortable',columns:['price','stock_financial_profit']}));
- const w=mountResults({result:{rows:[{code:'1',name:'甲',stock_financial:{profit_average:1}}],excluded_rows:[],meta:{}}});
- await flushPromises();
- expect(w.find('.density-comfortable').exists()).toBe(true);
- expect(w.text()).toContain('代码'); expect(w.text()).toContain('名称');
+  localStorage.setItem('cb-selection-results-preferences',JSON.stringify({density:'comfortable',columns:['price','stock_financial_profit']}));
+  const w=mountResults({result:{rows:[{code:'1',name:'甲',stock_financial:{profit_average:1}}],excluded_rows:[],meta:{}}});
+  await flushPromises();
+  expect(w.find('.density-comfortable').exists()).toBe(true);
+  expect(w.text()).toContain('代码'); expect(w.text()).toContain('名称');
+  expect(w.find('.el-table').text()).toContain('净利润增长');
  expect(localStorage.getItem('cb-selection-results-preferences')).toContain('comfortable');
  const densityButton=w.findAll('button').find((b)=>b.text().includes('紧凑密度'));
  await densityButton.trigger('click');
@@ -57,12 +59,12 @@ it('persists density and optional columns while retaining defaults on reset',asy
  w.unmount();
 });
 
-it('maps the virtual profit field to profit_average for positive and negative sorting',async()=>{
- const w=mountResults({result:{rows:[{code:'1',name:'正',stock_financial:{profit_average:8}},{code:'2',name:'负',stock_financial:{profit_average:-3}}],excluded_rows:[],meta:{}}});
+it('maps 净利润增长 to eps_growth_ttm for positive and negative sorting',async()=>{
+ const w=mountResults({result:{rows:[{code:'1',name:'正',stock_financial:{eps_growth_ttm:8}},{code:'2',name:'负',stock_financial:{eps_growth_ttm:-3}}],excluded_rows:[],meta:{}}});
  await flushPromises();
- expect(w.vm.sortValue({stock_financial:{profit_average:8}},'stock_financial_profit')).toBe(8);
- expect(w.vm.sortValue({stock_financial:{profit_average:-3}},'stock_financial_profit')).toBe(-3);
- w.vm.sortBy('stock_financial_profit','ascending');
+ expect(w.vm.sortValue({stock_financial:{eps_growth_ttm:8}},'stock_financial_eps_growth_ttm')).toBe(8);
+ expect(w.vm.sortValue({stock_financial:{eps_growth_ttm:-3}},'stock_financial_eps_growth_ttm')).toBe(-3);
+ w.vm.sortBy('stock_financial_eps_growth_ttm','ascending');
  await flushPromises();
  expect(w.vm.rows.map((row)=>row.code)).toEqual(['2','1']);
  w.unmount();

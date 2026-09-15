@@ -33,7 +33,7 @@ export const STOCK_DIVIDEND_COLUMNS = [
   { field: 'profit_average', label: '5年利润复合', width: 110, align: 'right', fmt: 'signed', pct: true, headerTip: '5年利润复合增长率(每年5.1前最新一年用两年前的, 5.1后用一年前的)' },
   { field: 'cashflow_average', label: '5年现金流复合', width: 115, align: 'right', fmt: 'signed', pct: true, headerTip: '5年经营现金流净额复合增长率' },
   { field: 'dividend_rate_average', label: '5年分红率复合', width: 115, align: 'right', fmt: 'signed', pct: true, headerTip: '5年分红率复合增长率' },
-  { field: 'eps_growth_ttm', label: '净利同比增长', width: 110, align: 'right', fmt: 'signed', pct: true, headerTip: '最新报告期归母净利同比增长' },
+  { field: 'eps_growth_ttm', label: '净利润增长', width: 110, align: 'right', fmt: 'signed', pct: true, headerTip: '最新报告期归母净利润同比增长' },
   { field: 'int_debt_rate', label: '有息负债率', width: 100, align: 'right', fmt: 'num2', pct: true, headerTip: '有息负债率=有息负债/(所有者权益合计+有息负债)*100%' },
   { field: 'debt_rate', label: '资产负债率', width: 100, align: 'right', fmt: 'num2', pct: true, headerTip: '资产负债率=负债合计/(所有者权益合计+负债合计)*100%' },
   { field: 'industry_nm', label: '行业', width: 120, align: 'left', fmt: 'text', sortKey: 'sw_cd' },

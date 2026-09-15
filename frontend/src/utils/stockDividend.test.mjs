@@ -106,6 +106,11 @@ test('列配置: 前两列代码/名称 fixed left, 股息率TTM 列存在', () 
   assert.equal(typeof STOCK_DIVIDEND_COLUMNS.find((c) => c.field === 'dividend_rate'), 'object');
 });
 
+test('净利润同比字段统一显示为净利润增长', () => {
+  const column = STOCK_DIVIDEND_COLUMNS.find((item) => item.field === 'eps_growth_ttm');
+  assert.equal(column?.label, '净利润增长');
+});
+
 test('默认排序 = 股息率TTM 降序, 分页档 20/50/100', () => {
   assert.deepEqual(DEFAULT_SORT, { prop: 'dividend_rate', order: 'descending' });
   assert.deepEqual(PAGE_SIZES, [20, 50, 100]);
