@@ -5,6 +5,7 @@ from datetime import datetime
 
 import pandas as pd
 import pytest
+from requests import Response
 from requests import exceptions as requests_exceptions
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -563,6 +564,97 @@ def test_connection_error_retries_three_times_then_succeeds(monkeypatch):
     )
     assert len(attempts) == 3
     assert result["success_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "error_factory",
+    [
+        lambda: _http_error(404),
+        lambda: requests_exceptions.TooManyRedirects("redirect loop"),
+    ],
+)
+def test_http_errors_are_not_retried_by_default(monkeypatch, error_factory):
+    from backend.tasks import commodity_tasks
+
+    _engine, session_factory, db = _db()
+    _seed(db, "RB")
+    calls = []
+    monkeypatch.setattr(commodity_tasks, "SessionLocal", session_factory)
+
+    def fetch(*_args):
+        calls.append(1)
+        raise error_factory()
+
+    result = commodity_tasks.run_commodity_daily(
+        fetch_runner=fetch, sleep=lambda _: None, random_fn=lambda: 0.0
+    )
+    assert calls == [1]
+    assert result["failed_count"] == 1
+
+
+def _http_error(status_code):
+    response = Response()
+    response.status_code = status_code
+    return requests_exceptions.HTTPError("http failure", response=response)
+
+
+def test_normalize_connection_error_is_not_retried(monkeypatch):
+    from backend.tasks import commodity_tasks
+
+    _engine, session_factory, db = _db()
+    _seed(db, "RB")
+    calls = []
+    monkeypatch.setattr(commodity_tasks, "SessionLocal", session_factory)
+
+    def fetch(*_args):
+        calls.append(1)
+        return pd.DataFrame({"date": ["2026-09-15"], "close": [1.0]})
+
+    def normalize(_raw):
+        raise requests_exceptions.ConnectionError("normalizer failure")
+
+    monkeypatch.setattr(commodity_tasks, "_normalize_result", normalize)
+    result = commodity_tasks.run_commodity_daily(
+        fetch_runner=fetch, sleep=lambda _: None, random_fn=lambda: 0.0
+    )
+    assert calls == [1]
+    assert result["failed_count"] == 1
+
+
+def test_run_logger_bounds_failure_codes_and_excludes_exception_details(monkeypatch):
+    from backend.models.data_status import TaskRunLog
+    from backend.services import notifications, run_logger
+
+    _engine, session_factory, db = _db()
+    monkeypatch.setattr(run_logger, "SessionLocal", session_factory)
+    monkeypatch.setattr(notifications, "notify_task_failure", lambda *_: None)
+    codes = [f"C{i:02d}-{'X' * 28}" for i in range(21)]
+    result = {
+        "total": 21,
+        "success_count": 0,
+        "unchanged_count": 0,
+        "failed_count": 21,
+        "suspicious_count": 0,
+        "inserted_rows": 0,
+        "revised_rows": 0,
+        "percentile_rows": 0,
+        "fail_count": 21,
+        "state_persist_failed_count": 21,
+        "state_persist_failed_codes": codes,
+        "state_persist_failed_details": [
+            {"code": "C00", "error": "SECRET_EXCEPTION_DETAILS"}
+        ],
+    }
+
+    run_logger.run_with_logging("commodity_daily", lambda: result)
+    row = db.query(TaskRunLog).filter_by(job_id="commodity_daily").one()
+    assert row.status == "failed"
+    assert "state_persist_failed_count=21" in row.summary
+    for code in codes[:20]:
+        assert code in row.summary
+    assert codes[20] not in row.summary
+    assert "SECRET_EXCEPTION_DETAILS" not in row.summary
+    assert len(row.summary) <= 2000
 
 
 def test_run_logger_persists_bounded_structured_summary_with_early_state_failure(monkeypatch):

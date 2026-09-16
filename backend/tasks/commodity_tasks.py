@@ -21,9 +21,19 @@ from backend.services.commodity_source import CommodityPriceRecord, CommoditySou
 from backend.services.commodity_store import CommodityStore, CommodityStoreResult
 
 try:
-    from requests.exceptions import RequestException
+    from requests.exceptions import (
+        ConnectionError as RequestsConnectionError,
+        HTTPError as RequestsHTTPError,
+        Timeout as RequestsTimeout,
+    )
 except ImportError:  # requests is optional; built-in network errors remain covered.
-    class RequestException(Exception):
+    class RequestsConnectionError(Exception):
+        pass
+
+    class RequestsHTTPError(Exception):
+        pass
+
+    class RequestsTimeout(Exception):
         pass
 
 TASK_TIMEOUT_SEC = 20 * 60
@@ -33,7 +43,8 @@ RETRY_BACKOFF_SEC = (2.0, 5.0)
 DEFAULT_RETRYABLE_EXCEPTIONS = (
     TimeoutError,
     ConnectionError,
-    RequestException,
+    RequestsTimeout,
+    RequestsConnectionError,
 )
 
 
@@ -108,6 +119,19 @@ def _normalize_result(raw) -> list[CommodityPriceRecord]:
     return rows
 
 
+def _is_retryable_fetch_error(
+    error: BaseException,
+    retryable_exceptions: tuple[type[BaseException], ...],
+) -> bool:
+    """Classify only transport failures; HTTP errors are opt-in and status-gated."""
+    if not isinstance(error, retryable_exceptions):
+        return False
+    if isinstance(error, RequestsHTTPError):
+        status = getattr(getattr(error, "response", None), "status_code", None)
+        return status in (408, 429) or (isinstance(status, int) and status >= 500)
+    return True
+
+
 def _fetch_with_retry(
     instrument: CommodityInstrument,
     *,
@@ -135,11 +159,9 @@ def _fetch_with_retry(
         check_budget()
         try:
             raw = _call_fetch(fetcher, instrument)
-            rows = _normalize_result(raw)
-        except ValueError:
-            # CommoditySourceError and all Phase A validation errors are deterministic.
-            raise
-        except retryable_exceptions as exc:
+        except Exception as exc:
+            if not _is_retryable_fetch_error(exc, retryable_exceptions):
+                raise
             last_error = exc
             # A slow response has consumed the complete item/task budget.  It is
             # never re-issued, even when its exception resembles a transport error.
@@ -155,6 +177,10 @@ def _fetch_with_retry(
                 raise _ItemBudgetExceeded(f"commodity item exceeded {item_timeout_sec:g}s target") from exc
             sleep(delay)
             continue
+        # Normalization is deterministic and deliberately outside the network
+        # retry handler. A normalizer raising a transport-shaped exception must
+        # still fail this item without re-fetching.
+        rows = _normalize_result(raw)
         # Successful fetches are also subject to both budgets.  In particular,
         # do not let data returned after the total deadline reach the store.
         check_budget()
