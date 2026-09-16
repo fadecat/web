@@ -308,10 +308,24 @@ def run_commodity_daily(
                     )
                 break
 
-        if index < len(instruments) - 1 and monotonic() < deadline:
+        if index < len(instruments) - 1:
+            now = monotonic()
+            if now >= deadline:
+                for remaining in instruments[index + 1:]:
+                    counters = _record_failure(
+                        counters, remaining.code, "commodity task deadline exceeded before fetch"
+                    )
+                break
             delay = 2.0 + max(0.0, min(2.0, float(random_fn()) * 2.0))
-            if monotonic() + delay < deadline:
-                sleep(delay)
+            if now + delay >= deadline:
+                # Skipping the delay would violate the pacing contract and
+                # start another request after the total deadline.
+                for remaining in instruments[index + 1:]:
+                    counters = _record_failure(
+                        counters, remaining.code, "commodity task deadline exceeded before fetch"
+                    )
+                break
+            sleep(delay)
 
     result = counters.result()
     logger.info(

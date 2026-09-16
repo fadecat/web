@@ -317,12 +317,19 @@ def test_data_status_group_ignores_disabled_entities_and_marks_all_disabled(monk
         instrument_code="ON", trade_date=date(2026, 9, 15), close=1, source="akshare"
     ))
     db.commit()
-    group = next(g for g in build_data_status(db)["datasets"] if g["name"] == "商品价格与分位")
+    fixed_now = datetime(2026, 9, 16, 15, 30)
+    group = next(
+        g for g in build_data_status(db, now=fixed_now)["datasets"]
+        if g["name"] == "商品价格与分位"
+    )
     assert group["state"] == "fresh"
 
     db.query(CommodityInstrument).update({"enabled": False})
     db.commit()
-    disabled_group = next(g for g in build_data_status(db)["datasets"] if g["name"] == "商品价格与分位")
+    disabled_group = next(
+        g for g in build_data_status(db, now=fixed_now)["datasets"]
+        if g["name"] == "商品价格与分位"
+    )
     assert disabled_group["state"] == "disabled"
 
 
@@ -341,6 +348,31 @@ def test_scheduler_registers_commodity_cron_with_existing_execution_policy(monke
     assert commodity["replace_existing"] is True
     assert commodity["coalesce"] is True
     assert commodity["misfire_grace_time"] == 3600
+
+
+def test_pacing_delay_crossing_total_deadline_stops_before_next_fetch(monkeypatch):
+    from backend.tasks import commodity_tasks
+
+    _engine, session_factory, db = _db()
+    _seed(db, "A", "B")
+    fetched = []
+    clock_values = iter([0.0, 0.0, 0.0, 0.0, 1199.0])
+    monkeypatch.setattr(commodity_tasks, "SessionLocal", session_factory)
+
+    def fetch(code, _market):
+        fetched.append(code)
+        return pd.DataFrame({"date": ["2026-09-15"], "close": [1.0]})
+
+    result = commodity_tasks.run_commodity_daily(
+        fetch_runner=fetch,
+        monotonic=lambda: next(clock_values),
+        started_at=0.0,
+        sleep=lambda _: None,
+        random_fn=lambda: 0.0,
+    )
+    assert fetched == ["A"]
+    assert result["success_count"] == 1 and result["failed_count"] == 1
+    assert db.get(CommoditySyncState, "B").status == "failed"
 
 
 def test_start_scheduler_only_registers_jobs_without_running_commodity(monkeypatch):
@@ -375,3 +407,54 @@ def test_start_scheduler_only_registers_jobs_without_running_commodity(monkeypat
     assert fake.started is True
     assert "registered" in fake.registered
     assert fetched == []
+
+
+def test_registered_wrapper_and_manual_trigger_use_registry_callable_and_write_manual_log(monkeypatch):
+    from backend import scheduler as scheduler_module
+    from backend.api.routes import data_status as route
+    from backend.models.data_status import TaskRunLog
+    from backend.services import run_logger
+    from backend.tasks import registry
+
+    _engine, session_factory, db = _db()
+    calls = []
+
+    def fake_task():
+        calls.append("task")
+        return {"success_count": 1, "fail_count": 0}
+
+    daily_original = registry.DAILY_JOBS
+    funcs_original = registry.JOB_FUNCS["commodity_daily"]
+    registry.DAILY_JOBS = [
+        (*entry[:1], fake_task, *entry[2:]) if entry[0] == "commodity_daily" else entry
+        for entry in daily_original
+    ]
+    registry.JOB_FUNCS["commodity_daily"] = fake_task
+    monkeypatch.setattr(scheduler_module.scheduler, "add_job", lambda func, **kwargs: calls.append((kwargs["id"], func)))
+    monkeypatch.setattr(run_logger, "SessionLocal", session_factory)
+    monkeypatch.setattr(route, "threading", type("SyncThreading", (), {
+        "Thread": type("SyncThread", (), {
+            "__init__": lambda self, target, **_kwargs: setattr(self, "target", target),
+            "start": lambda self: self.target(),
+        }),
+    }))
+    try:
+        scheduler_module._register_daily_jobs()
+        wrapper = next(func for job_id, func in calls if job_id == "commodity_daily")
+        wrapper()
+        assert calls.count("task") == 1
+
+        # The route captures JOB_FUNCS at call time, so it must run the same replacement.
+        result = route.run_job_manually("commodity_daily")
+        assert result == {"status": "started", "job_id": "commodity_daily"}
+        assert calls.count("task") == 2
+        row = (
+            db.query(TaskRunLog)
+            .filter_by(job_id="commodity_daily")
+            .order_by(TaskRunLog.started_at.desc())
+            .first()
+        )
+        assert "manual" in row.summary
+    finally:
+        registry.DAILY_JOBS = daily_original
+        registry.JOB_FUNCS["commodity_daily"] = funcs_original

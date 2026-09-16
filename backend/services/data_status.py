@@ -59,15 +59,16 @@ def _trading_days_between(start: date, end: date) -> int:
     return count
 
 
-def _expected_date() -> date:
+def _expected_date(now: datetime | None = None) -> date:
     """数据「应该」更新的日期。
 
     今天是交易日且已过 15:00(最早的任务 15:03 跑)→ 预期今天有数据;
     交易日上午任务还没轮到跑,预期仍是上一交易日,避免满屏黄灯误报;
     非交易日 → 最近一个交易日(周末/节假日数据停更是正常的)。
     """
-    today = date.today()
-    if is_trading_day(today) and datetime.now().hour >= 15:
+    today = now.date() if now is not None else date.today()
+    current_hour = now.hour if now is not None else datetime.now().hour
+    if is_trading_day(today) and current_hour >= 15:
         return today
     return latest_trading_day(today - timedelta(days=1))
 
@@ -83,7 +84,7 @@ def _freshness_state(latest: date | None, expected: date) -> str:
     return "lagging"
 
 
-def get_dataset_freshness(db: Session) -> list[dict]:
+def get_dataset_freshness(db: Session, now: datetime | None = None) -> list[dict]:
     """分组返回数据新鲜度,每组展开到具体指数/表的逐实体明细。
 
     返回结构:
@@ -95,7 +96,7 @@ def get_dataset_freshness(db: Session) -> list[dict]:
     - expected = _expected_date(): 交易日为今天,非交易日为最近一个交易日
       (周末/节假日数据不更新是正常的,不应算滞后)。
     """
-    expected = _expected_date()
+    expected = _expected_date(now)
 
     def make_entity(label, latest, first=None, count=None, unit="条"):
         return {
@@ -370,7 +371,7 @@ def _next_run_times(now: datetime) -> dict[str, str]:
     return out
 
 
-def build_data_status(db: Session) -> dict:
+def build_data_status(db: Session, now: datetime | None = None) -> dict:
     """状态页完整数据: 数据新鲜度 + 任务运行记录 + 生成时间。
 
     新鲜度按数据目录的来源规则(发布偏移/到期时刻)逐流判定;
@@ -378,10 +379,10 @@ def build_data_status(db: Session) -> dict:
     """
     from backend.services.data_catalog import apply_catalog
 
-    datasets = apply_catalog(get_dataset_freshness(db), _freshness_state)
+    datasets = apply_catalog(get_dataset_freshness(db, now), _freshness_state, now=now)
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "expected_date": _expected_date().isoformat(),
+        "expected_date": _expected_date(now).isoformat(),
         "datasets": datasets,
         "jobs": get_job_runs(db),
     }
