@@ -11,6 +11,7 @@ import random
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import date
 
 from loguru import logger
 from sqlalchemy import select
@@ -19,6 +20,7 @@ from backend.models.commodity import CommodityInstrument
 from backend.models.database import SessionLocal
 from backend.services.commodity_source import CommodityPriceRecord, CommoditySourceAdapter, normalize_price_rows
 from backend.services.commodity_store import CommodityStore, CommodityStoreResult
+from backend.utils import is_trading_day
 
 try:
     from requests.exceptions import (
@@ -275,6 +277,10 @@ def run_commodity_daily(
     if fetch_runner is not None and fetch_fn is not None:
         raise ValueError("pass only one of fetch_runner and fetch_fn")
     fetch_runner = fetch_runner or fetch_fn
+    today = date.today()
+    if not is_trading_day(today):
+        logger.info("非交易日({}),跳过商品价格与分位日频任务", today)
+        return {"status": "skipped", **_Counters().result()}
     started = monotonic() if started_at is None else started_at
     deadline = started + task_timeout_sec
 

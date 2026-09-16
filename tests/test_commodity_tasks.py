@@ -206,6 +206,30 @@ def test_task_does_not_fetch_when_deadline_has_expired(monkeypatch):
     assert result["total"] == 1 and result["failed_count"] == 1
 
 
+def test_non_trading_day_skips_before_listing_or_fetch(monkeypatch):
+    from backend.tasks import commodity_tasks
+
+    calls = []
+    monkeypatch.setattr(commodity_tasks, "is_trading_day", lambda _day: False)
+    monkeypatch.setattr(
+        commodity_tasks,
+        "SessionLocal",
+        lambda: pytest.fail("non-trading day must not open a database session"),
+    )
+
+    result = commodity_tasks.run_commodity_daily(
+        fetch_runner=lambda *_: calls.append(1),
+        sleep=lambda _: None,
+        random_fn=lambda: 0.0,
+    )
+
+    assert result["status"] == "skipped"
+    assert result["total"] == 0
+    assert result["success_count"] == 0
+    assert result["fail_count"] == 0
+    assert calls == []
+
+
 def test_item_budget_expiry_after_first_fetch_does_not_retry(monkeypatch):
     from backend.tasks import commodity_tasks
 
