@@ -38,7 +38,7 @@ def _dataset_state(latest: date | None, expected: date) -> str:
 
 def build_data_management(db: Session, now: datetime | None = None) -> dict:
     """数据管理页完整数据: 指数列表(按指数聚合) + 非指数分组 + 任务 + 数据源。"""
-    expected = _expected_date()
+    expected = _expected_date(now)
     commodity_expected, _commodity_next_due = Policy(
         "akshare", "commodity_daily", 15, 50
     ).expected(now)

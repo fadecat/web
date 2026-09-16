@@ -18,6 +18,32 @@ from backend.models.database import SessionLocal
 _guard = threading.Lock()
 _running: set[str] = set()
 
+_RESULT_SUMMARY_KEYS = (
+    ("total", "total"),
+    ("success_count", "success"),
+    ("unchanged_count", "unchanged"),
+    ("failed_count", "failed"),
+    ("suspicious_count", "suspicious"),
+    ("inserted_rows", "inserted"),
+    ("revised_rows", "revised"),
+    ("percentile_rows", "percentile"),
+    ("state_persist_failed_count", "state_persist_failed_count"),
+)
+
+
+def _format_result_summary(result: dict) -> str:
+    """Return a bounded, non-sensitive summary of known task counters."""
+    fields = [
+        f"{label}={result[key]}"
+        for key, label in _RESULT_SUMMARY_KEYS
+        if key in result
+    ]
+    codes = result.get("state_persist_failed_codes")
+    if isinstance(codes, (list, tuple)):
+        safe_codes = [str(code)[:32] for code in codes[:20]]
+        fields.append(f"state_persist_failed_codes=[{','.join(safe_codes)}]")
+    return "结果摘要: " + ", ".join(fields) if fields else ""
+
 
 def now_local():
     return datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
@@ -67,6 +93,7 @@ def run_with_logging(job_id: str, func, *, reserved=False, trigger="scheduled"):
         thread_id = threading.get_ident()
         sink_id = logger.add(lambda m: buffer.append(str(m).rstrip()), level="INFO",
                              filter=lambda r: r["thread"].id == thread_id)
+        result = None
         try:
             result = func()
             if isinstance(result, dict):
@@ -84,7 +111,11 @@ def run_with_logging(job_id: str, func, *, reserved=False, trigger="scheduled"):
             row.status = status
             row.finished_at = finished
             row.duration_sec = round((finished - started_at).total_seconds(), 2)
-            row.summary = (f"触发方式: {trigger}\n" + "\n".join(buffer))[-2000:]
+            result_summary = _format_result_summary(result) if isinstance(result, dict) else ""
+            summary_parts = [f"触发方式: {trigger}", "\n".join(buffer)]
+            if result_summary:
+                summary_parts.append(result_summary)
+            row.summary = "\n".join(part for part in summary_parts if part)[-2000:]
             row.error = error[:2000] if error else None
             db.commit()
 
@@ -96,7 +127,7 @@ def run_with_logging(job_id: str, func, *, reserved=False, trigger="scheduled"):
 
         return {"status": status, "job_id": job_id, "run_id": run_id}
     except Exception as exc:
-        logger.error(f"任务 {job_id} 执行记录失败: {exc}")
+        logger.error("任务 {} 执行记录失败: {}", job_id, exc)
         return {"status": "failed", "job_id": job_id, "run_id": run_id}
     finally:
         if sink_id is not None:

@@ -20,10 +20,21 @@ from backend.models.database import SessionLocal
 from backend.services.commodity_source import CommodityPriceRecord, CommoditySourceAdapter, normalize_price_rows
 from backend.services.commodity_store import CommodityStore, CommodityStoreResult
 
+try:
+    from requests.exceptions import RequestException
+except ImportError:  # requests is optional; built-in network errors remain covered.
+    class RequestException(Exception):
+        pass
+
 TASK_TIMEOUT_SEC = 20 * 60
 ITEM_TIMEOUT_SEC = 20
 MAX_FETCH_ATTEMPTS = 3
 RETRY_BACKOFF_SEC = (2.0, 5.0)
+DEFAULT_RETRYABLE_EXCEPTIONS = (
+    TimeoutError,
+    ConnectionError,
+    RequestException,
+)
 
 
 class _ItemBudgetExceeded(TimeoutError):
@@ -106,6 +117,7 @@ def _fetch_with_retry(
     monotonic: Callable[[], float],
     deadline: float,
     item_timeout_sec: float,
+    retryable_exceptions: tuple[type[BaseException], ...],
 ) -> list[CommodityPriceRecord]:
     """Fetch one item; validation errors are terminal, transport errors retry."""
     item_started = monotonic()
@@ -127,7 +139,7 @@ def _fetch_with_retry(
         except ValueError:
             # CommoditySourceError and all Phase A validation errors are deterministic.
             raise
-        except Exception as exc:  # network/transient source failures
+        except retryable_exceptions as exc:
             last_error = exc
             # A slow response has consumed the complete item/task budget.  It is
             # never re-issued, even when its exception resembles a transport error.
@@ -226,6 +238,7 @@ def run_commodity_daily(
     started_at: float | None = None,
     task_timeout_sec: float = TASK_TIMEOUT_SEC,
     item_timeout_sec: float = ITEM_TIMEOUT_SEC,
+    retryable_exceptions: tuple[type[BaseException], ...] = DEFAULT_RETRYABLE_EXCEPTIONS,
 ) -> dict[str, object]:
     """按 display_order 串行同步 enabled 商品并返回统一任务计数。
 
@@ -269,9 +282,12 @@ def run_commodity_daily(
                 )
             break
 
-        adapter = source_factory() if source_factory is not None else CommoditySourceAdapter()
-        fetcher = fetch_runner or getattr(adapter, "fetch_history", None) or getattr(adapter, "fetch")
         try:
+            if fetch_runner is not None:
+                fetcher = fetch_runner
+            else:
+                adapter = source_factory() if source_factory is not None else CommoditySourceAdapter()
+                fetcher = getattr(adapter, "fetch_history", None) or getattr(adapter, "fetch")
             rows = _fetch_with_retry(
                 instrument,
                 fetcher=fetcher,
@@ -280,6 +296,7 @@ def run_commodity_daily(
                 monotonic=monotonic,
                 deadline=deadline,
                 item_timeout_sec=item_timeout_sec,
+                retryable_exceptions=retryable_exceptions,
             )
             stored = _store_one(instrument.code, rows)
             if stored.status == "suspicious":

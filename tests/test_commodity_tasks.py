@@ -5,6 +5,7 @@ from datetime import datetime
 
 import pandas as pd
 import pytest
+from requests import exceptions as requests_exceptions
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -60,7 +61,7 @@ def test_daily_processes_enabled_in_display_order_and_keeps_success_when_later_i
     def fetch(code, market):
         calls.append(code)
         if code == "A":
-            raise RuntimeError("temporary source failure")
+            raise ConnectionError("temporary source failure")
         return pd.DataFrame({"date": ["2026-09-15"], "close": [2.0]})
 
     monkeypatch.setattr(commodity_tasks, "SessionLocal", session_factory)
@@ -288,7 +289,9 @@ def test_failed_state_write_is_reported_when_old_success_cannot_be_replaced(monk
     assert db.get(CommoditySyncState, "RB").status == "success"
 
 
-def test_data_management_uses_commodity_1550_policy_for_freshness():
+def test_data_management_uses_commodity_1550_policy_for_freshness(monkeypatch):
+    import backend.services.data_management as management
+    from backend.models.valuation import CnBondYield
     from backend.services.data_management import build_data_management
 
     _engine, _session_factory, db = _db()
@@ -296,14 +299,25 @@ def test_data_management_uses_commodity_1550_policy_for_freshness():
     db.add(CommodityDailyPrice(
         instrument_code="RB", trade_date=date(2026, 9, 15), close=1, source="akshare"
     ))
+    db.add(CnBondYield(trade_date=date(2026, 9, 15), yield_10y=2.0))
     db.commit()
 
-    before = build_data_management(db, now=datetime(2026, 9, 16, 15, 30))
-    after = build_data_management(db, now=datetime(2026, 9, 16, 15, 51))
+    fixed_before = datetime(2026, 9, 16, 15, 30)
+    fixed_after = datetime(2026, 9, 16, 15, 51)
+    expected_args = []
+    original_expected = management._expected_date
+    monkeypatch.setattr(
+        management,
+        "_expected_date",
+        lambda value=None: (expected_args.append(value), original_expected(value))[1],
+    )
+    before = build_data_management(db, now=fixed_before)
+    after = build_data_management(db, now=fixed_after)
     before_group = next(g for g in before["non_index_groups"] if g["label"] == "商品价格与分位")
     after_group = next(g for g in after["non_index_groups"] if g["label"] == "商品价格与分位")
     assert before_group["entities"][0]["state"] == "fresh"
     assert after_group["entities"][0]["state"] == "stale"
+    assert expected_args == [fixed_before, fixed_after]
 
 
 def test_data_status_group_ignores_disabled_entities_and_marks_all_disabled(monkeypatch):
@@ -458,3 +472,132 @@ def test_registered_wrapper_and_manual_trigger_use_registry_callable_and_write_m
     finally:
         registry.DAILY_JOBS = daily_original
         registry.JOB_FUNCS["commodity_daily"] = funcs_original
+
+
+def test_fetch_runner_skips_source_factory_construction(monkeypatch):
+    from backend.tasks import commodity_tasks
+
+    _engine, session_factory, db = _db()
+    _seed(db, "RB")
+    factory_calls = []
+    monkeypatch.setattr(commodity_tasks, "SessionLocal", session_factory)
+
+    def broken_factory():
+        factory_calls.append(1)
+        raise AssertionError("fetch_runner should not construct an adapter")
+
+    result = commodity_tasks.run_commodity_daily(
+        source_factory=broken_factory,
+        fetch_runner=lambda *_: pd.DataFrame({"date": ["2026-09-15"], "close": [1.0]}),
+        sleep=lambda _: None,
+        random_fn=lambda: 0.0,
+    )
+    assert result["success_count"] == 1
+    assert factory_calls == []
+
+
+def test_source_factory_failure_marks_one_item_and_continues_with_next_factory(monkeypatch):
+    from backend.tasks import commodity_tasks
+
+    _engine, session_factory, db = _db()
+    _seed(db, "A", "B")
+    factory_calls = []
+    monkeypatch.setattr(commodity_tasks, "SessionLocal", session_factory)
+
+    class Adapter:
+        def fetch_history(self, code, _market):
+            return pd.DataFrame({"date": ["2026-09-15"], "close": [1.0]})
+
+    def factory():
+        factory_calls.append(1)
+        if len(factory_calls) == 1:
+            raise RuntimeError("adapter init failed")
+        return Adapter()
+
+    result = commodity_tasks.run_commodity_daily(
+        source_factory=factory,
+        sleep=lambda _: None,
+        random_fn=lambda: 0.0,
+    )
+    assert factory_calls == [1, 1]
+    assert result["success_count"] == 1 and result["failed_count"] == 1
+    assert db.get(CommoditySyncState, "A").status == "failed"
+    assert db.get(CommoditySyncState, "B").status == "success"
+
+
+def test_non_retryable_type_error_is_called_once(monkeypatch):
+    from backend.tasks import commodity_tasks
+
+    _engine, session_factory, db = _db()
+    _seed(db, "RB")
+    calls = []
+    monkeypatch.setattr(commodity_tasks, "SessionLocal", session_factory)
+
+    def fetch(*_args):
+        calls.append(1)
+        raise TypeError("bad hook")
+
+    result = commodity_tasks.run_commodity_daily(
+        fetch_runner=fetch, sleep=lambda _: None, random_fn=lambda: 0.0
+    )
+    assert calls == [1]
+    assert result["failed_count"] == 1
+
+
+def test_connection_error_retries_three_times_then_succeeds(monkeypatch):
+    from backend.tasks import commodity_tasks
+
+    _engine, session_factory, db = _db()
+    _seed(db, "RB")
+    attempts = []
+    monkeypatch.setattr(commodity_tasks, "SessionLocal", session_factory)
+
+    def fetch(*_args):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise requests_exceptions.ConnectionError("upstream down")
+        return pd.DataFrame({"date": ["2026-09-15"], "close": [1.0]})
+
+    result = commodity_tasks.run_commodity_daily(
+        fetch_runner=fetch, sleep=lambda _: None, random_fn=lambda: 0.0
+    )
+    assert len(attempts) == 3
+    assert result["success_count"] == 1
+
+
+def test_run_logger_persists_bounded_structured_summary_with_early_state_failure(monkeypatch):
+    from backend.models.data_status import TaskRunLog
+    from backend.services import run_logger
+    from backend.services import notifications
+    from backend.tasks import commodity_tasks
+
+    _engine, session_factory, db = _db()
+    _seed(db, *(f"C{i:02d}" for i in range(20)))
+    monkeypatch.setattr(commodity_tasks, "SessionLocal", session_factory)
+    monkeypatch.setattr(run_logger, "SessionLocal", session_factory)
+    monkeypatch.setattr(notifications, "notify_task_failure", lambda *_: None)
+    original_mark_failed = commodity_tasks.CommodityStore.mark_failed
+
+    def fail_first_state(self, code, error):
+        if code == "C00":
+            raise RuntimeError("state persistence unavailable")
+        return original_mark_failed(self, code, error)
+
+    monkeypatch.setattr(commodity_tasks.CommodityStore, "mark_failed", fail_first_state)
+
+    def fetch(code, _market):
+        if code == "C00":
+            raise RuntimeError("source unavailable")
+        return pd.DataFrame({"date": ["2026-09-15"], "close": [1.0]})
+
+    run_logger.run_with_logging(
+        "commodity_daily",
+        lambda: commodity_tasks.run_commodity_daily(
+            fetch_runner=fetch, sleep=lambda _: None, random_fn=lambda: 0.0
+        ),
+    )
+    row = db.query(TaskRunLog).filter_by(job_id="commodity_daily").one()
+    assert row.status == "partial"
+    assert "C00" in row.summary
+    assert "state_persist_failed_count" in row.summary
+    assert len(row.summary) <= 2000
