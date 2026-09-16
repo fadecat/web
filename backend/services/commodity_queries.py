@@ -102,13 +102,18 @@ class CommodityQueryService:
         ).all()
         prices = {row.instrument_code: row for row in price_rows}
 
-        percentile_rows = self.db.scalars(
-            select(CommodityPercentileDaily).where(
-                CommodityPercentileDaily.instrument_code.in_(codes),
-                CommodityPercentileDaily.algorithm_version == ALGORITHM_VERSION,
-            )
-        ).all()
         latest_by_code = {code: prices[code].trade_date for code in prices}
+        percentile_rows = self.db.scalars(
+            select(CommodityPercentileDaily)
+            .join(
+                latest_dates,
+                and_(
+                    CommodityPercentileDaily.instrument_code == latest_dates.c.code,
+                    CommodityPercentileDaily.trade_date == latest_dates.c.latest_date,
+                ),
+            )
+            .where(CommodityPercentileDaily.algorithm_version == ALGORITHM_VERSION)
+        ).all()
         percentiles: dict[str, dict[str, CommodityPercentileDaily]] = {code: {} for code in codes}
         for row in percentile_rows:
             if row.trade_date == latest_by_code.get(row.instrument_code):
@@ -231,7 +236,11 @@ class CommodityQueryService:
             rows = [
                 row
                 for row in rows
-                if (row["windows"][window]["signal"] if window else row["signal"]) == signal
+                if (
+                    row["signal"] == signal
+                    if signal in {"failed", "stale"} or window is None
+                    else row["windows"][window]["signal"] == signal
+                )
             ]
 
         if sort_by == "price":
@@ -239,7 +248,7 @@ class CommodityQueryService:
         elif sort_by == "date":
             value = lambda row: row["data_date"]
         elif sort_by == "signal":
-            ranks = {"failed": 0, "stale": 1, "divergent": 2, "high": 3, "low": 4, "neutral": 5, "insufficient": 6}
+            ranks = {"insufficient": 0, "neutral": 1, "low": 2, "high": 3, "divergent": 4, "stale": 5, "failed": 6}
             value = lambda row: ranks.get(row["signal"], 99)
         else:
             value = lambda row: row["windows"][sort_by]["percentile"]
@@ -270,11 +279,7 @@ class CommodityQueryService:
             .order_by(TaskRunLog.started_at.desc(), TaskRunLog.id.desc())
             .limit(1)
         )
-        dates = [
-            row["data_date"]
-            for row in rows
-            if row["data_date"] and row["signal"] != "failed"
-        ]
+        dates = [row["data_date"] for row in rows if row["data_date"]]
         return {
             "data_date": max(dates) if dates else None,
             "instrument_total": len(rows),
