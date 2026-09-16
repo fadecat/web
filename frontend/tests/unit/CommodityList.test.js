@@ -17,7 +17,7 @@ import { useRoute, useRouter } from 'vue-router';
 import CommodityList from '../../src/pages/CommodityList.vue';
 
 const ROW = {
-  code: 'RB0', name: '螺纹钢', category: '黑色', market: '国内', latest_price: 3256,
+  code: 'RB0', name: '螺纹钢', category: '黑色建材', market: '国内', latest_price: 3256,
   data_date: '2026-09-15', current_status: 'stale', status_label: '数据滞后',
   signal: 'stale', sync_status: 'stale',
   windows: {
@@ -54,6 +54,7 @@ describe('CommodityList successful API render', () => {
     });
     await flushPromises();
     expect(wrapper.text()).toContain('螺纹钢');
+    expect(wrapper.text()).toContain('🏗 黑色建材');
     expect(wrapper.text()).toContain('95%');
     expect(wrapper.text()).toContain('3256');
     expect(wrapper.find('.tone-muted').exists()).toBe(true);

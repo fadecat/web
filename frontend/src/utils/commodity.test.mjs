@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildCommodityChartOption, formatDateTime, formatNumber, formatPercentile, formatPrice,
-  filtersFromQuery, isTriggered, isUninitialized,
+  filtersFromQuery, groupBySection, isTriggered, isUninitialized,
   metricTone, queryFromFilters, renderCommodityChart, statusColor, statusLabel,
 } from './commodity.mjs';
 
@@ -49,6 +49,22 @@ test('empty states only call a no-data instrument set uninitialized', () => {
   assert.equal(isUninitialized({ data_date: null, instrument_total: 75 }, { active: false, rows: Array(75) }), true);
   assert.equal(isUninitialized({ data_date: null, instrument_total: 75 }, { active: true, rows: [] }), false);
   assert.equal(isUninitialized({ data_date: '2026-09-15', instrument_total: 75 }, { active: false, rows: [] }), false);
+});
+
+test('groupBySection follows email section order and folds unknown into 其他', () => {
+  const rows = [
+    { code: 'RB0', category: '黑色建材' },
+    { code: 'CL', category: '能源与化工' },
+    { code: 'LH0', category: '其他' },
+    { code: 'XX', category: '未知分类' },
+    { code: 'AU0', category: '有色贵金属' },
+    { code: 'M0', category: '农产品' },
+  ];
+  const groups = groupBySection(rows);
+  assert.deepEqual(groups.map((group) => group.key), ['能源与化工', '黑色建材', '有色贵金属', '农产品', '其他']);
+  assert.equal(groups.find((group) => group.key === '能源与化工').emoji, '🛢');
+  assert.deepEqual(groups.find((group) => group.key === '其他').rows.map((row) => row.code), ['LH0', 'XX']);
+  assert.deepEqual(groupBySection([]), []);
 });
 
 test('sync degradation mutes metric colors regardless of persisted signal', () => {

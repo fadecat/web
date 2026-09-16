@@ -4,8 +4,8 @@ import { useRoute, useRouter } from 'vue-router';
 import { getCommodities, getCommodityOverview } from '../api/commodity';
 import {
   COMMODITY_WINDOWS, WINDOW_LABELS, filtersFromQuery, formatDateTime,
-  formatPercentile, formatPrice, isTriggered, isUninitialized, metricTone, queryFromFilters,
-  statusLabel, statusTone,
+  formatPercentile, formatPrice, groupBySection, isTriggered, isUninitialized, metricTone,
+  queryFromFilters, statusLabel, statusTone,
 } from '../utils/commodity.mjs';
 import { createRequestGuard } from '../utils/requestGuard.js';
 
@@ -25,6 +25,16 @@ const categories = computed(() => [...new Set(rows.value.map((row) => row.catego
 const visibleRows = computed(() => filters.value.triggered
   ? rows.value.filter((row) => isTriggered(row, filters.value.window))
   : rows.value);
+// 邮件同款板块分组: 板块标题行与该板块行交错, 供单表 span-method 合并渲染
+const COLUMN_COUNT = 10;
+const displayRows = computed(() => groupBySection(visibleRows.value).flatMap(
+  (group) => [{ __group: true, key: `section:${group.key}`, label: `${group.emoji} ${group.key}`, count: group.rows.length }, ...group.rows],
+));
+const rowKey = (row) => row.__group ? row.key : row.code;
+const spanMethod = ({ row, columnIndex }) => (row.__group
+  ? (columnIndex === 0 ? [1, COLUMN_COUNT] : [0, 0])
+  : [1, 1]);
+const rowClassName = ({ row }) => (row.__group ? 'section-row' : '');
 
 const fetchData = async () => {
   const version = requestGuard.next();
@@ -70,7 +80,10 @@ const onSortChange = ({ prop, order }) => {
   }
   syncQuery();
 };
-const openDetail = (row) => router.push(`/commodities/${encodeURIComponent(row.code)}`);
+const openDetail = (row) => {
+  if (row.__group) return;
+  router.push(`/commodities/${encodeURIComponent(row.code)}`);
+};
 const cell = (row, window) => row[window] || row.windows?.[window] || {};
 const cellText = (row, window) => formatPercentile(cell(row, window).percentile, 0);
 const cellSignal = (row, window) => cell(row, window).signal;
@@ -142,17 +155,19 @@ onBeforeUnmount(() => requestGuard.invalidate());
     </div>
     <div v-else-if="!visibleRows.length" class="commodity-state">没有符合当前条件的品种。</div>
     <div v-else class="commodity-table-wrap page-card">
-      <el-table :data="visibleRows" row-key="code" :default-sort="defaultSort" @row-click="openDetail" @sort-change="onSortChange" table-layout="fixed">
-        <el-table-column prop="name" label="品种" fixed width="150" class-name="instrument-column">
-          <template #default="{ row }"><strong>{{ row.name }}</strong><small>{{ row.code }}</small></template>
+      <el-table :data="displayRows" :row-key="rowKey" :span-method="spanMethod" :row-class-name="rowClassName" :default-sort="defaultSort" @row-click="openDetail" @sort-change="onSortChange" table-layout="fixed">
+        <el-table-column prop="name" label="品种" width="150" class-name="instrument-column">
+          <template #default="{ row }">
+            <template v-if="row.__group"><span class="section-label">{{ row.label }}<small>{{ row.count }} 个品种</small></span></template>
+            <template v-else><strong>{{ row.name }}</strong><small>{{ row.code }}</small></template>
+          </template>
         </el-table-column>
-        <el-table-column prop="category" label="分类" width="100"><template #default="{ row }">{{ row.category || '—' }}</template></el-table-column>
         <el-table-column prop="latest_price" label="最新价" width="110" sortable="custom" align="right"><template #default="{ row }">{{ formatPrice(row.latest_price) }}</template></el-table-column>
         <el-table-column prop="data_date" label="数据日期" width="120" sortable="custom"><template #default="{ row }">{{ row.data_date || '—' }}</template></el-table-column>
         <el-table-column v-for="window in COMMODITY_WINDOWS" :key="window" :prop="window" :label="WINDOW_LABELS[window]" width="90" sortable="custom" align="right">
           <template #default="{ row }"><span :class="`tone-${metricTone(rowStatus(row), cellSignal(row, window))}`">{{ cellText(row, window) }}</span></template>
         </el-table-column>
-        <el-table-column prop="current_status" label="当前状态" fixed="right" width="110"><template #default="{ row }"><span class="status-pill" :style="{ color: emailStatusColor(rowStatus(row)) }">{{ statusCellText(row) }}</span></template></el-table-column>
+        <el-table-column prop="current_status" label="当前状态" width="110"><template #default="{ row }"><span class="status-pill" :style="{ color: emailStatusColor(rowStatus(row)) }">{{ statusCellText(row) }}</span></template></el-table-column>
       </el-table>
     </div>
   </section>
@@ -171,7 +186,7 @@ onBeforeUnmount(() => requestGuard.invalidate());
 .commodity-alert { padding: 9px 12px; margin-bottom: 14px; border: 1px solid #e5e7eb; border-radius: 6px; background: #fafafa; color: #6b7280; font-size: 12px; }
 .commodity-filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; padding: 12px; }
 .commodity-filters .el-input { width: 190px; }.commodity-filters .el-select { width: 130px; }
-.commodity-table-wrap { overflow-x: auto; padding: 0; }.commodity-table-wrap :deep(.el-table) { min-width: 1050px; font-size: 13px; font-variant-numeric: tabular-nums; }.commodity-table-wrap :deep(.el-table th), .commodity-table-wrap :deep(.el-table td) { height: 36px; padding: 0; white-space: nowrap; }.commodity-table-wrap :deep(.el-table__row) { cursor: pointer; }.commodity-table-wrap :deep(.instrument-column .cell) { text-align: left; }.commodity-table-wrap :deep(.instrument-column strong) { display: block; font-weight: 600; }.commodity-table-wrap :deep(.instrument-column small) { display: block; color: var(--el-text-color-secondary); font-size: 11px; }
+.commodity-table-wrap { overflow-x: auto; padding: 0; }.commodity-table-wrap :deep(.el-table) { min-width: 950px; font-size: 13px; font-variant-numeric: tabular-nums; }.commodity-table-wrap :deep(.el-table th), .commodity-table-wrap :deep(.el-table td) { height: 36px; padding: 0; white-space: nowrap; }.commodity-table-wrap :deep(.el-table__row) { cursor: pointer; }.commodity-table-wrap :deep(.section-row) { background: #f7f8fa; cursor: default; }.section-label { font-weight: 700; font-size: 13px; }.section-label small { margin-left: 8px; color: var(--el-text-color-secondary); font-weight: 400; font-size: 11px; }.commodity-table-wrap :deep(.instrument-column .cell) { text-align: left; }.commodity-table-wrap :deep(.instrument-column strong) { display: block; font-weight: 600; }.commodity-table-wrap :deep(.instrument-column small) { display: block; color: var(--el-text-color-secondary); font-size: 11px; }
 /* 对齐 market-daily 邮件: 触发分位加粗红/绿(分化按混合=红), 无数据灰 */
 .tone-high { color: #D93026; font-weight: 700; }.tone-low { color: #1AAD19; font-weight: 700; }.tone-divergent { color: #D93026; font-weight: 700; }.tone-muted { color: #888888; }.tone-neutral { color: var(--el-text-color-regular); }
 .status-pill { font-weight: 700; }.commodity-state { text-align: center; padding: 56px 20px; color: var(--el-text-color-secondary); }.commodity-state p { margin: 8px 0 14px; }.error-state { color: #ef4444; }

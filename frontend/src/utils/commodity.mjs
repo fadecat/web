@@ -3,6 +3,25 @@ export const WINDOW_LABELS = {
   d21: '21日', d63: '63日', y1: '1年', y3: '3年', y5: '5年', y10: '10年',
 };
 
+// 对齐 market-daily 邮件板块分组: 顺序与 emoji 同邮件, 未知分类归入其他
+export const COMMODITY_SECTIONS = [
+  { key: '能源与化工', emoji: '🛢' },
+  { key: '黑色建材', emoji: '🏗' },
+  { key: '有色贵金属', emoji: '👑' },
+  { key: '农产品', emoji: '🌾' },
+  { key: '其他', emoji: '🧩' },
+];
+
+export const groupBySection = (rows) => {
+  const known = COMMODITY_SECTIONS.map((section) => section.key);
+  return COMMODITY_SECTIONS
+    .map(({ key, emoji }) => ({
+      key, emoji,
+      rows: rows.filter((row) => (known.includes(row.category) ? row.category : '其他') === key),
+    }))
+    .filter((group) => group.rows.length > 0);
+};
+
 export const statusLabel = (status) => ({
   high: '高位', low: '低位', neutral: '中性', divergent: '周期分化',
   insufficient: '数据不足', stale: '数据滞后', failed: '抓取失败', never: '未初始化',
