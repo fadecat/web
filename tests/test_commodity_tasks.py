@@ -255,6 +255,39 @@ def test_item_budget_expiry_after_first_fetch_does_not_retry(monkeypatch):
     assert db.scalar(select(CommodityDailyPrice)) is None
 
 
+def test_item_budget_is_checked_before_normalizing_late_fetch(monkeypatch):
+    from backend.tasks import commodity_tasks
+
+    _engine, session_factory, db = _db()
+    _seed(db, "RB")
+    calls = []
+    normalized = []
+    clock_values = iter([0.0, 0.0, 0.0, 21.0])
+    monkeypatch.setattr(commodity_tasks, "SessionLocal", session_factory)
+    original_normalize = commodity_tasks._normalize_result
+
+    def fetch(*_args):
+        calls.append(1)
+        return pd.DataFrame({"date": ["2026-09-15"], "close": [1.0]})
+
+    def normalize(raw):
+        normalized.append(raw)
+        return original_normalize(raw)
+
+    monkeypatch.setattr(commodity_tasks, "_normalize_result", normalize)
+    result = commodity_tasks.run_commodity_daily(
+        fetch_runner=fetch,
+        monotonic=lambda: next(clock_values),
+        started_at=0.0,
+        sleep=lambda _: None,
+        random_fn=lambda: 0.0,
+    )
+    assert calls == [1]
+    assert normalized == []
+    assert result["failed_count"] == 1
+    assert db.scalar(select(CommodityDailyPrice)) is None
+
+
 def test_total_deadline_after_fetch_does_not_commit_and_marks_remaining(monkeypatch):
     from backend.tasks import commodity_tasks
 
@@ -312,6 +345,33 @@ def test_failed_state_write_is_reported_when_old_success_cannot_be_replaced(monk
     assert result["state_persist_failed_details"] == [{"code": "RB", "error": "source down"}]
     assert len(mark_attempts) == 2
     assert db.get(CommoditySyncState, "RB").status == "success"
+
+
+def test_state_persist_failure_result_keeps_bounded_codes_and_details(monkeypatch):
+    from backend.tasks import commodity_tasks
+
+    _engine, session_factory, db = _db()
+    codes = [f"F{i:02d}" for i in range(25)]
+    _seed(db, *codes)
+    monkeypatch.setattr(commodity_tasks, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        commodity_tasks.CommodityStore,
+        "mark_failed",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("state db down")),
+    )
+
+    result = commodity_tasks.run_commodity_daily(
+        fetch_runner=lambda code, _market: (_ for _ in ()).throw(
+            RuntimeError(f"source failure {code}")
+        ),
+        sleep=lambda _: None,
+        random_fn=lambda: 0.0,
+    )
+    assert result["failed_count"] == 25
+    assert result["state_persist_failed_count"] == 25
+    assert result["state_persist_failed_codes"] == codes[:20]
+    assert len(result["state_persist_failed_details"]) == 20
+    assert all(set(detail) == {"code", "error"} for detail in result["state_persist_failed_details"])
 
 
 def test_data_management_uses_commodity_1550_policy_for_freshness(monkeypatch):
@@ -395,7 +455,7 @@ def test_pacing_delay_crossing_total_deadline_stops_before_next_fetch(monkeypatc
     _engine, session_factory, db = _db()
     _seed(db, "A", "B")
     fetched = []
-    clock_values = iter([0.0, 0.0, 0.0, 0.0, 1199.0])
+    clock_values = iter([0.0, 0.0, 0.0, 0.0, 0.0, 1199.0])
     monkeypatch.setattr(commodity_tasks, "SessionLocal", session_factory)
 
     def fetch(code, _market):

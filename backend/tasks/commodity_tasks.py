@@ -42,6 +42,8 @@ TASK_TIMEOUT_SEC = 20 * 60
 ITEM_TIMEOUT_SEC = 20
 MAX_FETCH_ATTEMPTS = 3
 RETRY_BACKOFF_SEC = (2.0, 5.0)
+MAX_FAILURE_SUMMARY_ITEMS = 20
+MAX_FAILURE_ERROR_CHARS = 500
 DEFAULT_RETRYABLE_EXCEPTIONS = (
     TimeoutError,
     ConnectionError,
@@ -179,6 +181,9 @@ def _fetch_with_retry(
                 raise _ItemBudgetExceeded(f"commodity item exceeded {item_timeout_sec:g}s target") from exc
             sleep(delay)
             continue
+        # The transport result itself must meet the item/task boundary before
+        # any normalization or storage work begins.
+        check_budget()
         # Normalization is deterministic and deliberately outside the network
         # retry handler. A normalizer raising a transport-shaped exception must
         # still fail this item without re-fetching.
@@ -192,7 +197,7 @@ def _fetch_with_retry(
 
 def _persist_failed(code: str, error: Exception | str, *, attempts: int = 2) -> bool:
     """Persist failure in bounded fresh transactions and report exhaustion."""
-    message = str(error)
+    message = str(error)[:MAX_FAILURE_ERROR_CHARS]
     for attempt in range(max(1, attempts)):
         db = None
         try:
@@ -248,10 +253,12 @@ def _record_failure(counters: _Counters, code: str, error: Exception | str) -> _
     changes = {"failed_count": counters.failed_count + 1}
     if not persisted:
         changes["state_persist_failed_count"] = counters.state_persist_failed_count + 1
-        changes["state_persist_failed_codes"] = counters.state_persist_failed_codes + (code,)
-        changes["state_persist_failed_details"] = counters.state_persist_failed_details + (
-            {"code": code, "error": str(error)[:1000]},
-        )
+        if len(counters.state_persist_failed_codes) < MAX_FAILURE_SUMMARY_ITEMS:
+            changes["state_persist_failed_codes"] = counters.state_persist_failed_codes + (code,)
+        if len(counters.state_persist_failed_details) < MAX_FAILURE_SUMMARY_ITEMS:
+            changes["state_persist_failed_details"] = counters.state_persist_failed_details + (
+                {"code": code, "error": str(error)[:MAX_FAILURE_ERROR_CHARS]},
+            )
     return _replace(counters, **changes)
 
 
