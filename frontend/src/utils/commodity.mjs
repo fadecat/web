@@ -32,8 +32,18 @@ export const formatNumber = (value, digits = 2) => {
   return number.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 };
 
-export const formatPercentile = (value) =>
-  value === null || value === undefined ? '—' : `${formatNumber(value, 1)}%`;
+export const formatPercentile = (value, digits = 1) =>
+  value === null || value === undefined ? '—' : `${formatNumber(value, digits)}%`;
+
+// 对齐 market-daily 邮件端 _fmt_price: 按量级取精度并去尾零(详情页仍用 formatNumber, 不变)
+export const formatPrice = (value) => {
+  if (value === null || value === undefined || value === '') return '—';
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '—';
+  const abs = Math.abs(number);
+  const digits = abs >= 10000 ? 0 : abs >= 1000 ? 2 : abs >= 100 ? 3 : abs >= 1 ? 4 : 6;
+  return number.toFixed(digits).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+};
 
 export const formatDateTime = (value) => {
   if (!value) return '—';

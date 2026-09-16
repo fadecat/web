@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildCommodityChartOption, formatDateTime, formatNumber, filtersFromQuery, isTriggered, isUninitialized,
+  buildCommodityChartOption, formatDateTime, formatNumber, formatPercentile, formatPrice,
+  filtersFromQuery, isTriggered, isUninitialized,
   metricTone, queryFromFilters, renderCommodityChart, statusColor, statusLabel,
 } from './commodity.mjs';
 
@@ -12,6 +13,26 @@ test('commodity status and formatting preserve semantic colors and null placehol
   assert.equal(formatNumber(null), '—');
   assert.equal(formatNumber(12.345, 1), '12.3');
   assert.equal(formatDateTime('2026-09-16T00:00:00+08:00'), '2026-09-16 00:00:00+08:00');
+});
+
+test('email-aligned price precision strips trailing zeros by magnitude', () => {
+  assert.equal(formatPrice(null), '—');
+  assert.equal(formatPrice(12345.6), '12346');      // >=10000: 0 位小数
+  assert.equal(formatPrice(3256), '3256');          // >=1000: 2 位再去尾零
+  assert.equal(formatPrice(4000.5), '4000.5');
+  assert.equal(formatPrice(98.67), '98.67');        // >=1: 4 位再去尾零
+  assert.equal(formatPrice(712.5), '712.5');        // >=100: 3 位再去尾零
+  assert.equal(formatPrice(15.425), '15.425');
+  assert.equal(formatPrice(0.5234), '0.5234');      // <1: 6 位再去尾零
+  assert.equal(formatPrice(0.5), '0.5');
+});
+
+test('percentile digits default keeps detail page while list passes 0', () => {
+  assert.equal(formatPercentile(95), '95.0%');
+  assert.equal(formatPercentile(95, 0), '95%');
+  assert.equal(formatPercentile(93.6, 0), '94%');
+  assert.equal(formatPercentile(91.4, 0), '91%');
+  assert.equal(formatPercentile(null, 0), '—');
 });
 
 test('commodity filters round trip to URL query and detect window triggers', () => {

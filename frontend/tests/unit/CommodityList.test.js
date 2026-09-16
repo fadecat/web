@@ -54,7 +54,8 @@ describe('CommodityList successful API render', () => {
     });
     await flushPromises();
     expect(wrapper.text()).toContain('螺纹钢');
-    expect(wrapper.text()).toContain('95.0%');
+    expect(wrapper.text()).toContain('95%');
+    expect(wrapper.text()).toContain('3256');
     expect(wrapper.find('.tone-muted').exists()).toBe(true);
     expect(renderErrors).toEqual([]);
     wrapper.unmount();

@@ -3,9 +3,9 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { getCommodities, getCommodityOverview } from '../api/commodity';
 import {
-  COMMODITY_WINDOWS, WINDOW_LABELS, filtersFromQuery, formatDateTime, formatNumber,
-  formatPercentile, isTriggered, isUninitialized, metricTone, queryFromFilters,
-  statusColor, statusLabel, statusTone,
+  COMMODITY_WINDOWS, WINDOW_LABELS, filtersFromQuery, formatDateTime,
+  formatPercentile, formatPrice, isTriggered, isUninitialized, metricTone, queryFromFilters,
+  statusLabel, statusTone,
 } from '../utils/commodity.mjs';
 import { createRequestGuard } from '../utils/requestGuard.js';
 
@@ -72,10 +72,19 @@ const onSortChange = ({ prop, order }) => {
 };
 const openDetail = (row) => router.push(`/commodities/${encodeURIComponent(row.code)}`);
 const cell = (row, window) => row[window] || row.windows?.[window] || {};
-const cellText = (row, window) => formatPercentile(cell(row, window).percentile);
+const cellText = (row, window) => formatPercentile(cell(row, window).percentile, 0);
 const cellSignal = (row, window) => cell(row, window).signal;
 const rowStatus = (row) => row.current_status || row.signal || 'never';
 const rowStatusLabel = (row) => row.status_label || statusLabel(rowStatus(row));
+// 对齐 market-daily 商品邮件配色: 高位/周期分化=红, 低位=绿, 中性=正文色, 缺数/滞后/失败=灰
+const EMAIL_STATUS_COLORS = {
+  high: '#D93026', divergent: '#D93026', low: '#1AAD19',
+  neutral: 'var(--el-text-color-regular)',
+};
+const EMAIL_STATUS_EMOJI = { high: '🔴', divergent: '🔴', low: '🟢', neutral: '⚪' };
+const emailStatusColor = (status) => EMAIL_STATUS_COLORS[status] || '#888888';
+const emailStatusEmoji = (status) => EMAIL_STATUS_EMOJI[status] || '';
+const statusCellText = (row) => [emailStatusEmoji(rowStatus(row)), rowStatusLabel(row)].filter(Boolean).join(' ');
 
 watch(() => route.query, (query) => {
   filters.value = filtersFromQuery(query);
@@ -138,12 +147,12 @@ onBeforeUnmount(() => requestGuard.invalidate());
           <template #default="{ row }"><strong>{{ row.name }}</strong><small>{{ row.code }}</small></template>
         </el-table-column>
         <el-table-column prop="category" label="分类" width="100"><template #default="{ row }">{{ row.category || '—' }}</template></el-table-column>
-        <el-table-column prop="latest_price" label="最新价" width="110" sortable="custom" align="right"><template #default="{ row }">{{ formatNumber(row.latest_price) }}</template></el-table-column>
+        <el-table-column prop="latest_price" label="最新价" width="110" sortable="custom" align="right"><template #default="{ row }">{{ formatPrice(row.latest_price) }}</template></el-table-column>
         <el-table-column prop="data_date" label="数据日期" width="120" sortable="custom"><template #default="{ row }">{{ row.data_date || '—' }}</template></el-table-column>
         <el-table-column v-for="window in COMMODITY_WINDOWS" :key="window" :prop="window" :label="WINDOW_LABELS[window]" width="90" sortable="custom" align="right">
           <template #default="{ row }"><span :class="`tone-${metricTone(rowStatus(row), cellSignal(row, window))}`">{{ cellText(row, window) }}</span></template>
         </el-table-column>
-        <el-table-column prop="current_status" label="当前状态" fixed="right" width="100"><template #default="{ row }"><span class="status-pill" :style="{ color: statusColor(rowStatus(row)) }">{{ rowStatusLabel(row) }}</span></template></el-table-column>
+        <el-table-column prop="current_status" label="当前状态" fixed="right" width="110"><template #default="{ row }"><span class="status-pill" :style="{ color: emailStatusColor(rowStatus(row)) }">{{ statusCellText(row) }}</span></template></el-table-column>
       </el-table>
     </div>
   </section>
@@ -158,12 +167,13 @@ onBeforeUnmount(() => requestGuard.invalidate());
 .commodity-summary div { display: flex; flex-direction: column; gap: 3px; min-width: 72px; }
 .commodity-summary span { color: var(--el-text-color-secondary); font-size: 12px; }
 .commodity-summary strong { font-size: 18px; font-variant-numeric: tabular-nums; }
-.summary-high strong { color: #ef4444; }.summary-low strong { color: #2563eb; }.summary-alert strong { color: #909399; }
+.summary-high strong { color: #D93026; }.summary-low strong { color: #1AAD19; }.summary-alert strong { color: #888888; }
 .commodity-alert { padding: 9px 12px; margin-bottom: 14px; border: 1px solid #e5e7eb; border-radius: 6px; background: #fafafa; color: #6b7280; font-size: 12px; }
 .commodity-filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; padding: 12px; }
 .commodity-filters .el-input { width: 190px; }.commodity-filters .el-select { width: 130px; }
 .commodity-table-wrap { overflow-x: auto; padding: 0; }.commodity-table-wrap :deep(.el-table) { min-width: 1050px; font-size: 13px; font-variant-numeric: tabular-nums; }.commodity-table-wrap :deep(.el-table th), .commodity-table-wrap :deep(.el-table td) { height: 36px; padding: 0; white-space: nowrap; }.commodity-table-wrap :deep(.el-table__row) { cursor: pointer; }.commodity-table-wrap :deep(.instrument-column .cell) { text-align: left; }.commodity-table-wrap :deep(.instrument-column strong) { display: block; font-weight: 600; }.commodity-table-wrap :deep(.instrument-column small) { display: block; color: var(--el-text-color-secondary); font-size: 11px; }
-.tone-high { color: #ef4444; }.tone-low { color: #2563eb; }.tone-divergent { color: #f97316; }.tone-muted { color: #909399; }.tone-neutral { color: var(--el-text-color-regular); }
-.status-pill { font-weight: 600; }.commodity-state { text-align: center; padding: 56px 20px; color: var(--el-text-color-secondary); }.commodity-state p { margin: 8px 0 14px; }.error-state { color: #ef4444; }
+/* 对齐 market-daily 邮件: 触发分位加粗红/绿(分化按混合=红), 无数据灰 */
+.tone-high { color: #D93026; font-weight: 700; }.tone-low { color: #1AAD19; font-weight: 700; }.tone-divergent { color: #D93026; font-weight: 700; }.tone-muted { color: #888888; }.tone-neutral { color: var(--el-text-color-regular); }
+.status-pill { font-weight: 700; }.commodity-state { text-align: center; padding: 56px 20px; color: var(--el-text-color-secondary); }.commodity-state p { margin: 8px 0 14px; }.error-state { color: #ef4444; }
 @media (max-width: 767px) { .commodity-heading h1 { font-size: 18px; }.commodity-filters .el-input { width: 100%; }.commodity-filters .el-select { flex: 1; min-width: 110px; }.commodity-summary { gap: 16px; } }
 </style>
