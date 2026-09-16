@@ -12,7 +12,7 @@ from backend.services.commodity_queries import CommodityQueryService
 router = APIRouter()
 
 WindowCode = Literal["d21", "d63", "y1", "y3", "y5", "y10"]
-SignalCode = Literal["high", "low", "neutral", "stale", "failed"]
+SignalCode = Literal["high", "low", "neutral", "divergent", "insufficient", "stale", "failed"]
 SortCode = Literal["signal", "price", "date", "d21", "d63", "y1", "y3", "y5", "y10"]
 SortOrder = Literal["asc", "desc"]
 RangeCode = Literal["6m", "1y", "3y", "5y", "10y", "all"]

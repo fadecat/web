@@ -146,6 +146,8 @@ class CommodityQueryService:
             return "failed", "抓取失败", data_state
         if sync_status == "suspicious":
             return "stale", "数据异常", data_state
+        if sync_status == "stale":
+            return "stale", "数据滞后", data_state
         if data_state == "stale":
             return "stale", "数据滞后", data_state
         if data_state == "lagging":
@@ -189,7 +191,7 @@ class CommodityQueryService:
         windows = self._windows(item)
         signal, label, data_state = self._combined_status(item, windows)
         sync = self._sync_dict(item.sync)
-        return {
+        row = {
             "code": item.instrument.code,
             "name": item.instrument.name,
             "market": item.instrument.market,
@@ -212,6 +214,20 @@ class CommodityQueryService:
             "sync_last_error": sync["last_error"],
             "sync_source_latest_date": sync["source_latest_date"],
         }
+        # Keep the six window keys flat for the compact list contract while
+        # retaining ``windows`` for detail consumers and backwards
+        # compatibility.  Each value is an object so percentile, sample
+        # count, and persisted signal remain available without extra reads.
+        row.update({code: windows[code] for code in WINDOW_CODES})
+        row.update(
+            {
+                "current_status": signal,
+                "sync_status": sync["status"],
+                "last_success_at": sync["last_success_at"],
+                "last_error": sync["last_error"],
+            }
+        )
+        return row
 
     def _all_rows(self) -> list[dict[str, Any]]:
         return [self._row(item) for item in self._batch_items(self._instruments())]
@@ -335,7 +351,12 @@ class CommodityQueryService:
             if start is not None:
                 signal_stmt = signal_stmt.where(CommodityPercentileDaily.trade_date >= start)
             signals = self.db.scalars(
-                signal_stmt.order_by(CommodityPercentileDaily.trade_date, CommodityPercentileDaily.window_days, CommodityPercentileDaily.window_code, CommodityPercentileDaily.id)
+                signal_stmt.where(CommodityPercentileDaily.signal.in_(("high", "low"))).order_by(
+                    CommodityPercentileDaily.trade_date,
+                    CommodityPercentileDaily.window_days,
+                    CommodityPercentileDaily.window_code,
+                    CommodityPercentileDaily.id,
+                )
             ).all()
         return {
             "code": code,

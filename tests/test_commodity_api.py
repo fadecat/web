@@ -38,6 +38,12 @@ def test_commodity_query_service_pivots_state_and_history(db):
     rows = service.list_instruments()
     assert [row["code"] for row in rows] == ["B", "A"]
     row_a = next(row for row in rows if row["code"] == "A")
+    assert row_a["d21"]["percentile"] == 95
+    assert row_a["d63"] == {"percentile": None, "sample_count": None, "signal": None}
+    assert row_a["current_status"] == "divergent"
+    assert row_a["sync_status"] == "success"
+    assert row_a["last_success_at"] == "2026-09-15T16:00:00"
+    assert row_a["last_error"] is None
     assert row_a["windows"]["d21"]["signal"] == "high"
     assert row_a["windows"]["y10"]["percentile"] is None
     assert row_a["signal"] == "divergent"
@@ -127,6 +133,16 @@ def test_signal_filter_keeps_overall_failed_stale_independent_of_window(db):
     assert [row["code"] for row in service.list_instruments(signal="failed", window="y5")] == ["A"]
     assert [row["code"] for row in service.list_instruments(signal="stale", window="y5")] == ["B"]
     assert [row["code"] for row in service.list_instruments(signal="high", window="d21")] == ["A"]
+
+
+def test_sync_stale_overrides_persisted_signal(db):
+    _seed(db)
+    db.get(CommoditySyncState, "A").status = "stale"
+    db.commit()
+    from backend.services.commodity_queries import CommodityQueryService
+
+    row = next(row for row in CommodityQueryService(db, now=datetime(2026, 9, 15, 16)).list_instruments() if row["code"] == "A")
+    assert row["current_status"] == "stale"
 
 
 def test_signal_sort_has_explicit_order_and_nulls_stay_last(db):
