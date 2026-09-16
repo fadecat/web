@@ -39,24 +39,46 @@ it('uses compact default columns in the requested order and keeps operation fixe
  w.unmount();
 });
 
-it('persists density and optional columns while retaining defaults on reset',async()=>{
-  localStorage.setItem('cb-selection-results-preferences',JSON.stringify({density:'comfortable',columns:['price','stock_financial_profit']}));
+it('persists density only and ignores legacy column preferences',async()=>{
+  // 旧版列设置写入的 columns 偏好不再生效: 全列恒定渲染, localStorage 只留密度
+  localStorage.setItem('cb-selection-results-preferences',JSON.stringify({density:'comfortable',columns:['price']}));
   const w=mountResults({result:{rows:[{code:'1',name:'甲',stock_financial:{profit_average:1}}],excluded_rows:[],meta:{}}});
   await flushPromises();
   expect(w.find('.density-comfortable').exists()).toBe(true);
-  expect(w.text()).toContain('代码'); expect(w.text()).toContain('名称');
-  expect(w.find('.el-table').text()).toContain('净利润增长');
- expect(localStorage.getItem('cb-selection-results-preferences')).toContain('comfortable');
- const densityButton=w.findAll('button').find((b)=>b.text().includes('紧凑密度'));
- await densityButton.trigger('click');
- expect(w.find('.density-compact').exists()).toBe(true);
- expect(localStorage.getItem('cb-selection-results-preferences')).toContain('compact');
- await w.findAll('button').find((b)=>b.text()==='列设置').trigger('click');
- w.vm.toggleColumn('total_score');
- expect(JSON.parse(localStorage.getItem('cb-selection-results-preferences')).columns).toContain('total_score');
- w.vm.resetColumns();
- expect(JSON.parse(localStorage.getItem('cb-selection-results-preferences')).columns).not.toContain('total_score');
- w.unmount();
+  const headers=w.findAll('.el-table th .cell').map((el)=>el.text()).filter(Boolean);
+  expect(headers).toContain('行业'); // 若仍读 columns:['price'], 行业不会渲染
+  expect(headers.some((h)=>h.startsWith('净利润增长'))).toBe(true); // 表头带 ⓘ 后缀
+  expect(w.findAll('button').some((b)=>b.text()==='列设置')).toBe(false);
+  const densityButton=w.findAll('button').find((b)=>b.text().includes('紧凑密度'));
+  await densityButton.trigger('click');
+  expect(w.find('.density-compact').exists()).toBe(true);
+  expect(JSON.parse(localStorage.getItem('cb-selection-results-preferences'))).toEqual({density:'compact'});
+  w.unmount();
+});
+
+it('renders all columns in metadata order with 4 left + 1 right pinned on desktop',async()=>{
+  const w=mountResults({result:{rows:[{code:'1',name:'甲',stock_nm:'股',pb:1,convert_price:10}],excluded_rows:[],meta:{}}});
+  await flushPromises();
+  const headers=w.findAll('.el-table th .cell').map((el)=>el.text()).filter(Boolean);
+  ['转股价','规模(亿)','市净率','赎回价','得分'].forEach((h)=>expect(headers).toContain(h));
+  expect(headers.indexOf('转股价值')).toBeLessThan(headers.indexOf('转股价'));
+  expect(headers.indexOf('双低')).toBeLessThan(headers.indexOf('转股价值'));
+  expect(headers.lastIndexOf('操作')).toBe(headers.length-1);
+  const fixed=w.findAllComponents({name:'ElTableColumn'}).map((c)=>c.props('fixed'));
+  expect(fixed.filter(Boolean)).toEqual(['left','left','left','left','right']);
+  w.unmount();
+});
+
+it('pins only the name column on mobile so the body stays touch-scrollable',async()=>{
+  // 手机断点: 4左+1右固定列(448px)会盖满可视区导致滑动零响应, 只保留名称列固定
+  const realMatchMedia=window.matchMedia;
+  window.matchMedia=vi.fn().mockReturnValue({matches:true,addEventListener:vi.fn(),removeEventListener:vi.fn()});
+  const w=mountResults({result:rowsPage});
+  await flushPromises();
+  const fixed=w.findAllComponents({name:'ElTableColumn'}).map((c)=>c.props('fixed'));
+  expect(fixed.filter(Boolean)).toEqual(['left']);
+  window.matchMedia=realMatchMedia;
+  w.unmount();
 });
 
 it('maps 净利润增长 to eps_growth_ttm for positive and negative sorting',async()=>{
@@ -67,26 +89,6 @@ it('maps 净利润增长 to eps_growth_ttm for positive and negative sorting',as
  w.vm.sortBy('stock_financial_eps_growth_ttm','ascending');
  await flushPromises();
  expect(w.vm.rows.map((row)=>row.code)).toEqual(['2','1']);
- w.unmount();
-});
-
-it('changes default and optional columns through checkbox change handlers in metadata order',async()=>{
- const w=mountResults({result:{rows:[{code:'1',name:'甲',stock_nm:'股',pb:1,convert_price:10}],excluded_rows:[],meta:{}}});
- await flushPromises();
- await w.findAll('button').find((b)=>b.text()==='列设置').trigger('click');
- const checkbox=(label)=>w.findAll('.el-checkbox').find((el)=>el.find('.el-checkbox__label').text()===label);
- w.vm.toggleColumn('industry_name');
- await flushPromises();
- expect(w.find('.el-table').text()).not.toContain('行业');
- w.vm.toggleColumn('industry_name');
- await flushPromises();
- expect(w.find('.el-table').text()).toContain('行业');
- w.vm.toggleColumn('convert_price');
- await flushPromises();
- const headers=w.findAll('.el-table th .cell').map((el)=>el.text()).filter(Boolean);
- expect(headers).toContain('转股价');
- expect(headers.indexOf('转股价值')).toBeLessThan(headers.indexOf('转股价'));
- expect(checkbox('代码').classes()).toContain('is-disabled');
  w.unmount();
 });
 
@@ -147,7 +149,6 @@ it('shows error state and allows retry on hover after failure',async()=>{
 });
 
 it('marks revised bonds with stars and loads logs on click popover only',async()=>{
- localStorage.setItem('cb-selection-results-preferences',JSON.stringify({columns:['convert_price']}));
  const adjRows={rows:[{code:'1',name:'甲',convert_price:3.47,adj_scnt:2},{code:'2',name:'乙',convert_price:10.5,adj_scnt:0}],excluded_rows:[],meta:{}};
  getCbAdjustment.mockResolvedValue({bond_id:'1',items:[{meeting_date:'2026-07-16',price_before:5.26,price_after:3.47,effective_date:'2026-07-17',floor_price:3.47}]});
  const w=mountResults({result:adjRows});
@@ -169,7 +170,6 @@ it('marks revised bonds with stars and loads logs on click popover only',async()
 });
 
 it('shows adjustment error state and retries on reopen',async()=>{
- localStorage.setItem('cb-selection-results-preferences',JSON.stringify({columns:['convert_price']}));
  getCbAdjustment.mockRejectedValueOnce(new Error('boom'));
  const w=mountResults({result:{rows:[{code:'1',name:'甲',convert_price:3.47,adj_scnt:1}],excluded_rows:[],meta:{}}});
  await flushPromises();

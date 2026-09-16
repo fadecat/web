@@ -19,7 +19,7 @@ describe('转债选债完整页面',()=>{
  it('initially executes V3 once and renders actual industry and yield values',async()=>{
   const w=await page();expect(api.screenBonds).toHaveBeenCalledTimes(1);expect(api.screenBonds.mock.calls[0]).toEqual([{...t,schema_version:3},'live']);
   expect(w.text()).toContain('银行');expect(w.text()).toContain('测试正股');expect(w.text()).toContain('已强赎');expect(w.find('.soe-badge').text()).toBe('央');expect(w.find('.soe-badge').attributes('title')).toBe('中央国有企业');const hrefs=w.findAll('a.ext-link').map(a=>a.attributes('href'));expect(hrefs).toContain('https://www.jisilu.cn/data/convert_bond_detail/110001');expect(hrefs).toContain('https://emweb.securities.eastmoney.com/pc_hsf10/pages/index.html?type=web&code=SH600000&color=b#/cpbd');expect(w.text()).toContain('10.00%');expect(w.text()).toContain('全部符合');
-  expect(w.text()).toContain('到期收益');expect(w.text()).toContain('净利润增长');expect(w.text()).toContain('列设置');w.unmount();
+  expect(w.text()).toContain('到期收益');expect(w.text()).toContain('净利润增长');expect(w.text()).not.toContain('列设置');w.unmount();
  });
  it('pending migration prevents automatic execution and exposes resolution',async()=>{
   api.getFactors.mockResolvedValue({version:3,revision:'r1',active_id:'t1',templates:[{...t,migration_issues:[{id:'i',status:'pending',message:'旧强赎图标待确认',original:{value:['R']}}]}]});
