@@ -17,11 +17,11 @@ const columns=[
  {field:'price',label:'价格',width:68,align:'right',sortable:true},
  {field:'premium_rt',label:'溢价',width:68,align:'right',sortable:true},
  {field:'simple_maturity_yield_pct',label:'到期收益',width:82,align:'right',sortable:true},
+ {field:'year_left',label:'剩余年限',width:78,align:'right',sortable:true},
+ {field:'curr_iss_amt',label:'规模(亿)',width:78,align:'right',sortable:true},
  {field:'dblow',label:'双低',width:68,align:'right',sortable:true},
  {field:'convert_value',label:'转股价值',width:82,align:'right',sortable:true},
  {field:'convert_price',label:'转股价',width:78,align:'right',sortable:true},
- {field:'year_left',label:'剩余年限',width:78,align:'right',sortable:true},
- {field:'curr_iss_amt',label:'规模(亿)',width:78,align:'right',sortable:true},
  {field:'pb',label:'市净率',width:70,align:'right',sortable:true},
  {field:'redeem',label:'强赎',width:78,align:'center',sortable:false},
  {field:'stock_financial_eps_growth_ttm',label:'净利润增长',width:94,align:'right',sortable:true},
@@ -41,8 +41,8 @@ const _syncMobile=e=>{isMobile.value=e.matches;};
 onMounted(()=>{if(typeof matchMedia!=='function')return;_mql=matchMedia('(max-width:700px)');_syncMobile(_mql);_mql.addEventListener&&_mql.addEventListener('change',_syncMobile);});
 onBeforeUnmount(()=>{_mql&&_mql.removeEventListener&&_mql.removeEventListener('change',_syncMobile);});
 const fixedOf=c=>c.field==='name'?'left':(isMobile.value?false:(c.fixed||false));
-// 列序: 标识(排名/代码/名称/行业/评级)→股侧(正股名称/正股)→核心五联(价格/溢价/收益率/年限/规模相邻)
-// →转换链(转股价/转股价值)→打分(双低)→债性(赎回价)→属性(市净率/强赎)→得分。
+// 列序: 标识(排名/代码/名称/行业/评级)→股侧(正股名称/正股)→核心五联(价格/溢价/到期收益/剩余年限/规模相邻)
+// →打分(双低)→转换链(转股价值/转股价)→属性(市净率/强赎/净利润增长)→债性(赎回价)→得分。
 // 重点列标题着色: 溢价/收益率是选债核心输出, 表头橙加粗突出; 价格列数值加粗。
 const hlHeads=new Set(['premium_rt','simple_maturity_yield_pct']);
 const numberFields=new Set(['price','sprice','redeem_price','simple_maturity_yield_pct','dblow','premium_rt','curr_iss_amt','convert_price','convert_value','year_left','pb','total_score','stock_financial_eps_growth_ttm']);

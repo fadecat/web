@@ -62,7 +62,11 @@ it('renders all columns in metadata order with 4 left + 1 right pinned on deskto
   const headers=w.findAll('.el-table th .cell').map((el)=>el.text()).filter(Boolean);
   ['转股价','规模(亿)','市净率','赎回价','得分'].forEach((h)=>expect(headers).toContain(h));
   expect(headers.indexOf('转股价值')).toBeLessThan(headers.indexOf('转股价'));
-  expect(headers.indexOf('双低')).toBeLessThan(headers.indexOf('转股价值'));
+  // 核心五联必须相邻且按此顺序: 价格→溢价→到期收益→剩余年限→规模
+  const idx=(label)=>headers.findIndex((h)=>h.startsWith(label)); // 到期收益表头带 ⓘ 后缀
+  const core=['价格','溢价','到期收益','剩余年限','规模(亿)'].map(idx);
+  expect(core).toEqual(core.slice().sort((a,b)=>a-b));
+  expect(core[4]-core[0]).toBe(4);
   expect(headers.lastIndexOf('操作')).toBe(headers.length-1);
   const fixed=w.findAllComponents({name:'ElTableColumn'}).map((c)=>c.props('fixed'));
   expect(fixed.filter(Boolean)).toEqual(['left','left','left','left','right']);
