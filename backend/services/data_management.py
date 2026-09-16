@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -28,6 +28,7 @@ from backend.services.data_status import (
     _freshness_state,
     get_job_runs,
 )
+from backend.services.data_catalog import Policy
 from backend.services.index_universe import SOURCES, load_universe
 
 
@@ -35,9 +36,12 @@ def _dataset_state(latest: date | None, expected: date) -> str:
     return _freshness_state(latest, expected)
 
 
-def build_data_management(db: Session) -> dict:
+def build_data_management(db: Session, now: datetime | None = None) -> dict:
     """数据管理页完整数据: 指数列表(按指数聚合) + 非指数分组 + 任务 + 数据源。"""
     expected = _expected_date()
+    commodity_expected, _commodity_next_due = Policy(
+        "akshare", "commodity_daily", 15, 50
+    ).expected(now)
 
     # ---- 预取各表的按 code 聚合统计(一次查询, 避免逐指数 N+1) ----
     def _agg_map(model, extra=None):
@@ -157,7 +161,11 @@ def build_data_management(db: Session) -> dict:
         commodity_entities = []
         for instrument in commodity_instruments:
             latest, first, count = prices.get(instrument.code, (None, None, 0))
-            state = "disabled" if not instrument.enabled else _dataset_state(latest, expected)
+            state = (
+                "disabled"
+                if not instrument.enabled
+                else _dataset_state(latest, commodity_expected)
+            )
             commodity_entities.append({
                 "label": f"{instrument.name} {instrument.code}",
                 "instrument_code": instrument.code,
@@ -172,14 +180,20 @@ def build_data_management(db: Session) -> dict:
                 "count": count,
                 "unit": "条",
             })
-        states_for_group = [entity["state"] for entity in commodity_entities]
+        states_for_group = [
+            entity["state"] for entity in commodity_entities if entity["enabled"]
+        ]
         priority = {"fresh": 0, "stale": 1, "lagging": 2, "no_data": 3, "disabled": 4}
         non_index_groups.append({
             "label": "商品价格与分位",
             "source": "akshare",
             "job_id": "commodity_daily",
             "schedule": "交易日 15:50",
-            "state": max(states_for_group, key=lambda value: priority[value]),
+            "state": (
+                max(states_for_group, key=lambda value: priority[value])
+                if states_for_group
+                else "disabled"
+            ),
             "entities": commodity_entities,
         })
 

@@ -249,7 +249,18 @@ def get_dataset_freshness(db: Session) -> list[dict]:
                 last_error=state.last_error if state else None,
             )
             entities.append(entity)
-        groups.append(group("商品价格与分位", entities))
+        commodity_group = group("商品价格与分位", entities)
+        enabled_states = [
+            entity["state"] for entity in entities if entity.get("enabled", True)
+        ]
+        if not enabled_states:
+            commodity_group["state"] = "disabled"
+        else:
+            commodity_group["state"] = max(
+                enabled_states,
+                key={"fresh": 1, "stale": 2, "lagging": 3, "no_data": 4}.get,
+            )
+        groups.append(commodity_group)
 
     return groups
 

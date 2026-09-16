@@ -26,6 +26,14 @@ MAX_FETCH_ATTEMPTS = 3
 RETRY_BACKOFF_SEC = (2.0, 5.0)
 
 
+class _ItemBudgetExceeded(TimeoutError):
+    """The current item consumed its complete synchronous budget."""
+
+
+class _TaskDeadlineExceeded(TimeoutError):
+    """The task deadline elapsed; no new source request may start."""
+
+
 @dataclass(frozen=True)
 class _Counters:
     total: int = 0
@@ -36,8 +44,11 @@ class _Counters:
     inserted_rows: int = 0
     revised_rows: int = 0
     percentile_rows: int = 0
+    state_persist_failed_count: int = 0
+    state_persist_failed_codes: tuple[str, ...] = ()
+    state_persist_failed_details: tuple[dict[str, str], ...] = ()
 
-    def result(self) -> dict[str, int]:
+    def result(self) -> dict[str, object]:
         return {
             "total": self.total,
             "success_count": self.success_count,
@@ -49,6 +60,9 @@ class _Counters:
             "percentile_rows": self.percentile_rows,
             # run_logger uses this key to derive success/partial/failed.
             "fail_count": self.failed_count,
+            "state_persist_failed_count": self.state_persist_failed_count,
+            "state_persist_failed_codes": list(self.state_persist_failed_codes),
+            "state_persist_failed_details": list(self.state_persist_failed_details),
         }
 
 
@@ -95,43 +109,85 @@ def _fetch_with_retry(
 ) -> list[CommodityPriceRecord]:
     """Fetch one item; validation errors are terminal, transport errors retry."""
     item_started = monotonic()
+    item_deadline = item_started + item_timeout_sec
     last_error: Exception | None = None
+
+    def check_budget() -> None:
+        now = monotonic()
+        if now >= deadline:
+            raise _TaskDeadlineExceeded("commodity task deadline exceeded")
+        if now >= item_deadline:
+            raise _ItemBudgetExceeded(f"commodity item exceeded {item_timeout_sec:g}s target")
+
     for attempt in range(MAX_FETCH_ATTEMPTS):
-        if monotonic() >= deadline:
-            raise TimeoutError("commodity task deadline exceeded")
+        check_budget()
         try:
             raw = _call_fetch(fetcher, instrument)
             rows = _normalize_result(raw)
-            elapsed = monotonic() - item_started
-            if elapsed > item_timeout_sec:
-                raise TimeoutError(f"commodity item exceeded {item_timeout_sec:g}s target")
-            return rows
         except ValueError:
             # CommoditySourceError and all Phase A validation errors are deterministic.
             raise
         except Exception as exc:  # network/transient source failures
             last_error = exc
+            # A slow response has consumed the complete item/task budget.  It is
+            # never re-issued, even when its exception resembles a transport error.
+            check_budget()
             if attempt == MAX_FETCH_ATTEMPTS - 1:
                 raise
             base = RETRY_BACKOFF_SEC[attempt]
             delay = base + max(0.0, min(0.25, float(random_fn()) * 0.25))
-            if monotonic() + delay >= deadline:
-                raise TimeoutError("commodity task deadline exceeded") from exc
+            now = monotonic()
+            if now + delay >= deadline:
+                raise _TaskDeadlineExceeded("commodity task deadline exceeded") from exc
+            if now + delay >= item_deadline:
+                raise _ItemBudgetExceeded(f"commodity item exceeded {item_timeout_sec:g}s target") from exc
             sleep(delay)
+            continue
+        # Successful fetches are also subject to both budgets.  In particular,
+        # do not let data returned after the total deadline reach the store.
+        check_budget()
+        return rows
     raise last_error or RuntimeError("commodity fetch failed")
 
 
-def _persist_failed(code: str, error: Exception | str) -> None:
-    """Persist failure using a fresh transaction after the item transaction rolled back."""
-    db = SessionLocal()
-    try:
-        CommodityStore(db).mark_failed(code, str(error))
-        db.commit()
-    except Exception:
-        db.rollback()
-        logger.exception("[%s] failed to persist commodity failure state", code)
-    finally:
-        db.close()
+def _persist_failed(code: str, error: Exception | str, *, attempts: int = 2) -> bool:
+    """Persist failure in bounded fresh transactions and report exhaustion."""
+    message = str(error)
+    for attempt in range(max(1, attempts)):
+        db = None
+        try:
+            db = SessionLocal()
+            CommodityStore(db).mark_failed(code, message)
+            db.commit()
+            return True
+        except Exception as exc:
+            if db is not None:
+                try:
+                    db.rollback()
+                except Exception as rollback_exc:
+                    logger.error(
+                        "[{}] rollback failed while persisting commodity failure state: {}",
+                        code,
+                        rollback_exc,
+                    )
+            logger.error(
+                "[{}] failed to persist commodity failure state (attempt {}): {}",
+                code,
+                attempt + 1,
+                exc,
+            )
+        finally:
+            if db is not None:
+                try:
+                    db.close()
+                except Exception as close_exc:
+                    logger.error(
+                        "[{}] close failed while persisting commodity failure state: {}",
+                        code,
+                        close_exc,
+                    )
+    logger.error("[{}] commodity failure state persistence exhausted: {}", code, message)
+    return False
 
 
 def _store_one(code: str, rows: Iterable[CommodityPriceRecord]) -> CommodityStoreResult:
@@ -147,6 +203,18 @@ def _store_one(code: str, rows: Iterable[CommodityPriceRecord]) -> CommodityStor
         db.close()
 
 
+def _record_failure(counters: _Counters, code: str, error: Exception | str) -> _Counters:
+    persisted = _persist_failed(code, error)
+    changes = {"failed_count": counters.failed_count + 1}
+    if not persisted:
+        changes["state_persist_failed_count"] = counters.state_persist_failed_count + 1
+        changes["state_persist_failed_codes"] = counters.state_persist_failed_codes + (code,)
+        changes["state_persist_failed_details"] = counters.state_persist_failed_details + (
+            {"code": code, "error": str(error)[:1000]},
+        )
+    return _replace(counters, **changes)
+
+
 def run_commodity_daily(
     *,
     fetch_runner: Callable | None = None,
@@ -158,7 +226,7 @@ def run_commodity_daily(
     started_at: float | None = None,
     task_timeout_sec: float = TASK_TIMEOUT_SEC,
     item_timeout_sec: float = ITEM_TIMEOUT_SEC,
-) -> dict[str, int]:
+) -> dict[str, object]:
     """按 display_order 串行同步 enabled 商品并返回统一任务计数。
 
     AkShare 本身不是可取消的 transport，因此生产执行采用同步调用、调用前后的
@@ -188,11 +256,17 @@ def run_commodity_daily(
     logger.info("=== 商品价格与分位日频任务开始: {} 个品种 ===", len(instruments))
     for index, instrument in enumerate(instruments):
         if monotonic() >= deadline:
-            _persist_failed(instrument.code, "commodity task deadline exceeded before fetch")
-            counters = _replace(counters, failed_count=counters.failed_count + 1)
+            counters = _record_failure(
+                counters,
+                instrument.code,
+                "commodity task deadline exceeded before fetch",
+            )
             for remaining in instruments[index + 1:]:
-                _persist_failed(remaining.code, "commodity task deadline exceeded before fetch")
-                counters = _replace(counters, failed_count=counters.failed_count + 1)
+                counters = _record_failure(
+                    counters,
+                    remaining.code,
+                    "commodity task deadline exceeded before fetch",
+                )
             break
 
         adapter = source_factory() if source_factory is not None else CommoditySourceAdapter()
@@ -226,8 +300,13 @@ def run_commodity_daily(
             logger.info("  [{}] {}: {}", instrument.code, instrument.name, stored.status)
         except Exception as exc:
             logger.error("  [{}] {} 抓取/写入失败: {}", instrument.code, instrument.name, exc)
-            _persist_failed(instrument.code, exc)
-            counters = _replace(counters, failed_count=counters.failed_count + 1)
+            counters = _record_failure(counters, instrument.code, exc)
+            if isinstance(exc, _TaskDeadlineExceeded):
+                for remaining in instruments[index + 1:]:
+                    counters = _record_failure(
+                        counters, remaining.code, "commodity task deadline exceeded before fetch"
+                    )
+                break
 
         if index < len(instruments) - 1 and monotonic() < deadline:
             delay = 2.0 + max(0.0, min(2.0, float(random_fn()) * 2.0))

@@ -75,13 +75,23 @@ def apply_catalog(groups, freshness, now=None):
                     expected_date=expected.isoformat(),
                     next_due_at=next_due.isoformat(),
                     policy_provisional=True,
-                    state=freshness(latest, expected),
+                    state=(
+                        "disabled"
+                        if entity.get("enabled") is False
+                        else freshness(latest, expected)
+                    ),
                 )
                 entities.append(entity)
             group["entities"] = entities
             group["unmanaged_entities"] = []
-            priority = {"fresh": 0, "stale": 1, "lagging": 2, "no_data": 3}
-            group["state"] = max((e["state"] for e in entities), key=lambda s: priority[s], default="no_data")
+            enabled_states = [
+                e["state"] for e in entities if e.get("enabled", True)
+            ]
+            if not enabled_states:
+                group["state"] = "disabled"
+            else:
+                priority = {"fresh": 0, "stale": 1, "lagging": 2, "no_data": 3}
+                group["state"] = max(enabled_states, key=lambda s: priority[s], default="no_data")
             continue
         found = {}
         legacy = []
