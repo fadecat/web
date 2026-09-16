@@ -30,6 +30,7 @@ const menus = [
     items: [
       { path: '/valuation', title: '市场估值', icon: '📊' },
       { path: '/style-rotation', title: '风格轮动', icon: '🔄' },
+      { path: '/commodities', title: '商品监控', icon: '🛢️' },
     ],
   },
   {

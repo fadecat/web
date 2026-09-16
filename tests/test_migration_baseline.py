@@ -10,6 +10,7 @@ import re
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+import sys
 
 from alembic import command
 from alembic.config import Config
@@ -23,6 +24,7 @@ EXPECTED_TABLES = {
     "index_dividend_yield", "cn_bond_yield", "index_daily_quote",
     "cb_index_daily", "cb_daily_snapshot", "cb_redeem_daily", "cb_blacklist",
     "stock_dividend_daily", "stock_financial_snapshot_batch", "stock_financial_snapshot", "jisilu_account",
+    "commodity_instrument", "commodity_daily_price", "commodity_percentile_daily", "commodity_sync_state",
 }
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
@@ -65,7 +67,7 @@ class TestEmptyDatabaseUpgrade:
         _upgrade(db_path)
         _upgrade(db_path)
         with closing(sqlite3.connect(db_path)) as conn:
-            assert conn.execute("select version_num from alembic_version").fetchone() == ("0001",)
+            assert conn.execute("select version_num from alembic_version").fetchone() == ("0002",)
 
     def test_downgrade_to_base_removes_business_tables(self, test_artifact_dir):
         """downgrade 只在临时库测试; 日常回退用备份恢复(见 runbook)。
@@ -88,18 +90,30 @@ class TestEmptyDatabaseUpgrade:
             assert conn.execute("select count(*) from alembic_version").fetchone()[0] == 0
 
     def test_stamp_then_upgrade_on_matching_schema(self, test_artifact_dir):
-        """已有 ORM 结构的库: 先 stamp 0001, 再 upgrade head 无操作(幂等)。"""
+        """已有当前 ORM 结构的库: 先 stamp 0002, 再 upgrade head 无操作。"""
         db_path = test_artifact_dir / "match.db"
         engine = create_engine(f"sqlite:///{db_path.as_posix()}")
         Base.metadata.create_all(engine)
         engine.dispose()
-        _stamp(db_path, "0001")
+        _stamp(db_path, "0002")
         _upgrade(db_path)
         with closing(sqlite3.connect(db_path)) as conn:
-            assert conn.execute("select version_num from alembic_version").fetchone() == ("0001",)
+            assert conn.execute("select version_num from alembic_version").fetchone() == ("0002",)
 
 
 class TestSchemaBaseline:
+    def test_unversioned_matching_baseline_advises_stamp_0001_then_upgrade(self, test_artifact_dir, capsys, monkeypatch):
+        db_path = test_artifact_dir / "baseline-advice.db"
+        engine = create_engine(f"sqlite:///{db_path.as_posix()}")
+        Base.metadata.create_all(engine)
+        engine.dispose()
+        from scripts import check_db_baseline
+
+        monkeypatch.setattr(sys, "argv", ["check_db_baseline", "--database-url", f"sqlite:///{db_path.as_posix()}"])
+        assert check_db_baseline.main() == 0
+        output = capsys.readouterr().out
+        assert "stamp 0001" in output
+        assert "upgrade head" in output
     def test_current_unversioned_database_matches_baseline(self, test_artifact_dir):
         """ORM create_all 的库与初始 revision 结构一致(比对为空)。"""
         db_path = test_artifact_dir / "current.db"

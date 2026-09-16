@@ -14,7 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from sqlalchemy import inspect
+from sqlalchemy import UniqueConstraint, inspect
 
 from scripts.sqlite_readonly import readonly_engine
 
@@ -36,19 +36,20 @@ def _affinity(declared_type: object) -> str:
     return "NUMERIC"
 
 
-def compare_schema(url: str, metadata) -> list[str]:
+def compare_schema(url: str, metadata, *, ignored_tables: set[str] | None = None) -> list[str]:
     """比较目标 SQLite 与 metadata 定义的结构, 返回差异列表(稳定排序)。
 
     只读: engine 是 NullPool + mode=ro; 全部 inspector 调用在 try 内,
     finally 才 dispose(R5-01: 不在 dispose 后继续用 inspector)。
     """
     differences: list[str] = []
+    ignored_tables = set(ignored_tables or ())
 
     engine = readonly_engine(url)
     try:
         inspector = inspect(engine)
-        db_tables = set(inspector.get_table_names()) - MIGRATION_TABLES
-        model_tables = set(metadata.tables.keys()) - MIGRATION_TABLES
+        db_tables = set(inspector.get_table_names()) - MIGRATION_TABLES - ignored_tables
+        model_tables = set(metadata.tables.keys()) - MIGRATION_TABLES - ignored_tables
 
         for t in sorted(db_tables - model_tables):
             differences.append(f"表 {t}: 数据库中多余(ORM 未定义)")
@@ -86,9 +87,9 @@ def compare_schema(url: str, metadata) -> list[str]:
 
             db_uq = {tuple(sorted(u["column_names"])) for u in inspector.get_unique_constraints(t)}
             model_uq = {
-                tuple(sorted([c.name for c in u.columns]))
+                tuple(sorted(c.name for c in u.columns))
                 for u in metadata.tables[t].constraints
-                if hasattr(u, "columns") and getattr(u, "name", None) is not None
+                if isinstance(u, UniqueConstraint) and u.name is not None
             }
             if db_uq != model_uq:
                 differences.append(
@@ -129,7 +130,7 @@ def main() -> int:
     if differences:
         print(f"共 {len(differences)} 处结构差异: 禁止 stamp/upgrade, 先对齐结构或走备份恢复")
         return 1
-    print("结构匹配(只读核对通过), 可显式 stamp 0001")
+    print("结构匹配(只读核对通过), 未版本库请先 stamp 0001, 再 upgrade head")
     return 0
 
 

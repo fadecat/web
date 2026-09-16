@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -22,11 +22,13 @@ from backend.models.valuation import (
     IndexDividendYield,
     IndexValuationSnapshot,
 )
+from backend.models.commodity import CommodityDailyPrice, CommodityInstrument, CommoditySyncState
 from backend.services.data_status import (
     _expected_date,
     _freshness_state,
     get_job_runs,
 )
+from backend.services.data_catalog import Policy
 from backend.services.index_universe import SOURCES, load_universe
 
 
@@ -34,9 +36,12 @@ def _dataset_state(latest: date | None, expected: date) -> str:
     return _freshness_state(latest, expected)
 
 
-def build_data_management(db: Session) -> dict:
+def build_data_management(db: Session, now: datetime | None = None) -> dict:
     """数据管理页完整数据: 指数列表(按指数聚合) + 非指数分组 + 任务 + 数据源。"""
-    expected = _expected_date()
+    expected = _expected_date(now)
+    commodity_expected, _commodity_next_due = Policy(
+        "akshare", "commodity_daily", 15, 50
+    ).expected(now)
 
     # ---- 预取各表的按 code 聚合统计(一次查询, 避免逐指数 N+1) ----
     def _agg_map(model, extra=None):
@@ -135,6 +140,62 @@ def build_data_management(db: Session) -> dict:
         _single(CbRedeemDaily, "强赎列表"),
         _single(CbIndexDaily, "转债等权指数"),
     ]
+
+    commodity_instruments = db.execute(
+        select(CommodityInstrument).order_by(CommodityInstrument.display_order, CommodityInstrument.code)
+    ).scalars().all()
+    if commodity_instruments:
+        price_rows = db.execute(
+            select(
+                CommodityDailyPrice.instrument_code,
+                func.max(CommodityDailyPrice.trade_date),
+                func.min(CommodityDailyPrice.trade_date),
+                func.count(),
+            ).group_by(CommodityDailyPrice.instrument_code)
+        ).all()
+        prices = {str(code): (latest, first, count) for code, latest, first, count in price_rows}
+        states = {
+            row.instrument_code: row
+            for row in db.execute(select(CommoditySyncState)).scalars().all()
+        }
+        commodity_entities = []
+        for instrument in commodity_instruments:
+            latest, first, count = prices.get(instrument.code, (None, None, 0))
+            state = (
+                "disabled"
+                if not instrument.enabled
+                else _dataset_state(latest, commodity_expected)
+            )
+            commodity_entities.append({
+                "label": f"{instrument.name} {instrument.code}",
+                "instrument_code": instrument.code,
+                "source": "akshare",
+                "job_id": "commodity_daily",
+                "schedule": "交易日 15:50",
+                "enabled": bool(instrument.enabled),
+                "state": state,
+                "sync_status": states[instrument.code].status if instrument.code in states else "never",
+                "latest_date": latest.isoformat() if latest else None,
+                "first_date": first.isoformat() if first else None,
+                "count": count,
+                "unit": "条",
+            })
+        states_for_group = [
+            entity["state"] for entity in commodity_entities if entity["enabled"]
+        ]
+        priority = {"fresh": 0, "stale": 1, "lagging": 2, "no_data": 3, "disabled": 4}
+        non_index_groups.append({
+            "label": "商品价格与分位",
+            "source": "akshare",
+            "job_id": "commodity_daily",
+            "schedule": "交易日 15:50",
+            "state": (
+                max(states_for_group, key=lambda value: priority[value])
+                if states_for_group
+                else "disabled"
+            ),
+            "entities": commodity_entities,
+        })
 
     # ---- 数据源 ----
     def _source_index_count(source_id):

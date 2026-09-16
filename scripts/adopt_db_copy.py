@@ -233,7 +233,7 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
     from alembic.config import Config
     from alembic.runtime.migration import MigrationContext
     from alembic.script import ScriptDirectory
-    from sqlalchemy import create_engine
+    from sqlalchemy import MetaData, create_engine, inspect, text
 
     from backend.models.database import Base
     from backend.models import app_setting, data_status, jisilu_account, jisilu_stock, valuation  # noqa: F401
@@ -242,6 +242,16 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
     from scripts.verify_db_restore import verify_restore
 
     migrations_dir = Path(__file__).resolve().parent.parent / "migrations"
+    commodity_tables = {
+        "commodity_instrument",
+        "commodity_daily_price",
+        "commodity_percentile_daily",
+        "commodity_sync_state",
+    }
+    legacy_metadata = MetaData()
+    for table in Base.metadata.tables.values():
+        if table.name not in commodity_tables:
+            table.to_metadata(legacy_metadata)
 
     def _cfg() -> Config:
         cfg = Config()
@@ -253,7 +263,42 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
         return verify_restore(source, backup_copy)
 
     def _compare():
+        if revision == "0001":
+            _metadata_for_backup()
+            return compare_schema(
+                f"sqlite:///{backup_copy.as_posix()}",
+                legacy_metadata,
+                ignored_tables=commodity_tables,
+            )
         return compare_schema(f"sqlite:///{backup_copy.as_posix()}", Base.metadata)
+
+    def _metadata_for_backup():
+        if revision == "0001":
+            eng = create_engine(f"sqlite:///{backup_copy.as_posix()}")
+            try:
+                with eng.connect() as conn:
+                    inspector = inspect(conn)
+                    existing = commodity_tables & set(inspector.get_table_names())
+                    nonempty = [
+                        name
+                        for name in sorted(existing)
+                        if conn.execute(text(f"SELECT 1 FROM {name} LIMIT 1")).first() is not None
+                    ]
+            finally:
+                eng.dispose()
+            if nonempty:
+                raise RuntimeError(
+                    "unversioned 0001 adoption refuses non-empty commodity tables: "
+                    + ", ".join(nonempty)
+                )
+            return legacy_metadata
+        eng = create_engine(f"sqlite:///{backup_copy.as_posix()}")
+        try:
+            with eng.connect() as conn:
+                has_commodity_schema = bool(commodity_tables & set(inspect(conn).get_table_names()))
+        finally:
+            eng.dispose()
+        return Base.metadata if has_commodity_schema else legacy_metadata
 
     def _stamp():
         command.stamp(_cfg(), revision)
@@ -261,11 +306,16 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
 
     def _revision():
         # Task 3 显式 revision 策略: 源未版本化 + 副本等于指定 revision
+        if revision == "0001":
+            return verify_restore(
+                source,
+                backup_copy,
+                legacy_metadata,
+                expected_backup_revision=revision,
+                ignored_tables=commodity_tables,
+            )
         return verify_restore(
-            source,
-            backup_copy,
-            Base.metadata,
-            expected_backup_revision=revision,
+            source, backup_copy, Base.metadata, expected_backup_revision=revision
         )
 
     def _current_revision() -> "str | None":
@@ -278,8 +328,8 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
             eng.dispose()
 
     def _upgrade():
-        command.upgrade(_cfg(), "head")
         heads = ScriptDirectory.from_config(_cfg()).get_heads()
+        command.upgrade(_cfg(), "head")
         current = _current_revision()
         if current not in heads:
             raise RuntimeError(

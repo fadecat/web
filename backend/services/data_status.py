@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.models.data_status import TaskRunLog
+from backend.models.commodity import CommodityDailyPrice, CommodityInstrument, CommoditySyncState
 from backend.models.jisilu_stock import StockDividendDaily
 from backend.models.valuation import (
     CbDailySnapshot,
@@ -34,6 +35,7 @@ JOBS: dict[str, dict[str, str]] = {
     "cb_index_daily": {"name": "转债等权指数", "schedule": "每天 15:04"},
     "cb_list_daily": {"name": "转债全量快照", "schedule": "交易日 15:06"},
     "stock_dividend_daily": {"name": "高股息股票快照", "schedule": "交易日 15:08"},
+    "commodity_daily": {"name": "商品价格与分位", "schedule": "交易日 15:50"},
     "stock_financial_monthly": {"name": "全市场正股财务快照", "schedule": "凌晨 02:10（每月两晚均匀跑完）"},
     "style_rotation_daily": {"name": "指数日线（腾讯）", "schedule": "交易日 22:03"},
     "valuation_daily": {"name": "估值截面(易方达分位/股息率 + 东财国债)", "schedule": "每天 22:06"},
@@ -57,15 +59,16 @@ def _trading_days_between(start: date, end: date) -> int:
     return count
 
 
-def _expected_date() -> date:
+def _expected_date(now: datetime | None = None) -> date:
     """数据「应该」更新的日期。
 
     今天是交易日且已过 15:00(最早的任务 15:03 跑)→ 预期今天有数据;
     交易日上午任务还没轮到跑,预期仍是上一交易日,避免满屏黄灯误报;
     非交易日 → 最近一个交易日(周末/节假日数据停更是正常的)。
     """
-    today = date.today()
-    if is_trading_day(today) and datetime.now().hour >= 15:
+    today = now.date() if now is not None else date.today()
+    current_hour = now.hour if now is not None else datetime.now().hour
+    if is_trading_day(today) and current_hour >= 15:
         return today
     return latest_trading_day(today - timedelta(days=1))
 
@@ -81,7 +84,7 @@ def _freshness_state(latest: date | None, expected: date) -> str:
     return "lagging"
 
 
-def get_dataset_freshness(db: Session) -> list[dict]:
+def get_dataset_freshness(db: Session, now: datetime | None = None) -> list[dict]:
     """分组返回数据新鲜度,每组展开到具体指数/表的逐实体明细。
 
     返回结构:
@@ -93,7 +96,7 @@ def get_dataset_freshness(db: Session) -> list[dict]:
     - expected = _expected_date(): 交易日为今天,非交易日为最近一个交易日
       (周末/节假日数据不更新是正常的,不应算滞后)。
     """
-    expected = _expected_date()
+    expected = _expected_date(now)
 
     def make_entity(label, latest, first=None, count=None, unit="条"):
         return {
@@ -216,6 +219,50 @@ def get_dataset_freshness(db: Session) -> list[dict]:
             group(name, [make_entity(name, latest, first, days, unit="天")])
         )
 
+    # 商品按品种独立记录最新行情日期和同步状态，不能把不同品种压成一个日期。
+    instruments = db.execute(
+        select(CommodityInstrument).order_by(CommodityInstrument.display_order, CommodityInstrument.code)
+    ).scalars().all()
+    if instruments:
+        price_rows = db.execute(
+            select(
+                CommodityDailyPrice.instrument_code,
+                func.max(CommodityDailyPrice.trade_date),
+                func.min(CommodityDailyPrice.trade_date),
+                func.count(),
+            ).group_by(CommodityDailyPrice.instrument_code)
+        ).all()
+        price_map = {str(code): (latest, first, count) for code, latest, first, count in price_rows}
+        sync_rows = db.execute(select(CommoditySyncState)).scalars().all()
+        sync_map = {row.instrument_code: row for row in sync_rows}
+        entities = []
+        for instrument in instruments:
+            latest, first, count = price_map.get(instrument.code, (None, None, 0))
+            state = sync_map.get(instrument.code)
+            entity = make_entity(
+                f"{instrument.name} {instrument.code}", latest, first, count,
+            )
+            entity.update(
+                instrument_code=instrument.code,
+                enabled=bool(instrument.enabled),
+                sync_status=state.status if state else "never",
+                consecutive_failures=state.consecutive_failures if state else 0,
+                last_error=state.last_error if state else None,
+            )
+            entities.append(entity)
+        commodity_group = group("商品价格与分位", entities)
+        enabled_states = [
+            entity["state"] for entity in entities if entity.get("enabled", True)
+        ]
+        if not enabled_states:
+            commodity_group["state"] = "disabled"
+        else:
+            commodity_group["state"] = max(
+                enabled_states,
+                key={"fresh": 1, "stale": 2, "lagging": 3, "no_data": 4}.get,
+            )
+        groups.append(commodity_group)
+
     return groups
 
 
@@ -331,7 +378,7 @@ def _next_run_times(now: datetime) -> dict[str, str]:
     return out
 
 
-def build_data_status(db: Session) -> dict:
+def build_data_status(db: Session, now: datetime | None = None) -> dict:
     """状态页完整数据: 数据新鲜度 + 任务运行记录 + 生成时间。
 
     新鲜度按数据目录的来源规则(发布偏移/到期时刻)逐流判定;
@@ -339,10 +386,10 @@ def build_data_status(db: Session) -> dict:
     """
     from backend.services.data_catalog import apply_catalog
 
-    datasets = apply_catalog(get_dataset_freshness(db), _freshness_state)
+    datasets = apply_catalog(get_dataset_freshness(db, now), _freshness_state, now=now)
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "expected_date": _expected_date().isoformat(),
+        "expected_date": _expected_date(now).isoformat(),
         "datasets": datasets,
         "jobs": get_job_runs(db),
     }
