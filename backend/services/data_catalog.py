@@ -2,7 +2,7 @@
 Legacy configuration stays authoritative for instruments; no historical key rewrite.
 """
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 from backend.utils import is_trading_day, latest_trading_day, load_valuation_targets, load_index_eod_targets
 
@@ -53,6 +53,8 @@ def catalog():
         "强赎列表": {"": ("强赎列表", Policy("jisilu", "cb_redeem_daily", 15, 30))},
         "转债等权指数": {"": ("转债等权指数", Policy("jisilu", "cb_index_daily", 15, 30))},
         "高股息股票快照": {"": ("高股息股票快照", Policy("jisilu", "stock_dividend_daily", 15, 30))},
+        # 商品由 get_dataset_freshness 按品种动态展开；此条目提供统一来源/任务/计划契约。
+        "商品价格与分位": {"*": ("商品价格与分位", Policy("akshare", "commodity_daily", 15, 50))},
     }
 
 
@@ -60,6 +62,27 @@ def apply_catalog(groups, freshness, now=None):
     definitions = catalog()
     for group in groups:
         entries = definitions.get(group["name"], {})
+        if group["name"] == "商品价格与分位":
+            policy = entries["*"][1]
+            entities = []
+            for entity in group["entities"]:
+                latest = date.fromisoformat(entity["latest_date"]) if entity.get("latest_date") else None
+                expected, next_due = policy.expected(now)
+                entity.update(
+                    managed=True,
+                    source=policy.source,
+                    job_id=policy.job_id,
+                    expected_date=expected.isoformat(),
+                    next_due_at=next_due.isoformat(),
+                    policy_provisional=True,
+                    state=freshness(latest, expected),
+                )
+                entities.append(entity)
+            group["entities"] = entities
+            group["unmanaged_entities"] = []
+            priority = {"fresh": 0, "stale": 1, "lagging": 2, "no_data": 3}
+            group["state"] = max((e["state"] for e in entities), key=lambda s: priority[s], default="no_data")
+            continue
         found = {}
         legacy = []
         for entity in group["entities"]:
@@ -73,7 +96,6 @@ def apply_catalog(groups, freshness, now=None):
             entity = found.get(code, {"label": f"{name} {code}".strip(), "latest_date": None,
                                      "first_date": None, "count": 0, "unit": "条"})
             expected, next_due = policy.expected(now)
-            from datetime import date
             latest = date.fromisoformat(entity["latest_date"]) if entity["latest_date"] else None
             entity.update(index_code=code, managed=True, source=policy.source, job_id=policy.job_id,
                           expected_date=expected.isoformat(), next_due_at=next_due.isoformat(),

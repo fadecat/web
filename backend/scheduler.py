@@ -213,9 +213,9 @@ def start_scheduler() -> None:
     _startup_integrity_scan()
     logger.info(
         "scheduler started: cb_redeem@15:03, cb_index@15:04, cb_list@15:06, "
-        "stock_dividend@15:08, "
+        "stock_dividend@15:08, commodity@15:50, "
         "style_rotation@22:03, valuation@22:06, index_eod@22:09 "
-        "(cb_redeem/cb_index/valuation/index_eod 每个自然日; "
+        "(commodity/其余市场快照仅工作日; cb_redeem/cb_index/valuation/index_eod 每个自然日; "
         "misfire_grace_time=3600, coalesce=True)"
     )
 

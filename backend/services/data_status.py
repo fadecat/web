@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.models.data_status import TaskRunLog
+from backend.models.commodity import CommodityDailyPrice, CommodityInstrument, CommoditySyncState
 from backend.models.jisilu_stock import StockDividendDaily
 from backend.models.valuation import (
     CbDailySnapshot,
@@ -34,6 +35,7 @@ JOBS: dict[str, dict[str, str]] = {
     "cb_index_daily": {"name": "转债等权指数", "schedule": "每天 15:04"},
     "cb_list_daily": {"name": "转债全量快照", "schedule": "交易日 15:06"},
     "stock_dividend_daily": {"name": "高股息股票快照", "schedule": "交易日 15:08"},
+    "commodity_daily": {"name": "商品价格与分位", "schedule": "交易日 15:50"},
     "stock_financial_monthly": {"name": "全市场正股财务快照", "schedule": "每天凌晨 02:10（低峰分片）"},
     "style_rotation_daily": {"name": "指数日线（腾讯）", "schedule": "交易日 22:03"},
     "valuation_daily": {"name": "估值截面(易方达分位/股息率 + 东财国债)", "schedule": "每天 22:06"},
@@ -215,6 +217,39 @@ def get_dataset_freshness(db: Session) -> list[dict]:
         groups.append(
             group(name, [make_entity(name, latest, first, days, unit="天")])
         )
+
+    # 商品按品种独立记录最新行情日期和同步状态，不能把不同品种压成一个日期。
+    instruments = db.execute(
+        select(CommodityInstrument).order_by(CommodityInstrument.display_order, CommodityInstrument.code)
+    ).scalars().all()
+    if instruments:
+        price_rows = db.execute(
+            select(
+                CommodityDailyPrice.instrument_code,
+                func.max(CommodityDailyPrice.trade_date),
+                func.min(CommodityDailyPrice.trade_date),
+                func.count(),
+            ).group_by(CommodityDailyPrice.instrument_code)
+        ).all()
+        price_map = {str(code): (latest, first, count) for code, latest, first, count in price_rows}
+        sync_rows = db.execute(select(CommoditySyncState)).scalars().all()
+        sync_map = {row.instrument_code: row for row in sync_rows}
+        entities = []
+        for instrument in instruments:
+            latest, first, count = price_map.get(instrument.code, (None, None, 0))
+            state = sync_map.get(instrument.code)
+            entity = make_entity(
+                f"{instrument.name} {instrument.code}", latest, first, count,
+            )
+            entity.update(
+                instrument_code=instrument.code,
+                enabled=bool(instrument.enabled),
+                sync_status=state.status if state else "never",
+                consecutive_failures=state.consecutive_failures if state else 0,
+                last_error=state.last_error if state else None,
+            )
+            entities.append(entity)
+        groups.append(group("商品价格与分位", entities))
 
     return groups
 

@@ -22,6 +22,7 @@ from backend.models.valuation import (
     IndexDividendYield,
     IndexValuationSnapshot,
 )
+from backend.models.commodity import CommodityDailyPrice, CommodityInstrument, CommoditySyncState
 from backend.services.data_status import (
     _expected_date,
     _freshness_state,
@@ -135,6 +136,52 @@ def build_data_management(db: Session) -> dict:
         _single(CbRedeemDaily, "强赎列表"),
         _single(CbIndexDaily, "转债等权指数"),
     ]
+
+    commodity_instruments = db.execute(
+        select(CommodityInstrument).order_by(CommodityInstrument.display_order, CommodityInstrument.code)
+    ).scalars().all()
+    if commodity_instruments:
+        price_rows = db.execute(
+            select(
+                CommodityDailyPrice.instrument_code,
+                func.max(CommodityDailyPrice.trade_date),
+                func.min(CommodityDailyPrice.trade_date),
+                func.count(),
+            ).group_by(CommodityDailyPrice.instrument_code)
+        ).all()
+        prices = {str(code): (latest, first, count) for code, latest, first, count in price_rows}
+        states = {
+            row.instrument_code: row
+            for row in db.execute(select(CommoditySyncState)).scalars().all()
+        }
+        commodity_entities = []
+        for instrument in commodity_instruments:
+            latest, first, count = prices.get(instrument.code, (None, None, 0))
+            state = "disabled" if not instrument.enabled else _dataset_state(latest, expected)
+            commodity_entities.append({
+                "label": f"{instrument.name} {instrument.code}",
+                "instrument_code": instrument.code,
+                "source": "akshare",
+                "job_id": "commodity_daily",
+                "schedule": "交易日 15:50",
+                "enabled": bool(instrument.enabled),
+                "state": state,
+                "sync_status": states[instrument.code].status if instrument.code in states else "never",
+                "latest_date": latest.isoformat() if latest else None,
+                "first_date": first.isoformat() if first else None,
+                "count": count,
+                "unit": "条",
+            })
+        states_for_group = [entity["state"] for entity in commodity_entities]
+        priority = {"fresh": 0, "stale": 1, "lagging": 2, "no_data": 3, "disabled": 4}
+        non_index_groups.append({
+            "label": "商品价格与分位",
+            "source": "akshare",
+            "job_id": "commodity_daily",
+            "schedule": "交易日 15:50",
+            "state": max(states_for_group, key=lambda value: priority[value]),
+            "entities": commodity_entities,
+        })
 
     # ---- 数据源 ----
     def _source_index_count(source_id):
