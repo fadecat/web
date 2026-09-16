@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import calendar
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
@@ -34,12 +35,26 @@ WINDOW_LABELS = {
 }
 RANGE_MONTHS = {"6m": 6, "1y": 12, "3y": 36, "5y": 60, "10y": 120}
 COMMODITY_POLICY = Policy("akshare", "commodity_daily", 15, 50)
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 def _iso(value: date | datetime | None) -> str | None:
     if value is None:
         return None
     return value.isoformat(timespec="seconds") if isinstance(value, datetime) else value.isoformat()
+
+
+def _sync_iso(value: datetime | None) -> str | None:
+    """Serialize UTC-naive sync timestamps as explicit Beijing time.
+
+    CommodityStore deliberately persists UTC without tzinfo.  Attaching UTC
+    before conversion prevents readers from interpreting that value as local
+    time and creating an eight-hour display drift.
+    """
+    if value is None:
+        return None
+    aware = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+    return aware.astimezone(_SHANGHAI).isoformat(timespec="seconds")
 
 
 def _subtract_months(value: date, months: int) -> date:
@@ -172,8 +187,8 @@ class CommodityQueryService:
         return "insufficient", "数据不足", data_state
 
     def _sync_dict(self, state: CommoditySyncState | None) -> dict[str, Any]:
-        attempt = _iso(state.last_attempt_at) if state else None
-        success = _iso(state.last_success_at) if state else None
+        attempt = _sync_iso(state.last_attempt_at) if state else None
+        success = _sync_iso(state.last_success_at) if state else None
         error = state.last_error if state else None
         return {
             "status": state.status if state else "never",
@@ -223,6 +238,7 @@ class CommodityQueryService:
             {
                 "current_status": signal,
                 "sync_status": sync["status"],
+                "last_attempt_at": sync["last_attempt_at"],
                 "last_success_at": sync["last_success_at"],
                 "last_error": sync["last_error"],
             }
@@ -254,7 +270,7 @@ class CommodityQueryService:
                 for row in rows
                 if (
                     row["signal"] == signal
-                    if signal in {"failed", "stale"} or window is None
+                    if signal in {"failed", "stale", "divergent"} or window is None
                     else row["windows"][window]["signal"] == signal
                 )
             ]

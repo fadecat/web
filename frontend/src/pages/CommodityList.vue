@@ -1,11 +1,12 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { getCommodities, getCommodityOverview } from '../api/commodity';
 import {
   COMMODITY_WINDOWS, WINDOW_LABELS, filtersFromQuery, formatDateTime, formatNumber,
   formatPercentile, isTriggered, queryFromFilters, statusColor, statusLabel, statusTone,
 } from '../utils/commodity.mjs';
+import { createRequestGuard } from '../utils/requestGuard.js';
 
 const route = useRoute();
 const router = useRouter();
@@ -14,12 +15,18 @@ const rows = ref([]);
 const overview = ref(null);
 const loading = ref(true);
 const error = ref('');
+const requestGuard = createRequestGuard();
+const sortProp = computed(() => filters.value.sortBy === 'price' ? 'latest_price' : filters.value.sortBy === 'date' ? 'data_date' : filters.value.sortBy);
+const defaultSort = computed(() => sortProp.value === 'signal' ? {} : ({ prop: sortProp.value, order: filters.value.sortOrder === 'asc' ? 'ascending' : 'descending' }));
+const hasActiveFilters = computed(() => Boolean(filters.value.keyword || filters.value.category || filters.value.status || filters.value.window || filters.value.triggered));
+const uninitialized = computed(() => isUninitialized(overview.value, { active: hasActiveFilters.value, rows: rows.value }));
 const categories = computed(() => [...new Set(rows.value.map((row) => row.category).filter(Boolean))]);
 const visibleRows = computed(() => filters.value.triggered
   ? rows.value.filter((row) => isTriggered(row, filters.value.window))
   : rows.value);
 
 const fetchData = async () => {
+  const version = requestGuard.next();
   loading.value = true;
   error.value = '';
   const params = {
@@ -27,14 +34,19 @@ const fetchData = async () => {
     category: filters.value.category || undefined,
     signal: filters.value.status || undefined,
     window: filters.value.window || undefined,
+    sort_by: filters.value.sortBy || 'signal',
+    sort_order: filters.value.sortOrder || 'desc',
   };
   try {
     const [summary, items] = await Promise.all([getCommodityOverview(), getCommodities(params)]);
+    if (!requestGuard.isLatest(version)) return;
     overview.value = summary;
     rows.value = Array.isArray(items) ? items : [];
   } catch (err) {
+    if (!requestGuard.isLatest(version)) return;
     error.value = err?.response?.status === 404 ? '接口未初始化' : '商品监控接口暂时不可用';
   } finally {
+    if (!requestGuard.isLatest(version)) return;
     loading.value = false;
   }
 };
@@ -45,6 +57,16 @@ const syncQuery = () => {
 };
 const resetFilters = () => {
   filters.value = filtersFromQuery({});
+  syncQuery();
+};
+const onSortChange = ({ prop, order }) => {
+  const allowed = ['latest_price', 'data_date', ...COMMODITY_WINDOWS];
+  if (!order || !allowed.includes(prop)) {
+    filters.value.sortBy = 'signal'; filters.value.sortOrder = 'desc';
+  } else {
+    filters.value.sortBy = prop === 'latest_price' ? 'price' : prop === 'data_date' ? 'date' : prop;
+    filters.value.sortOrder = order === 'ascending' ? 'asc' : 'desc';
+  }
   syncQuery();
 };
 const openDetail = (row) => router.push(`/commodities/${encodeURIComponent(row.code)}`);
@@ -59,6 +81,7 @@ watch(() => route.query, (query) => {
   fetchData();
 }, { deep: true });
 onMounted(fetchData);
+onBeforeUnmount(() => requestGuard.invalidate());
 </script>
 
 <template>
@@ -104,31 +127,23 @@ onMounted(fetchData);
       <el-button size="small" type="primary" @click="fetchData">重试</el-button>
     </div>
     <div v-else-if="loading && !rows.length" class="commodity-state">正在加载商品监控…</div>
-    <div v-else-if="!rows.length" class="commodity-state">
+    <div v-else-if="uninitialized" class="commodity-state">
       <strong>商品监控尚未初始化</strong><p>数据库中暂时没有可展示的商品数据。</p>
     </div>
-    <div v-else-if="!visibleRows.length" class="commodity-state">没有符合当前筛选条件的品种。</div>
+    <div v-else-if="!visibleRows.length" class="commodity-state">没有符合当前条件的品种。</div>
     <div v-else class="commodity-table-wrap page-card">
-      <table class="commodity-table">
-        <thead>
-          <tr>
-            <th class="fixed-col instrument-col">品种</th><th>分类</th><th>最新价</th><th>数据日期</th>
-            <th v-for="window in COMMODITY_WINDOWS" :key="window">{{ WINDOW_LABELS[window] }}</th>
-            <th class="fixed-status">当前状态</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="row in visibleRows" :key="row.code" @click="openDetail(row)">
-            <td class="fixed-col instrument-col"><strong>{{ row.name }}</strong><small>{{ row.code }}</small></td>
-            <td>{{ row.category || '—' }}</td><td class="num">{{ formatNumber(row.latest_price) }}</td>
-            <td>{{ row.data_date || '—' }}</td>
-            <td v-for="window in COMMODITY_WINDOWS" :key="window" class="num" :class="`tone-${statusTone(cellSignal(row, window))}`">
-              {{ cellText(row, window) }}
-            </td>
-            <td class="fixed-status"><span class="status-pill" :class="`tone-${statusTone(rowStatus(row))}`" :style="{ color: statusColor(rowStatus(row)) }">{{ rowStatusLabel(row) }}</span></td>
-          </tr>
-        </tbody>
-      </table>
+      <el-table :data="visibleRows" row-key="code" :default-sort="defaultSort" @row-click="openDetail" @sort-change="onSortChange" table-layout="fixed">
+        <el-table-column prop="name" label="品种" fixed width="150" class-name="instrument-column">
+          <template #default="{ row }"><strong>{{ row.name }}</strong><small>{{ row.code }}</small></template>
+        </el-table-column>
+        <el-table-column prop="category" label="分类" width="100"><template #default="{ row }">{{ row.category || '—' }}</template></el-table-column>
+        <el-table-column prop="latest_price" label="最新价" width="110" sortable="custom" align="right"><template #default="{ row }">{{ formatNumber(row.latest_price) }}</template></el-table-column>
+        <el-table-column prop="data_date" label="数据日期" width="120" sortable="custom"><template #default="{ row }">{{ row.data_date || '—' }}</template></el-table-column>
+        <el-table-column v-for="window in COMMODITY_WINDOWS" :key="window" :prop="window" :label="WINDOW_LABELS[window]" width="90" sortable="custom" align="right">
+          <template #default="{ row }"><span :class="`tone-${metricTone(rowStatus(row), cellSignal(row, window))}`">{{ cellText(row, window) }}</span></template>
+        </el-table-column>
+        <el-table-column prop="current_status" label="当前状态" fixed="right" width="100"><template #default="{ row }"><span class="status-pill" :style="{ color: statusColor(rowStatus(row)) }">{{ rowStatusLabel(row) }}</span></template></el-table-column>
+      </el-table>
     </div>
   </section>
 </template>
@@ -146,14 +161,8 @@ onMounted(fetchData);
 .commodity-alert { padding: 9px 12px; margin-bottom: 14px; border: 1px solid #e5e7eb; border-radius: 6px; background: #fafafa; color: #6b7280; font-size: 12px; }
 .commodity-filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; padding: 12px; }
 .commodity-filters .el-input { width: 190px; }.commodity-filters .el-select { width: 130px; }
-.commodity-table-wrap { overflow-x: auto; padding: 0; }
-.commodity-table { border-collapse: separate; border-spacing: 0; min-width: 1050px; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
-.commodity-table th, .commodity-table td { height: 36px; padding: 0 10px; border-bottom: 1px solid var(--el-border-color-lighter); white-space: nowrap; text-align: right; }
-.commodity-table th { position: sticky; top: 0; background: var(--el-bg-color); color: var(--el-text-color-secondary); font-weight: 600; z-index: 2; }
-.commodity-table tbody tr { cursor: pointer; }.commodity-table tbody tr:hover td { background: var(--el-fill-color-light); }
-.commodity-table .instrument-col { text-align: left; width: 150px; }.commodity-table .instrument-col strong { display: block; font-weight: 600; }.commodity-table .instrument-col small { display: block; color: var(--el-text-color-secondary); font-size: 11px; }
-.fixed-col, .fixed-status { position: sticky; background: var(--el-bg-color); z-index: 1; }.fixed-col { left: 0; }.fixed-status { right: 0; text-align: left !important; min-width: 92px; }.commodity-table tbody tr:hover .fixed-col, .commodity-table tbody tr:hover .fixed-status { background: var(--el-fill-color-light); }
-.num { text-align: right; }.tone-high { color: #ef4444; }.tone-low { color: #2563eb; }.tone-divergent { color: #f97316; }.tone-muted { color: #909399; }.tone-neutral { color: var(--el-text-color-regular); }
+.commodity-table-wrap { overflow-x: auto; padding: 0; }.commodity-table-wrap :deep(.el-table) { min-width: 1050px; font-size: 13px; font-variant-numeric: tabular-nums; }.commodity-table-wrap :deep(.el-table th), .commodity-table-wrap :deep(.el-table td) { height: 36px; padding: 0; white-space: nowrap; }.commodity-table-wrap :deep(.el-table__row) { cursor: pointer; }.commodity-table-wrap :deep(.instrument-column .cell) { text-align: left; }.commodity-table-wrap :deep(.instrument-column strong) { display: block; font-weight: 600; }.commodity-table-wrap :deep(.instrument-column small) { display: block; color: var(--el-text-color-secondary); font-size: 11px; }
+.tone-high { color: #ef4444; }.tone-low { color: #2563eb; }.tone-divergent { color: #f97316; }.tone-muted { color: #909399; }.tone-neutral { color: var(--el-text-color-regular); }
 .status-pill { font-weight: 600; }.commodity-state { text-align: center; padding: 56px 20px; color: var(--el-text-color-secondary); }.commodity-state p { margin: 8px 0 14px; }.error-state { color: #ef4444; }
 @media (max-width: 767px) { .commodity-heading h1 { font-size: 18px; }.commodity-filters .el-input { width: 100%; }.commodity-filters .el-select { flex: 1; min-width: 110px; }.commodity-summary { gap: 16px; } }
 </style>

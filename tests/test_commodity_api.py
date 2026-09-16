@@ -42,7 +42,8 @@ def test_commodity_query_service_pivots_state_and_history(db):
     assert row_a["d63"] == {"percentile": None, "sample_count": None, "signal": None}
     assert row_a["current_status"] == "divergent"
     assert row_a["sync_status"] == "success"
-    assert row_a["last_success_at"] == "2026-09-15T16:00:00"
+    assert row_a["last_attempt_at"] == "2026-09-16T00:00:00+08:00"
+    assert row_a["last_success_at"] == "2026-09-16T00:00:00+08:00"
     assert row_a["last_error"] is None
     assert row_a["windows"]["d21"]["signal"] == "high"
     assert row_a["windows"]["y10"]["percentile"] is None
@@ -143,6 +144,14 @@ def test_sync_stale_overrides_persisted_signal(db):
 
     row = next(row for row in CommodityQueryService(db, now=datetime(2026, 9, 15, 16)).list_instruments() if row["code"] == "A")
     assert row["current_status"] == "stale"
+
+
+def test_divergent_filter_uses_overall_status_even_with_window(db):
+    _seed(db)
+    from backend.services.commodity_queries import CommodityQueryService
+
+    service = CommodityQueryService(db, now=datetime(2026, 9, 15, 16))
+    assert [row["code"] for row in service.list_instruments(signal="divergent", window="d21")] == ["A"]
 
 
 def test_signal_sort_has_explicit_order_and_nulls_stay_last(db):

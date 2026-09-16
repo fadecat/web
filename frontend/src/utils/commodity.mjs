@@ -18,6 +18,13 @@ export const statusColor = (status) => ({
   divergent: '#f97316', stale: '#909399', failed: '#909399', insufficient: '#909399',
 }[status] || '#909399');
 
+export const metricTone = (overallStatus, signal) =>
+  ['stale', 'failed', 'suspicious'].includes(overallStatus) ? 'muted' : statusTone(signal);
+
+export const isUninitialized = (overview, { active = false, rows = [] } = {}) =>
+  !active && rows.length > 0 && rows.length === Number(overview?.instrument_total || 0)
+    && !overview?.data_date && rows.every((row) => row.latest_price == null);
+
 export const formatNumber = (value, digits = 2) => {
   if (value === null || value === undefined || value === '') return '—';
   const number = Number(value);
@@ -30,12 +37,44 @@ export const formatPercentile = (value) =>
 
 export const formatDateTime = (value) => {
   if (!value) return '—';
-  return String(value).replace('T', ' ').replace(/:00$/, '');
+  const text = String(value).replace('T', ' ');
+  return /(?:Z|[+-]\d\d:\d\d)$/.test(text) ? text : text.replace(/:00$/, '');
 };
 
 export const isTriggered = (row, window) => {
   const signal = window ? row?.windows?.[window]?.signal : row?.current_status || row?.signal;
   return signal === 'high' || signal === 'low';
+};
+
+export const buildCommodityChartOption = (prices = [], signalsByDate = {}) => ({
+  animation: false,
+  grid: { left: 42, right: 18, top: 22, bottom: 30 },
+  tooltip: {
+    trigger: 'axis',
+    formatter(params) {
+      const point = params?.[0];
+      const date = point?.axisValue;
+      const signals = signalsByDate[date] || [];
+      const signalText = signals.length
+        ? `<br/>信号：${signals.map((signal) => `${WINDOW_LABELS[signal.window] || signal.window} ${statusLabel(signal.signal)}${signal.percentile == null ? '' : ` ${formatPercentile(signal.percentile)}`}`).join('、')}`
+        : '';
+      return `${date}<br/>收盘价：${formatNumber(point?.value)}${signalText}`;
+    },
+  },
+  xAxis: { type: 'category', data: prices.map((item) => item.date), boundaryGap: false, axisLabel: { hideOverlap: true } },
+  yAxis: { type: 'value', scale: true },
+  series: [{
+    name: '收盘价', type: 'line', showSymbol: false, connectNulls: false,
+    data: prices.map((item) => item.close),
+    lineStyle: { color: '#2563eb', width: 2 }, itemStyle: { color: '#2563eb' },
+  }],
+});
+
+export const renderCommodityChart = ({ echarts, element, instance, prices, signalsByDate }) => {
+  if (!element) return instance;
+  const chart = instance || echarts.init(element);
+  chart.setOption(buildCommodityChartOption(prices, signalsByDate), true);
+  return chart;
 };
 
 export const filtersFromQuery = (query = {}) => ({
@@ -44,6 +83,8 @@ export const filtersFromQuery = (query = {}) => ({
   status: typeof query.status === 'string' ? query.status : '',
   window: typeof query.window === 'string' ? query.window : '',
   triggered: query.triggered === '1' || query.triggered === 'true',
+  sortBy: typeof query.sort_by === 'string' ? query.sort_by : 'signal',
+  sortOrder: query.sort_order === 'asc' ? 'asc' : 'desc',
 });
 
 export const queryFromFilters = (filters) => {
@@ -53,6 +94,9 @@ export const queryFromFilters = (filters) => {
   if (filters.status) query.status = filters.status;
   if (filters.window) query.window = filters.window;
   if (filters.triggered) query.triggered = '1';
+  if (filters.sortBy && (filters.sortBy !== 'signal' || filters.sortOrder !== 'desc')) {
+    query.sort_by = filters.sortBy;
+    query.sort_order = filters.sortOrder === 'asc' ? 'asc' : 'desc';
+  }
   return query;
 };
-

@@ -5,8 +5,9 @@ import * as echarts from 'echarts';
 import { getCommodityDetail, getCommodityHistory } from '../api/commodity';
 import {
   COMMODITY_WINDOWS, WINDOW_LABELS, formatDateTime, formatNumber, formatPercentile,
-  statusColor, statusLabel, statusTone,
+  renderCommodityChart, statusColor, statusLabel, statusTone,
 } from '../utils/commodity.mjs';
+import { createRequestGuard } from '../utils/requestGuard.js';
 
 const route = useRoute();
 const router = useRouter();
@@ -19,41 +20,49 @@ const chartLoading = ref(false);
 const error = ref('');
 const chartRef = ref(null);
 let chart;
+const detailGuard = createRequestGuard();
+const historyGuard = createRequestGuard();
 
 const loadDetail = async () => {
+  const version = detailGuard.next();
+  historyGuard.invalidate();
+  chart?.dispose(); chart = null;
+  detail.value = null; history.value = null;
   loading.value = true; error.value = '';
   try {
-    detail.value = await getCommodityDetail(code.value);
-    await loadHistory();
+    const nextDetail = await getCommodityDetail(code.value);
+    if (!detailGuard.isLatest(version)) return;
+    detail.value = nextDetail;
+    loading.value = false;
+    await nextTick();
+    if (detailGuard.isLatest(version)) await loadHistory();
   } catch (err) {
+    if (!detailGuard.isLatest(version)) return;
     error.value = err?.response?.status === 404 ? '找不到该商品' : '商品详情暂时不可用';
-  } finally { loading.value = false; }
+  } finally { if (detailGuard.isLatest(version)) loading.value = false; }
 };
 const loadHistory = async () => {
+  const version = historyGuard.next();
   chartLoading.value = true;
-  try { history.value = await getCommodityHistory(code.value, range.value); await nextTick(); renderChart(); }
-  catch (err) { error.value = err?.response?.status === 404 ? '找不到该商品' : '历史数据暂时不可用'; }
-  finally { chartLoading.value = false; }
+  try {
+    const nextHistory = await getCommodityHistory(code.value, range.value);
+    if (!historyGuard.isLatest(version)) return;
+    history.value = nextHistory;
+    await nextTick();
+    if (historyGuard.isLatest(version)) renderChart();
+  } catch (err) {
+    if (historyGuard.isLatest(version)) error.value = err?.response?.status === 404 ? '找不到该商品' : '历史数据暂时不可用';
+  } finally { if (historyGuard.isLatest(version)) chartLoading.value = false; }
 };
 const signalsByDate = computed(() => (history.value?.signals || []).reduce((result, signal) => {
   (result[signal.date] ||= []).push(signal); return result;
 }, {}));
 const renderChart = () => {
   if (!chartRef.value || !history.value) return;
-  if (!chart) chart = echarts.init(chartRef.value);
-  const prices = history.value.prices || [];
-  chart.setOption({
-    animation: false,
-    grid: { left: 42, right: 18, top: 22, bottom: 30 },
-    tooltip: { trigger: 'axis', formatter(params) {
-      const point = params?.[0]; const date = point?.axisValue; const signals = signalsByDate.value[date] || [];
-      const signalText = signals.length ? `<br/>信号：${signals.map((s) => `${WINDOW_LABELS[s.window] || s.window} ${statusLabel(s.signal)}${s.percentile == null ? '' : ` ${formatPercentile(s.percentile)}`}`).join('、')}` : '';
-      return `${date}<br/>收盘价：${formatNumber(point?.value)}${signalText}`;
-    } },
-    xAxis: { type: 'category', data: prices.map((item) => item.date), boundaryGap: false, axisLabel: { hideOverlap: true } },
-    yAxis: { type: 'value', scale: true },
-    series: [{ name: '收盘价', type: 'line', showSymbol: false, connectNulls: false, data: prices.map((item) => item.close), lineStyle: { color: '#2563eb', width: 2 }, itemStyle: { color: '#2563eb' } }],
-  }, true);
+  chart = renderCommodityChart({
+    echarts, element: chartRef.value, instance: chart,
+    prices: history.value.prices || [], signalsByDate: signalsByDate.value,
+  });
 };
 const onResize = () => chart?.resize();
 const signals = computed(() => [...(history.value?.signals || [])].filter((s) => s.signal === 'high' || s.signal === 'low').reverse().slice(0, 30));
@@ -62,7 +71,7 @@ const currentStatus = computed(() => detail.value?.current_status || detail.valu
 watch(code, loadDetail);
 watch(range, loadHistory);
 onMounted(() => { loadDetail(); window.addEventListener('resize', onResize); });
-onBeforeUnmount(() => { window.removeEventListener('resize', onResize); chart?.dispose(); chart = null; });
+onBeforeUnmount(() => { detailGuard.invalidate(); historyGuard.invalidate(); window.removeEventListener('resize', onResize); chart?.dispose(); chart = null; });
 </script>
 
 <template>
