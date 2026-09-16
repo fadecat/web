@@ -34,7 +34,7 @@ JOBS: dict[str, dict[str, str]] = {
     "cb_index_daily": {"name": "转债等权指数", "schedule": "每天 15:04"},
     "cb_list_daily": {"name": "转债全量快照", "schedule": "交易日 15:06"},
     "stock_dividend_daily": {"name": "高股息股票快照", "schedule": "交易日 15:08"},
-    "stock_financial_monthly": {"name": "全市场正股财务快照", "schedule": "每天凌晨 02:10（低峰分片）"},
+    "stock_financial_monthly": {"name": "全市场正股财务快照", "schedule": "凌晨 02:10（每月两晚均匀跑完）"},
     "style_rotation_daily": {"name": "指数日线（腾讯）", "schedule": "交易日 22:03"},
     "valuation_daily": {"name": "估值截面(易方达分位/股息率 + 东财国债)", "schedule": "每天 22:06"},
     "index_eod_daily": {"name": "指数收盘价（易方达）", "schedule": "每天 22:09"},
