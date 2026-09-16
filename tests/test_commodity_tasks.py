@@ -20,6 +20,14 @@ from backend.models.database import Base
 from backend.services.commodity_source import CommodityPriceRecord, CommoditySourceError
 
 
+@pytest.fixture(autouse=True)
+def _commodity_tasks_run_on_trading_day(monkeypatch):
+    """Keep normal-path task tests independent of the host calendar date."""
+    from backend.tasks import commodity_tasks
+
+    monkeypatch.setattr(commodity_tasks, "is_trading_day", lambda _day: True)
+
+
 def _db():
     engine = create_engine(
         "sqlite://",
