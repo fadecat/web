@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Sequence
@@ -41,14 +42,18 @@ class BarInput:
 
 @dataclass(frozen=True)
 class PlanParameters:
-    """计划参数(默认为研究基线; λ/窗口参与参数比较)。"""
+    """计划参数(默认为研究基线; λ/窗口参与参数比较)。
+
+    corporate_action_tolerance 是 r_t 阶跃的宽 sanity 阈值(权益事件以事件日历为主检测,
+    腾讯 hfq 比值非事件日有 0.1%~0.4% 抖动, 0.002 旧窄容差在该源下会天天误报)。
+    """
 
     lambda_: float = 0.2
     quantile_window: int = 120
     warmup_bars: int = 200
     volatility_ratio_multiple: float = 2.0
     extreme_z_threshold: float = 1.5
-    corporate_action_tolerance: float = 0.002
+    corporate_action_tolerance: float = 0.05
 
 
 @dataclass(frozen=True)
@@ -215,10 +220,12 @@ def generate_plan(
     parameters: PlanParameters,
     *,
     portfolio: Any = None,
+    corporate_event_dates: Collection[date] | None = None,
 ) -> DailyPlan:
     """对 as_of_date=T 生成 T+1 计划(线上与历史回放共用)。
 
-    结构性盲视: 函数第一步过滤 date <= T, 任何 T+1 数据不会进入计算。
+    结构性盲视: 函数第一步过滤 date <= T, 任何 T+1 数据不会进入计算;
+    权益事件日历同样只取 date <= T 的部分(未来事件不得改变 T 日计划)。
     portfolio=None(研究模式)只输出价位, 不输出股数。
     """
     del portfolio  # 研究模式显式忽略持仓参数, 不伪造股数
@@ -245,16 +252,33 @@ def generate_plan(
             evidence={"raw_close": last.raw_close, "hfq_close": last.hfq_close},
         ))
 
-    # --- 权益事件检测: r_t 相对前一交易日阶跃超过容差 ---
+    # --- 权益事件检测: 事件日历命中(主)或 r_t 相对阶跃超宽容差(兜底) ---
+    # 事件日历同样受 T+1 盲视约束: 只允许 date <= T 的事件参与判定。
+    event_hit = corporate_event_dates is not None and last.trade_date in {
+        event_date for event_date in corporate_event_dates if event_date <= as_of_date
+    }
+    ratio_evidence: dict[str, Any] | None = None
     ratios = _r_t_ratio_series(usable)
     if len(ratios) >= 2 and math.isfinite(ratios[-1]) and math.isfinite(ratios[-2]) and ratios[-2] != 0:
         step = abs(ratios[-1] - ratios[-2]) / abs(ratios[-2])
         if step > parameters.corporate_action_tolerance:
-            reasons.append(Reason(
-                code="POSSIBLE_CORPORATE_ACTION", trigger_date=last.trade_date,
-                measured=step, threshold=parameters.corporate_action_tolerance,
-                evidence={"r_today": ratios[-1], "r_prev": ratios[-2]},
-            ))
+            ratio_evidence = {
+                "step": step,
+                "threshold": parameters.corporate_action_tolerance,
+                "r_today": ratios[-1], "r_prev": ratios[-2],
+            }
+    if event_hit or ratio_evidence is not None:
+        detected_by = (
+            "event_calendar+ratio_step" if event_hit and ratio_evidence is not None
+            else "event_calendar" if event_hit
+            else "ratio_step"
+        )
+        reasons.append(Reason(
+            code="POSSIBLE_CORPORATE_ACTION", trigger_date=last.trade_date,
+            measured=ratio_evidence["step"] if ratio_evidence else None,
+            threshold=parameters.corporate_action_tolerance if ratio_evidence else None,
+            evidence={"detected_by": detected_by, **(ratio_evidence or {})},
+        ))
 
     # --- 预热与指标 ---
     highs = [bar.hfq_high for bar in usable]

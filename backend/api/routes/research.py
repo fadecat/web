@@ -64,7 +64,7 @@ def create_replays(request: ReplayRequest, db: Session = Depends(get_db)) -> dic
         raise HTTPException(status_code=422, detail="start_date 不得晚于 end_date")
     if (end - start).days > _MAX_RANGE_DAYS:
         raise HTTPException(status_code=422, detail="单次回放区间不得超过约 3 年")
-    tolerance = float(load_research_settings().get("corporate_action_tolerance") or 0.002)
+    tolerance = float(load_research_settings().get("corporate_action_tolerance") or 0.05)
     lambdas = request.lambdas or list(DEFAULT_LAMBDAS)
     windows = request.windows or list(DEFAULT_WINDOWS)
     try:

@@ -261,6 +261,9 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
             "research_replay_run",
             "research_replay_day",
         },
+        "0004": {
+            "research_corporate_event",
+        },
     }
 
     def _newer_tables(target_revision: str) -> set[str]:

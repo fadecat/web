@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.models.research import (
+    ResearchCorporateEvent,
     ResearchDailyBarAdjusted,
     ResearchDailyBarRaw,
     ResearchDataRevision,
@@ -28,7 +29,7 @@ from backend.models.research import (
     ResearchSecurity,
     ResearchTradeCalendar,
 )
-from backend.services.market_data import AdjustMode, DailyBar, TradeSession
+from backend.services.market_data import AdjustMode, CorporateEvent, DailyBar, TradeSession
 
 
 def _utcnow() -> datetime:
@@ -119,6 +120,52 @@ def load_calendar(db: Session, start: date, end: date) -> list[tuple[date, bool]
         .order_by(ResearchTradeCalendar.trade_date)
     ).all()
     return [(row[0], row[1]) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# 权益事件日历(腾讯换源后的主检测来源)
+# ---------------------------------------------------------------------------
+
+
+def upsert_corporate_events(
+    db: Session,
+    symbol: str,
+    events: Sequence[CorporateEvent],
+    *,
+    source: str,
+    now: datetime | None = None,
+) -> int:
+    """按 (symbol, event_date, source) upsert 权益事件; 事件日期为准, 因子覆盖更新。"""
+    observed_at = now or _utcnow()
+    added = 0
+    for event in events:
+        existing = db.scalar(
+            select(ResearchCorporateEvent).where(
+                ResearchCorporateEvent.symbol == symbol,
+                ResearchCorporateEvent.event_date == event.event_date,
+                ResearchCorporateEvent.source == source,
+            )
+        )
+        if existing is None:
+            db.add(ResearchCorporateEvent(
+                symbol=symbol, event_date=event.event_date,
+                factor=event.factor, cumulative_dividend=event.cumulative_dividend,
+                source=source, fetched_at=observed_at,
+            ))
+            added += 1
+        else:
+            existing.factor = event.factor
+            existing.cumulative_dividend = event.cumulative_dividend
+            existing.fetched_at = observed_at
+    db.flush()
+    return added
+
+
+def load_corporate_event_dates(db: Session, symbol: str) -> set[date]:
+    """读取标的全部权益事件日期(计划/回放据此做事件停用与评价日排除)。"""
+    return set(db.execute(
+        select(ResearchCorporateEvent.event_date).where(ResearchCorporateEvent.symbol == symbol)
+    ).scalars())
 
 
 # ---------------------------------------------------------------------------

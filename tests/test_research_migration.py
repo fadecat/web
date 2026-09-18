@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""0003 研究回放表迁移测试(精简版, 对齐 test_commodity_migration 模式)。"""
+"""研究回放表迁移测试(0003 研究表 + 0004 权益事件表, 对齐 test_commodity_migration 模式)。"""
 from contextlib import closing
 from pathlib import Path
 import sqlite3
@@ -17,6 +17,7 @@ RESEARCH_TABLES = {
     "research_trade_calendar",
     "research_replay_run",
     "research_replay_day",
+    "research_corporate_event",
 }
 
 
@@ -27,7 +28,7 @@ def _cfg(db_path: Path) -> Config:
     return cfg
 
 
-def test_research_migration_creates_all_tables_head_0003(test_artifact_dir):
+def test_research_migration_creates_all_tables_head_0004(test_artifact_dir):
     db_path = test_artifact_dir / "research-migration.db"
     command.upgrade(_cfg(db_path), "head")
 
@@ -39,7 +40,7 @@ def test_research_migration_creates_all_tables_head_0003(test_artifact_dir):
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
 
     assert RESEARCH_TABLES <= names
-    assert version == "0003"
+    assert version == "0004"
 
 
 def test_research_migration_downgrade_0003_to_0002(test_artifact_dir):
@@ -78,7 +79,7 @@ def test_research_migration_rebuilds_empty_existing_table(test_artifact_dir):
 
     assert "selection_list" in columns
     assert "uq_research_security_symbol" in constraints
-    assert version == "0003"
+    assert version == "0004"
 
 
 def test_research_migration_rejects_nonempty_existing_table(test_artifact_dir):
@@ -98,3 +99,58 @@ def test_research_migration_rejects_nonempty_existing_table(test_artifact_dir):
     with closing(sqlite3.connect(db_path)) as conn:
         assert conn.execute("SELECT symbol FROM research_security").fetchone() == ("KEEP.SH",)
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0002"
+
+
+# ---------------------------------------------------------------------------
+# 0004: 权益事件表(腾讯换源补表)
+# ---------------------------------------------------------------------------
+
+
+def test_corporate_event_migration_upgrade_downgrade(test_artifact_dir):
+    """0003 → 0004 建 research_corporate_event; 降回 0003 删除。"""
+    db_path = test_artifact_dir / "corporate-event-migration.db"
+    cfg = _cfg(db_path)
+    command.upgrade(cfg, "0003")
+    with closing(sqlite3.connect(db_path)) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'research_corporate_event'"
+        ).fetchone()[0] == 0
+
+    command.upgrade(cfg, "head")
+    with closing(sqlite3.connect(db_path)) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'research_corporate_event'"
+        ).fetchone()[0] == 1
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(research_corporate_event)")}
+        sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='research_corporate_event'"
+        ).fetchone()[0]
+        version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+
+    assert {"symbol", "event_date", "factor", "cumulative_dividend", "source", "fetched_at"} <= columns
+    assert "uq_research_corporate_event_key" in sql
+    assert version == "0004"
+
+    command.downgrade(cfg, "0003")
+    with closing(sqlite3.connect(db_path)) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'research_corporate_event'"
+        ).fetchone()[0] == 0
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0003"
+
+
+def test_corporate_event_migration_rejects_nonempty_existing_table(test_artifact_dir):
+    db_path = test_artifact_dir / "corporate-event-nonempty.db"
+    cfg = _cfg(db_path)
+    command.upgrade(cfg, "0003")
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            "CREATE TABLE research_corporate_event (symbol VARCHAR(16), event_date DATE)"
+        )
+        conn.execute("INSERT INTO research_corporate_event VALUES ('600900.SH', '2026-07-17')")
+        conn.commit()
+
+    import pytest
+
+    with pytest.raises(Exception, match="non-empty"):
+        command.upgrade(cfg, "head")

@@ -88,8 +88,13 @@ def evaluate_day(
     *,
     ratio_step_next: float | None = None,
     close_raw: float | None = None,
+    next_is_event: bool = False,
 ) -> DayEvaluation:
-    """按设计 §7 顺序评价一个 T 日计划的次日表现。"""
+    """按设计 §7 顺序评价一个 T 日计划的次日表现。
+
+    下一日权益事件判定: T+1 在权益事件日历(next_is_event, 主检测)或
+    r_t 相对阶跃超宽容差(兜底); 命中则分子分母均排除, 单列计数。
+    """
     if plan.status != "ACTIVE":
         return DayEvaluation(
             plan_date=plan.as_of_date, eval_date=None,
@@ -103,15 +108,18 @@ def evaluate_day(
             evidence={"reason": "无 T+1 数据(日历未覆盖或评价日缺数据)"},
         )
 
-    # 下一日权益事件: 分子与分母均排除, 单列计数
-    if ratio_step_next is not None and ratio_step_next > parameters.corporate_action_tolerance:
+    ratio_exceeded = ratio_step_next is not None and ratio_step_next > parameters.corporate_action_tolerance
+    if next_is_event or ratio_exceeded:
         return DayEvaluation(
             plan_date=plan.as_of_date, eval_date=next_bar.trade_date,
             day_category=CATEGORY_EXCLUDED_CORP_ACTION, plan=plan,
             next_open=next_bar.raw_open, next_high=next_bar.raw_high,
             next_low=next_bar.raw_low, next_close=next_bar.raw_close,
-            evidence={"ratio_step_next": ratio_step_next,
-                      "threshold": parameters.corporate_action_tolerance},
+            evidence={
+                **({"detected_by": "event_calendar"} if next_is_event else {}),
+                **({"ratio_step_next": ratio_step_next,
+                    "threshold": parameters.corporate_action_tolerance} if ratio_exceeded else {}),
+            },
         )
 
     assert plan.buy_levels_raw is not None and plan.sell_levels_raw is not None
@@ -210,11 +218,12 @@ def run_replay(
     lambdas: Sequence[float] = DEFAULT_LAMBDAS,
     windows: Sequence[int] = DEFAULT_WINDOWS,
     parameters: PlanParameters | None = None,
-    tolerance: float = 0.002,
+    tolerance: float = 0.05,
 ) -> list[int]:
     """对 symbol 在 [start_date, end_date] 执行 λ×窗口网格回放, 返回 run_id 列表。
 
     - 数据基线: latest USABLE 快照的配对 bars(全量加载, 逐 T 截断);
+    - 权益事件: research_corporate_event 事件日历为主检测, r_t 阶跃为兜底;
     - 幂等: 同一唯一键的旧 run 整体删除重建。
     """
     snapshot = research_store.latest_usable_snapshot(db, symbol)
@@ -238,6 +247,7 @@ def run_replay(
     calendar = dict(research_store.load_calendar(db, start_date, end_date))
     open_dates = sorted(d for d, is_open in calendar.items() if is_open)
     train_end = _train_split_date(open_dates)
+    event_dates = research_store.load_corporate_event_dates(db, symbol)
 
     input_hash = _input_hash(bars)
     run_ids: list[int] = []
@@ -257,27 +267,23 @@ def run_replay(
                 if bar.trade_date < start_date or bar.trade_date > end_date:
                     continue
                 # 只把 date <= T 的 bars 交给计划核心(T+1 盲视)
-                plan = generate_plan(symbol, bar.trade_date, bars[: index + 1], plan_parameters)
+                plan = generate_plan(
+                    symbol, bar.trade_date, bars[: index + 1], plan_parameters,
+                    corporate_event_dates=event_dates,
+                )
                 next_bar = bars[index + 1] if index + 1 < len(bars) else None
                 # 相邻有行情日语义: T+1 取序列中的下一根 bar(而非日历上的 T+1)
                 ratio_step_next = None
                 if next_bar is not None:
                     ratio_step_next = _next_ratio_step(bars, index + 1)
-                if plan.status == "ACTIVE" and next_bar is not None:
-                    evaluation = _evaluate_with_open(
-                        plan, next_bar, plan_parameters,
-                        ratio_step_next=ratio_step_next,
-                        close_raw=bar.raw_close,
-                    )
-                elif plan.status == "ACTIVE":
-                    # 无 T+1 bar: 日历可信时该日为区间末尾, 否则 CALENDAR_UNVERIFIED
-                    evaluation = DayEvaluation(
-                        plan_date=plan.as_of_date, eval_date=None,
-                        day_category=CATEGORY_EXCLUDED_DATA, plan=plan,
-                        evidence={"reason": "无 T+1 相邻行情日"},
-                    )
-                else:
-                    evaluation = evaluate_day(plan, next_bar, plan_parameters)
+                next_is_event = next_bar is not None and next_bar.trade_date in event_dates
+                # 统一走 evaluate_day: DISABLED / 无 T+1 / 次日权益事件 / 开盘失效 全路径一致
+                evaluation = evaluate_day(
+                    plan, next_bar, plan_parameters,
+                    ratio_step_next=ratio_step_next,
+                    close_raw=bar.raw_close if next_bar is not None else None,
+                    next_is_event=next_is_event,
+                )
                 day_rows.append(_day_row(evaluation))
             run_ids.append(research_store.replace_replay_run(
                 db,

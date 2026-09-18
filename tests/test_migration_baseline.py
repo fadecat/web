@@ -27,6 +27,7 @@ EXPECTED_TABLES = {
     "commodity_instrument", "commodity_daily_price", "commodity_percentile_daily", "commodity_sync_state",
     "research_security", "research_data_snapshot", "research_daily_bar_raw", "research_daily_bar_adjusted",
     "research_data_revision", "research_trade_calendar", "research_replay_run", "research_replay_day",
+    "research_corporate_event",
 }
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
@@ -69,7 +70,7 @@ class TestEmptyDatabaseUpgrade:
         _upgrade(db_path)
         _upgrade(db_path)
         with closing(sqlite3.connect(db_path)) as conn:
-            assert conn.execute("select version_num from alembic_version").fetchone() == ("0003",)
+            assert conn.execute("select version_num from alembic_version").fetchone() == ("0004",)
 
     def test_downgrade_to_base_removes_business_tables(self, test_artifact_dir):
         """downgrade 只在临时库测试; 日常回退用备份恢复(见 runbook)。
@@ -92,15 +93,15 @@ class TestEmptyDatabaseUpgrade:
             assert conn.execute("select count(*) from alembic_version").fetchone()[0] == 0
 
     def test_stamp_then_upgrade_on_matching_schema(self, test_artifact_dir):
-        """已有当前 ORM 结构的库: 先 stamp 0003, 再 upgrade head 无操作。"""
+        """已有当前 ORM 结构的库: 先 stamp 0004, 再 upgrade head 无操作。"""
         db_path = test_artifact_dir / "match.db"
         engine = create_engine(f"sqlite:///{db_path.as_posix()}")
         Base.metadata.create_all(engine)
         engine.dispose()
-        _stamp(db_path, "0003")
+        _stamp(db_path, "0004")
         _upgrade(db_path)
         with closing(sqlite3.connect(db_path)) as conn:
-            assert conn.execute("select version_num from alembic_version").fetchone() == ("0003",)
+            assert conn.execute("select version_num from alembic_version").fetchone() == ("0004",)
 
 
 class TestSchemaBaseline:

@@ -116,3 +116,18 @@ raw_sell_i= hfq_sell_i * scale_T
 - [ ] `BOTH_HIT` 不计算先后或收益；参数比较有不重叠训练/验证区间。
 
 本设计进入实施计划前仍需用户确认：V1 的交付目标是**研究回放页面**，不是收盘后可直接挂单的建议；AkShare 东方财富是明示的研究数据源，真实连通性和权益事件检测容差由 Phase 0 实测定稿。
+
+## 9. 数据源决策记录（2026-09-18，用户显式批准换源）
+
+**事实（ECS 实测证据，见 `data/research/poc/`）**：东方财富 push2\* 行情 API 族对阿里云 ECS IP 存在激进反爬——首请求 200 后约 2 分钟，同 IP 对全部 push2\* 域（push2his 及 33.push2his 等镜像、http/https、有无 UA/Referer、requests 与 curl）均被 RST，封禁持续 30 分钟以上；同域其他族（datacenter-web / quote / data HTML）不受影响。`ak.stock_zh_a_hist` / `ak.fund_etf_hist_em` 锁定走 push2his，故在 ECS 上 research_daily_sync 不可用（Phase 0 Gate 回退路径）。本机 Windows 因系统代理长期 ProxyError，不能作为反证。
+
+**换源结论（腾讯 fqkline + 新浪事件日历，均已在 ECS 按 PoC 级验收）**：
+
+- **日线**：`web.ifzq.gtimg.cn/appstock/app/fqkline/get`（raw=`''`/hfq=`'hfq'`）。可达性、raw/hfq 日期全量配对、OHLC 合法性、同日双跑哈希稳定、12 连发限流（0.3s 间隔）全部通过。要点：单次上限 640 条按「窗口内最新 count 条」分页，游标逐页前移；行序为 `[date, open, close, high, low, volume]`（close 在第 2 列）；**股票与 ETF 成交量单位均为「手」**（×100 → 股/份，与新浪交叉验证比值恰为 100）。
+- **权益事件（关键修正）**：腾讯 hfq 的 `r_t=raw_close/hfq_close` 在**非事件日**有 0.1%~0.4% 的比值抖动（低价高分红股 600900 全历史 1312/1375 天有 >1e-4 的步进，601288 最大 6.8%），噪声带与真实分红事件（0.4%~1%）重叠——**r_t 阶跃启发式在该源不可用**。
+- **事件主检测改为新浪 hfq.js**：`finance.sina.com.cn/realstock/company/{sh600900}/hfq.js` 提供股票与 ETF 统一的除权除息日历（行 `{d, f, s?, u?}`，股票行无 `s/u`，跳过 `1900-01-01` 哨兵）；已与东财 datacenter-web 官方分红表及腾讯 r_t 大阶跃日期三向交叉验证一致。
+- **r_t 阶跃降级为宽 sanity 兜底**：`corporate_action_tolerance` 由 0.002 调整为 0.05（仅拦真实异常量级跳变），`POSSIBLE_CORPORATE_ACTION` / `NEXT_DAY_CORPORATE_ACTION` 以事件日历命中为主、阶跃兜底为辅，evidence 中 `detected_by` 区分来源。原 0.002 容差标定问题随之消解。
+- **交易日历**：不变，仍为新浪 `tool_trade_date_hist_sina`（腾讯适配器复用同一来源与规范化路径）。
+- **落库**：新增 `research_corporate_event` 表（唯一键 symbol+event_date+source，迁移 0004）；`config/research.yaml` 增加 `data_source: "tencent"` 显式路由，akshare 路由保留。不静默换源原则不变：换源必须像本节一样留下显式决策记录。
+
+风险与边界照旧：hfq 作为连续研究价格，不宣称供应商数据永不修订；事件日历是官方除权日的观察快照，因子字段仅信息性，不合成官方复权因子。

@@ -3,11 +3,12 @@
 
 对应设计 docs/superpowers/specs/2026-09-18-next-day-t-research-replay-design.md §4/§6:
 - 行情事实: research_security / research_daily_bar_raw / research_daily_bar_adjusted /
-  research_data_snapshot / research_data_revision / research_trade_calendar;
+  research_data_snapshot / research_data_revision / research_trade_calendar /
+  research_corporate_event;
 - 回放结果: research_replay_run / research_replay_day(汇总不落库, 由逐日明细聚合)。
 
 约定:
-- symbol 全链路用规范代码(带交易所后缀, 如 600900.SH); AkShare 适配器仅在边界剥成六位码。
+- symbol 全链路用规范代码(带交易所后缀, 如 600900.SH); 适配器仅在边界剥成六位码。
 - 时间列为 naive UTC(与 commodity 模型一致)。
 - research_daily_bar_adjusted.adjust_mode V1 恒为 "HFQ"; 该列不得理解为官方复权因子。
 """
@@ -187,6 +188,30 @@ class ResearchTradeCalendar(Base):
     __table_args__ = (
         UniqueConstraint("exchange", "trade_date", "source", name="uq_research_calendar_key"),
         Index("ix_research_calendar_date", "trade_date"),
+    )
+
+
+class ResearchCorporateEvent(Base):
+    """标的权益事件日历(新浪 hfq.js 除权除息日; 权益事件主检测来源)。
+
+    factor/cumulative_dividend 为信息性字段(非官方复权因子, 股票行无累计分红);
+    upsert 覆盖更新因子, 事件日期本身 append-only。
+    """
+
+    __tablename__ = "research_corporate_event"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False)
+    event_date: Mapped[date] = mapped_column(Date, nullable=False)
+    factor: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cumulative_dividend: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "event_date", "source", name="uq_research_corporate_event_key"),
+        Index("ix_research_corporate_event_symbol", "symbol", "event_date"),
     )
 
 

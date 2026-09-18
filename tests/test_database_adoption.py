@@ -90,7 +90,7 @@ class TestDatabaseAdoption:
         )
         assert result.code == 0, [f"{s.name}:{s.status}:{s.detail}" for s in result.stages]
         with closing(sqlite3.connect(backup_copy)) as conn:
-            assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == ("0003",)
+            assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == ("0004",)
             assert conn.execute("SELECT count(*) FROM commodity_instrument").fetchone() == (75,)
 
     def test_nonempty_commodity_schema_is_rejected_before_adoption_stamp(self, test_artifact_dir):
@@ -129,7 +129,7 @@ class TestDatabaseAdoption:
         assert result.code == 0, [f"{s.name}:{s.status}:{s.detail}" for s in result.stages]
         with closing(sqlite3.connect(backup_copy)) as conn:
             assert conn.execute("SELECT value FROM app_setting WHERE key='legacy'").fetchone() == ("kept",)
-            assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == ("0003",)
+            assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == ("0004",)
             assert conn.execute("SELECT count(*) FROM commodity_instrument").fetchone() == (75,)
 
     def test_unversioned_database_copy_can_be_adopted(self, test_artifact_dir):
@@ -170,7 +170,7 @@ class TestDatabaseAdoption:
             assert conn.execute(
                 "select value from app_setting where key='smtp_host'"
             ).fetchone() == ("example.invalid",)
-            assert conn.execute("select version_num from alembic_version").fetchone() == ("0003",)
+            assert conn.execute("select version_num from alembic_version").fetchone() == ("0004",)
             assert conn.execute("select count(*) from commodity_instrument").fetchone() == (75,)
 
     def test_adopt_module_cli_leaves_unrelated_untouched(self, test_artifact_dir):
@@ -216,7 +216,7 @@ class TestDatabaseAdoption:
 
         # copy 应达到当前 head
         with closing(sqlite3.connect(backup_copy)) as conn:
-            assert conn.execute("select version_num from alembic_version").fetchone() == ("0003",)
+            assert conn.execute("select version_num from alembic_version").fetchone() == ("0004",)
 
     def test_drifted_database_never_calls_stamp(self, test_artifact_dir):
         """缺列漂移库: 真实 adopt_database_copy 在 schema_verified 阶段失败,

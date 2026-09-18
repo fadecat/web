@@ -335,6 +335,58 @@ def test_generate_plan_possible_corporate_action_on_tolerance_step():
     assert not any(r.code == "POSSIBLE_CORPORATE_ACTION" for r in plan_mild.reasons)
 
 
+def test_generate_plan_corporate_event_calendar_disables_even_with_flat_ratio():
+    """权益事件日历命中即停用(r_t 平稳也触发)——腾讯换源后的主检测路径。"""
+    bars = _active_bars()  # raw==hfq, r_t 恒为 1(无阶跃)
+    params = PlanParameters(lambda_=0.2, quantile_window=60, warmup_bars=200)
+    last_date = bars[-1].trade_date
+    plan = generate_plan(
+        "600900.SH", last_date, bars, params, corporate_event_dates={last_date},
+    )
+    assert plan.status == "DISABLED"
+    reason = next(r for r in plan.reasons if r.code == "POSSIBLE_CORPORATE_ACTION")
+    assert reason.evidence.get("detected_by") == "event_calendar"
+    assert plan.buy_levels_raw is None and plan.sell_levels_raw is None
+
+
+def test_generate_plan_event_calendar_is_t_blind():
+    """T+1 盲视: 晚于 T 的事件不得改变 T 日计划(仍 ACTIVE)。"""
+    bars = _active_bars()
+    params = PlanParameters(lambda_=0.2, quantile_window=60, warmup_bars=200)
+    t = bars[-1].trade_date
+    future_events = {t + timedelta(days=1), t + timedelta(days=30)}
+    plan = generate_plan(
+        "600900.SH", t, bars, params, corporate_event_dates=future_events,
+    )
+    assert plan.status == "ACTIVE"
+    assert not any(r.code == "POSSIBLE_CORPORATE_ACTION" for r in plan.reasons)
+
+
+def test_generate_plan_event_and_ratio_both_fire_single_reason():
+    """事件命中且阶跃超限: 单条 POSSIBLE_CORPORATE_ACTION, 证据同时含两种来源。"""
+    bars = _active_bars()
+    params = PlanParameters(lambda_=0.2, quantile_window=60, warmup_bars=200,
+                            corporate_action_tolerance=0.05)
+    last = bars[-1]
+    stepped = list(bars)
+    stepped[-1] = BarInput(
+        trade_date=last.trade_date,
+        raw_open=last.raw_open * 0.9, raw_high=last.raw_high * 0.9,
+        raw_low=last.raw_low * 0.9, raw_close=last.raw_close * 0.9,  # 10% 阶跃 > 5%
+        hfq_open=last.hfq_open, hfq_high=last.hfq_high,
+        hfq_low=last.hfq_low, hfq_close=last.hfq_close,
+    )
+    plan = generate_plan(
+        "600900.SH", last.trade_date, stepped, params,
+        corporate_event_dates={last.trade_date},
+    )
+    assert plan.status == "DISABLED"
+    corp_reasons = [r for r in plan.reasons if r.code == "POSSIBLE_CORPORATE_ACTION"]
+    assert len(corp_reasons) == 1
+    assert corp_reasons[0].evidence.get("detected_by") == "event_calendar+ratio_step"
+    assert corp_reasons[0].evidence.get("step") == pytest.approx(0.1, rel=1e-6)
+
+
 def test_generate_plan_volatility_spike():
     """最后一根 ATR/C 超过前 60 个有效日中位数的 2 倍 → VOLATILITY_SPIKE。
 

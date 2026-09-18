@@ -154,3 +154,61 @@ def test_load_paired_bars_skips_unpaired_dates(db):
     health = research_store.data_health(db)
     # 无名单 → 空报告; 有名单时逐 symbol 展示
     assert isinstance(health, list)
+
+
+# ---------------------------------------------------------------------------
+# 权益事件日历(腾讯换源后的主检测来源)
+# ---------------------------------------------------------------------------
+
+
+def _events() -> list:
+    from backend.services.market_data import CorporateEvent
+
+    return [
+        CorporateEvent(event_date=date(2026, 7, 17), factor=1.7166614532470703),
+        CorporateEvent(event_date=date(2026, 9, 18), factor=1.0, cumulative_dividend=5.3905),
+    ]
+
+
+def test_upsert_and_load_corporate_events(db):
+    added = research_store.upsert_corporate_events(
+        db, "600900.SH", _events(), source="tencent-fqkline", now=_utcnow(),
+    )
+    assert added == 2
+    assert research_store.load_corporate_event_dates(db, "600900.SH") == {
+        date(2026, 7, 17), date(2026, 9, 18),
+    }
+    # 其他标的隔离
+    assert research_store.load_corporate_event_dates(db, "511010.SH") == set()
+
+
+def test_upsert_corporate_events_updates_factor_keeps_dates(db):
+    from backend.services.market_data import CorporateEvent
+
+    research_store.upsert_corporate_events(
+        db, "600900.SH", _events(), source="tencent-fqkline", now=_utcnow(),
+    )
+    # 供应商修订因子: 事件日期不变, 因子/抓取时间覆盖更新, 不新增行
+    added = research_store.upsert_corporate_events(
+        db, "600900.SH",
+        [CorporateEvent(event_date=date(2026, 7, 17), factor=1.72)],
+        source="tencent-fqkline", now=_utcnow().replace(hour=9),
+    )
+    assert added == 0
+    dates = research_store.load_corporate_event_dates(db, "600900.SH")
+    assert dates == {date(2026, 7, 17), date(2026, 9, 18)}
+
+
+def test_upsert_corporate_events_isolated_by_source(db):
+    from backend.services.market_data import CorporateEvent
+
+    research_store.upsert_corporate_events(
+        db, "600900.SH", _events(), source="tencent-fqkline", now=_utcnow(),
+    )
+    # 不同 source 的同日期事件各行独立(唯一键含 source)
+    research_store.upsert_corporate_events(
+        db, "600900.SH",
+        [CorporateEvent(event_date=date(2026, 7, 17))],
+        source="akshare-eastmoney", now=_utcnow(),
+    )
+    assert research_store.load_corporate_event_dates(db, "600900.SH") == {date(2026, 7, 17), date(2026, 9, 18)}

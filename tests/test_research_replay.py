@@ -330,3 +330,65 @@ def test_run_replay_days_include_categories(db):
         if day.day_category in (CATEGORY_BUY_ONLY, CATEGORY_SELL_ONLY, CATEGORY_BOTH_HIT, CATEGORY_NO_HIT):
             assert day.buy_levels_raw and day.sell_levels_raw
             assert day.buy_hits and day.sell_hits
+
+
+# ---------------------------------------------------------------------------
+# 权益事件日历(腾讯换源后主检测; r_t 阶跃降级为兜底)
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_day_next_day_event_calendar_exclusion():
+    """T+1 在权益事件日历(next_is_event)即排除, 无需 r_t 阶跃证据。"""
+    bars = _bars_for_replay(260)
+    plan = _active_plan(bars[:-1])
+    close_raw = bars[-2].raw_close
+    from backend.services.research_plan import BarInput
+    next_bar = BarInput(  # raw==hfq, r_t 无阶跃
+        trade_date=bars[-1].trade_date,
+        raw_open=close_raw, raw_high=close_raw + 0.4,
+        raw_low=close_raw - 0.4, raw_close=close_raw,
+        hfq_open=close_raw, hfq_high=close_raw + 0.4,
+        hfq_low=close_raw - 0.4, hfq_close=close_raw,
+    )
+    evaluation = evaluate_day(
+        plan, next_bar, PlanParameters(), close_raw=close_raw, next_is_event=True,
+    )
+    assert evaluation.day_category == CATEGORY_EXCLUDED_CORP_ACTION
+    assert evaluation.evidence.get("detected_by") == "event_calendar"
+    assert evaluation.buy_hits is None and evaluation.sell_hits is None
+
+
+def test_run_replay_uses_event_calendar_for_exclusions(db):
+    """run_replay 全链路: 事件日的 T-1 计划被排除, 事件日当天的计划被停用。"""
+    bars = _bars_for_replay(320)
+    _seed_snapshot(db, "X.SH", bars)
+    _seed_calendar(db, bars)
+    event_day = bars[250].trade_date  # 区间内评价日
+    research_store.upsert_corporate_events(
+        db, "X.SH",
+        [__import__("backend.services.market_data", fromlist=["CorporateEvent"]).CorporateEvent(
+            event_date=event_day, factor=1.0,
+        )],
+        source="test",
+    )
+    run_ids = run_replay(
+        db, symbol="X.SH", start_date=bars[210].trade_date, end_date=bars[300].trade_date,
+        lambdas=(0.2,), windows=(120,),
+    )
+    import sqlalchemy as sa
+
+    days = {
+        row.plan_date: row
+        for row in db.scalars(
+            sa.select(ResearchReplayDay).where(ResearchReplayDay.run_id == run_ids[0])
+        ).all()
+    }
+    # T = 事件日前一交易日: T+1 是事件日 → 双排除
+    assert days[bars[249].trade_date].day_category == CATEGORY_EXCLUDED_CORP_ACTION
+    # T = 事件日当天: 事件日历命中 → 计划停用
+    assert days[event_day].day_category == CATEGORY_DISABLED
+    assert "POSSIBLE_CORPORATE_ACTION" in (days[event_day].reason_codes or "")
+    # 无关日不受影响(仍可评价)
+    assert days[bars[210].trade_date].day_category not in (
+        CATEGORY_EXCLUDED_CORP_ACTION, CATEGORY_DISABLED,
+    )

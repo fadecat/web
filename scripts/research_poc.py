@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""次日 T 价位研究回放 Phase 0: AkShare/东财数据源 PoC。
+"""次日 T 价位研究回放 Phase 0: 数据源 PoC(akshare/东财 或 腾讯, --source 切换)。
 
-直接调用真实 Provider(不做 akshare mock), 用于验收:
+直接调用真实 Provider(不做 mock), 用于验收:
 1. 可达性: 每标的每模式 3 次尝试(成功/失败/耗时/异常);
 2. raw/hfq 日期配对 + OHLC 合法性;
 3. 量额单位观测(股票手 vs ETF 份);
@@ -10,8 +10,8 @@
 6. 同日双跑内容哈希比对(源端回写观察)。
 
 报告写 <out>/poc_report.md + poc_report.json, stdout 打印摘要。
-用法: python -m scripts.research_poc [--symbols 600900.SH,001286.SZ] [--years 2]
-                                 [--out data/research/poc] [--runs 2]
+用法: python -m scripts.research_poc [--source tencent] [--symbols 600900.SH,001286.SZ]
+                                 [--years 2] [--out data/research/poc] [--runs 2]
 """
 from __future__ import annotations
 
@@ -27,18 +27,19 @@ from typing import Any
 # PoC 明确允许触真实数据源(conftest 的 socket 拦截只作用于 tests/)
 from backend.services.market_data import (
     AdjustMode,
-    AkShareEastmoneyProvider,
+    MarketDataProvider,
     ResearchSourceError,
+    provider_factory,
 )
-from backend.utils import load_research_targets
+from backend.utils import load_research_settings, load_research_targets
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _STEP_LIST_THRESHOLD = 1e-4  # PoC 标定: 相对阶跃超过此值全部列出
 
 
-def _poc_provider(sleep_on: bool) -> AkShareEastmoneyProvider:
-    return AkShareEastmoneyProvider(sleep=(time.sleep if sleep_on else (lambda _s: None)))
+def _poc_provider(source: str, sleep_on: bool) -> MarketDataProvider:
+    return provider_factory(source, sleep=(time.sleep if sleep_on else (lambda _s: None)))
 
 
 def _try_fetch(provider, symbol, security_type, mode, start, end, attempts=3):
@@ -96,8 +97,8 @@ def _pair_by_date(raw_bars, hfq_bars) -> list[dict[str, Any]]:
     ]
 
 
-def run_poc(symbols: list[tuple[str, str]], years: int, out_dir: Path, *, runs: int = 2, sleep_on: bool = True) -> dict:
-    provider = _poc_provider(sleep_on)
+def run_poc(symbols: list[tuple[str, str]], years: int, out_dir: Path, *, runs: int = 2, sleep_on: bool = True, source: str = "akshare") -> dict:
+    provider = _poc_provider(source, sleep_on)
     start = date.today() - timedelta(days=365 * years)
     end = date.today()
 
@@ -199,6 +200,7 @@ def run_poc(symbols: list[tuple[str, str]], years: int, out_dir: Path, *, runs: 
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "params": {"symbols": [s for s, _ in symbols], "years": years,
                    "start": start.isoformat(), "end": end.isoformat(),
+                   "source": provider.name,
                    "step_list_threshold": _STEP_LIST_THRESHOLD},
         "calendar": calendar_report,
         "symbols_report": results,
@@ -223,7 +225,7 @@ def _tolerance_suggestion(results: list[dict[str, Any]]) -> dict[str, Any]:
             "min_event_step": event_min,
             "recommended_at_least": lower_bound,
             "recommended_at_most": upper_bound,
-            "current_config": 0.002,
+            "current_config": 0.05,
         }
     return suggestion or {"note": "样本不足, 保持 0.002 待标定"}
 
@@ -287,8 +289,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--years", type=int, default=2, help="回看年数(默认 2)")
     parser.add_argument("--out", default="data/research/poc", help="报告输出目录")
     parser.add_argument("--runs", type=int, default=2, help="同日双跑次数(默认 2)")
+    parser.add_argument("--source", default=None,
+                        help="数据源(akshare | tencent; 默认取 config/research.yaml 的 data_source)")
     parser.add_argument("--no-sleep", action="store_true", help="跳过标的间礼貌 sleep(仅本地调试)")
     args = parser.parse_args(argv)
+
+    settings = load_research_settings(REPO_ROOT / "config" / "research.yaml")
+    source = args.source or str(settings.get("data_source") or "akshare")
 
     if args.symbols:
         symbols = []
@@ -307,8 +314,9 @@ def main(argv: list[str] | None = None) -> int:
     if not out_dir.is_absolute():
         out_dir = REPO_ROOT / out_dir
 
-    print(f"[PoC] 标的: {[s for s, _ in symbols]}; 年数: {args.years}; 输出: {out_dir}")
-    report = run_poc(symbols, args.years, out_dir, runs=args.runs, sleep_on=not args.no_sleep)
+    print(f"[PoC] 数据源: {source}; 标的: {[s for s, _ in symbols]}; 年数: {args.years}; 输出: {out_dir}")
+    report = run_poc(symbols, args.years, out_dir, runs=args.runs,
+                     sleep_on=not args.no_sleep, source=source)
     _write_reports(report, out_dir)
 
     # stdout 摘要
