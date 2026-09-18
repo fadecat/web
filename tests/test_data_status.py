@@ -89,9 +89,9 @@ def test_build_data_status_shape(db):
     status = build_data_status(db)
     assert set(status.keys()) == {"generated_at", "expected_date", "datasets", "jobs"}
     # 8 个分组: 估值/股息率/K线/国债/转债快照/强赎/等权指数/高股息股票快照
-    assert len(status["datasets"]) == 8
+    assert len(status["datasets"]) == 9
     assert all("entities" in g for g in status["datasets"])
-    assert len(status["jobs"]) == 9
+    assert len(status["jobs"]) == 10
     # 从未运行过的任务 status=never, 不报错
     job = status["jobs"][0]
     assert job["status"] == "never"

@@ -236,21 +236,50 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
     from sqlalchemy import MetaData, create_engine, inspect, text
 
     from backend.models.database import Base
-    from backend.models import app_setting, data_status, jisilu_account, jisilu_stock, valuation  # noqa: F401
+    from backend.models import app_setting, data_status, jisilu_account, jisilu_stock, research, valuation  # noqa: F401
 
     from scripts.check_db_baseline import compare_schema
     from scripts.verify_db_restore import verify_restore
 
     migrations_dir = Path(__file__).resolve().parent.parent / "migrations"
-    commodity_tables = {
-        "commodity_instrument",
-        "commodity_daily_price",
-        "commodity_percentile_daily",
-        "commodity_sync_state",
+    # 按 revision 分层的新表集合: 接管旧 revision 库时, 排除「目标 revision 之后才创建的表」。
+    _REVISION_NEW_TABLES = {
+        # 0001(初始基线)本身没有新表; 之后的 revision 逐层登记。
+        "0002": {
+            "commodity_instrument",
+            "commodity_daily_price",
+            "commodity_percentile_daily",
+            "commodity_sync_state",
+        },
+        "0003": {
+            "research_security",
+            "research_data_snapshot",
+            "research_daily_bar_raw",
+            "research_daily_bar_adjusted",
+            "research_data_revision",
+            "research_trade_calendar",
+            "research_replay_run",
+            "research_replay_day",
+        },
     }
+
+    def _newer_tables(target_revision: str) -> set[str]:
+        """目标 revision 之后才创建的表(对旧库比对时应忽略/排除)。"""
+        newer: set[str] = set()
+        for rev, tables in _REVISION_NEW_TABLES.items():
+            if rev > target_revision:
+                newer |= tables
+        return newer
+
+    def _revision_new_tables(target_revision: str) -> set[str]:
+        tables = _REVISION_NEW_TABLES.get(target_revision, set())
+        return tables
+
+    excluded_tables = _newer_tables(revision)
+    revision_tables = _revision_new_tables(revision)
     legacy_metadata = MetaData()
     for table in Base.metadata.tables.values():
-        if table.name not in commodity_tables:
+        if table.name not in excluded_tables:
             table.to_metadata(legacy_metadata)
 
     def _cfg() -> Config:
@@ -268,7 +297,7 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
             return compare_schema(
                 f"sqlite:///{backup_copy.as_posix()}",
                 legacy_metadata,
-                ignored_tables=commodity_tables,
+                ignored_tables=excluded_tables,
             )
         return compare_schema(f"sqlite:///{backup_copy.as_posix()}", Base.metadata)
 
@@ -278,7 +307,7 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
             try:
                 with eng.connect() as conn:
                     inspector = inspect(conn)
-                    existing = commodity_tables & set(inspector.get_table_names())
+                    existing = excluded_tables & set(inspector.get_table_names())
                     nonempty = [
                         name
                         for name in sorted(existing)
@@ -288,17 +317,17 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
                 eng.dispose()
             if nonempty:
                 raise RuntimeError(
-                    "unversioned 0001 adoption refuses non-empty commodity tables: "
+                    "unversioned 0001 adoption refuses non-empty newer-revision tables: "
                     + ", ".join(nonempty)
                 )
             return legacy_metadata
         eng = create_engine(f"sqlite:///{backup_copy.as_posix()}")
         try:
             with eng.connect() as conn:
-                has_commodity_schema = bool(commodity_tables & set(inspect(conn).get_table_names()))
+                has_revision_schema = bool(revision_tables & set(inspect(conn).get_table_names()))
         finally:
             eng.dispose()
-        return Base.metadata if has_commodity_schema else legacy_metadata
+        return Base.metadata if has_revision_schema else legacy_metadata
 
     def _stamp():
         command.stamp(_cfg(), revision)
@@ -312,7 +341,7 @@ def build_dependencies(source: Path, backup_copy: Path, revision: str) -> dict:
                 backup_copy,
                 legacy_metadata,
                 expected_backup_revision=revision,
-                ignored_tables=commodity_tables,
+                ignored_tables=excluded_tables,
             )
         return verify_restore(
             source, backup_copy, Base.metadata, expected_backup_revision=revision

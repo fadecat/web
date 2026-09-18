@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from backend.models.data_status import TaskRunLog
 from backend.models.commodity import CommodityDailyPrice, CommodityInstrument, CommoditySyncState
 from backend.models.jisilu_stock import StockDividendDaily
+from backend.models.research import ResearchDailyBarAdjusted, ResearchSecurity
 from backend.models.valuation import (
     CbDailySnapshot,
     CbIndexDaily,
@@ -40,6 +41,7 @@ JOBS: dict[str, dict[str, str]] = {
     "style_rotation_daily": {"name": "指数日线（腾讯）", "schedule": "交易日 22:03"},
     "valuation_daily": {"name": "估值截面(易方达分位/股息率 + 东财国债)", "schedule": "每天 22:06"},
     "index_eod_daily": {"name": "指数收盘价（易方达）", "schedule": "每天 22:09"},
+    "research_daily_sync": {"name": "研究行情日线(raw/hfq)", "schedule": "每天 17:30"},
 }
 
 # 成功率统计窗口(最近 N 次运行)
@@ -262,6 +264,32 @@ def get_dataset_freshness(db: Session, now: datetime | None = None) -> list[dict
                 key={"fresh": 1, "stale": 2, "lagging": 3, "no_data": 4}.get,
             )
         groups.append(commodity_group)
+
+    # 研究行情日线(hfq) —— 逐标的一行(模式同指数日线)
+    research_rows = db.execute(
+        select(
+            ResearchDailyBarAdjusted.symbol,
+            func.max(ResearchDailyBarAdjusted.trade_date),
+            func.min(ResearchDailyBarAdjusted.trade_date),
+            func.count(),
+        ).group_by(ResearchDailyBarAdjusted.symbol)
+    ).all()
+    research_names = {
+        row.symbol: row.name
+        for row in db.execute(select(ResearchSecurity)).scalars().all()
+    }
+    groups.append(
+        group(
+            "研究行情日线",
+            [
+                make_entity(
+                    f"{research_names.get(symbol, '')} {symbol}".strip(),
+                    latest, first, count,
+                )
+                for symbol, latest, first, count in sorted(research_rows)
+            ],
+        )
+    )
 
     return groups
 

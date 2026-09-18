@@ -17,7 +17,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect
 
 from backend.models.database import Base
-from backend.models import app_setting, data_status, jisilu_account, jisilu_stock, valuation  # noqa: F401
+from backend.models import app_setting, data_status, jisilu_account, jisilu_stock, research, valuation  # noqa: F401
 
 EXPECTED_TABLES = {
     "app_setting", "task_run_log", "index_valuation_snapshot",
@@ -25,6 +25,8 @@ EXPECTED_TABLES = {
     "cb_index_daily", "cb_daily_snapshot", "cb_redeem_daily", "cb_blacklist",
     "stock_dividend_daily", "stock_financial_snapshot_batch", "stock_financial_snapshot", "jisilu_account",
     "commodity_instrument", "commodity_daily_price", "commodity_percentile_daily", "commodity_sync_state",
+    "research_security", "research_data_snapshot", "research_daily_bar_raw", "research_daily_bar_adjusted",
+    "research_data_revision", "research_trade_calendar", "research_replay_run", "research_replay_day",
 }
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
@@ -67,7 +69,7 @@ class TestEmptyDatabaseUpgrade:
         _upgrade(db_path)
         _upgrade(db_path)
         with closing(sqlite3.connect(db_path)) as conn:
-            assert conn.execute("select version_num from alembic_version").fetchone() == ("0002",)
+            assert conn.execute("select version_num from alembic_version").fetchone() == ("0003",)
 
     def test_downgrade_to_base_removes_business_tables(self, test_artifact_dir):
         """downgrade 只在临时库测试; 日常回退用备份恢复(见 runbook)。
@@ -90,15 +92,15 @@ class TestEmptyDatabaseUpgrade:
             assert conn.execute("select count(*) from alembic_version").fetchone()[0] == 0
 
     def test_stamp_then_upgrade_on_matching_schema(self, test_artifact_dir):
-        """已有当前 ORM 结构的库: 先 stamp 0002, 再 upgrade head 无操作。"""
+        """已有当前 ORM 结构的库: 先 stamp 0003, 再 upgrade head 无操作。"""
         db_path = test_artifact_dir / "match.db"
         engine = create_engine(f"sqlite:///{db_path.as_posix()}")
         Base.metadata.create_all(engine)
         engine.dispose()
-        _stamp(db_path, "0002")
+        _stamp(db_path, "0003")
         _upgrade(db_path)
         with closing(sqlite3.connect(db_path)) as conn:
-            assert conn.execute("select version_num from alembic_version").fetchone() == ("0002",)
+            assert conn.execute("select version_num from alembic_version").fetchone() == ("0003",)
 
 
 class TestSchemaBaseline:

@@ -23,6 +23,7 @@ from sqlalchemy import distinct, select
 from sqlalchemy.orm import Session
 
 from backend.models.jisilu_stock import StockDividendDaily
+from backend.models.research import ResearchDailyBarAdjusted
 from backend.models.valuation import (
     CbDailySnapshot,
     CbIndexDaily,
@@ -93,6 +94,13 @@ DAILY_TABLE_REGISTRY: list[dict[str, Any]] = [
         "entity_attr": None,  # 成分随市值门槛进出,按全表交易日扫描
         "date_attr": "trade_date",
         "mode": "global",
+    },
+    {
+        "name": "研究行情日线(HFQ)",
+        "model": ResearchDailyBarAdjusted,
+        "entity_attr": "symbol",
+        "date_attr": "trade_date",
+        "mode": "per_entity",
     },
 ]
 

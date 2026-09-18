@@ -4,7 +4,7 @@ Legacy configuration stays authoritative for instruments; no historical key rewr
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
-from backend.utils import is_trading_day, latest_trading_day, load_valuation_targets, load_index_eod_targets
+from backend.utils import is_trading_day, latest_trading_day, load_valuation_targets, load_index_eod_targets, load_research_targets
 
 @dataclass(frozen=True)
 class Policy:
@@ -55,6 +55,10 @@ def catalog():
         "高股息股票快照": {"": ("高股息股票快照", Policy("jisilu", "stock_dividend_daily", 15, 30))},
         # 商品由 get_dataset_freshness 按品种动态展开；此条目提供统一来源/任务/计划契约。
         "商品价格与分位": {"*": ("商品价格与分位", Policy("akshare", "commodity_daily", 15, 50))},
+        "研究行情日线": {
+            str(t["symbol"]): (str(t["name"]), Policy("akshare", "research_daily_sync", 17, 30))
+            for t in load_research_targets()
+        },
     }
 
 

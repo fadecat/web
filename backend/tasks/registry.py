@@ -11,6 +11,7 @@ from backend.tasks.cb_list_tasks import run_cb_list_daily
 from backend.tasks.cb_redeem_tasks import run_cb_redeem_daily
 from backend.tasks.commodity_tasks import run_commodity_daily
 from backend.tasks.index_eod_tasks import run_index_eod_daily
+from backend.tasks.research_tasks import run_research_daily_sync
 from backend.tasks.stock_dividend_tasks import run_stock_dividend_daily
 from backend.tasks.stock_financial_tasks import run_stock_financial_monthly
 from backend.tasks.style_rotation_tasks import run_style_rotation_daily
@@ -20,12 +21,14 @@ from backend.tasks.valuation_tasks import run_valuation_daily
 # - valuation/index_eod 是历史全量同步, 来源可能在周末发布最近交易日数据;
 # - cb_redeem/cb_index 的集思录源当日值发布偏晚(15:03/15:04 只能抓到昨日),
 #   次日/周末自然日补跑 + 幂等落库, 最近交易日的值最迟隔天追平。
+# - research 是研究标的 raw/hfq 全量同步(幂等, 哈希比对), 自然日跑无害。
 # 其余任务是“当日市场快照”，仍只在周一至周五触发并由任务内交易日判断兜底。
 EVERYDAY_JOB_IDS = frozenset({
     "cb_redeem_daily",
     "cb_index_daily",
     "valuation_daily",
     "index_eod_daily",
+    "research_daily_sync",
 })
 
 # (job_id, 函数, 展示名, hour, minute) —— 与 scheduler 注册一致
@@ -38,6 +41,7 @@ DAILY_JOBS: list[tuple[str, object, str, int, int]] = [
     ("style_rotation_daily", run_style_rotation_daily, "指数日线（腾讯）抓取", 22, 3),
     ("valuation_daily", run_valuation_daily, "估值板块日频抓取", 22, 6),
     ("index_eod_daily", run_index_eod_daily, "指数收盘价（易方达）抓取", 22, 9),
+    ("research_daily_sync", run_research_daily_sync, "研究行情日线（raw/hfq）抓取", 17, 30),
 ]
 
 # 晚间补跑档(job_id → 时刻, 函数复用 DAILY_JOBS 同一份): 集思录源的当日值
