@@ -61,6 +61,13 @@ const routes = [
         component: () => import('../pages/StockDividend.vue'),
         meta: { title: '高股息', group: '股票' },
       },
+      // 信号回放(研究): 次日 T 价位的回顾性触达统计, 非投资建议
+      {
+        path: 'research',
+        name: 'research-replay',
+        component: () => import('../pages/ResearchReplay.vue'),
+        meta: { title: '信号回放', group: '研究' },
+      },
       {
         path: 'status',
         name: 'status',

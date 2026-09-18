@@ -34,6 +34,12 @@ const menus = [
     ],
   },
   {
+    group: '研究',
+    items: [
+      { path: '/research', title: '信号回放', icon: '🔬' },
+    ],
+  },
+  {
     group: '系统',
     items: [
       { path: '/status', title: '数据管理', icon: '🩺' },
