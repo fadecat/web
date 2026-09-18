@@ -393,7 +393,7 @@ onBeforeUnmount(() => requestGuard.invalidate());
             <el-radio-button value="evaluated">仅有效评价日</el-radio-button>
           </el-radio-group>
         </h3>
-        <el-table :data="visibleDays" size="small" class="days-table" border max-height="520">
+        <el-table :data="visibleDays" size="small" class="days-table" border>
           <el-table-column prop="plan_date" label="T 日" width="100" fixed align="center" />
           <el-table-column prop="eval_date" label="T+1 日" width="100" fixed align="center">
             <template #default="{ row }">{{ row.eval_date || '—' }}</template>
@@ -647,6 +647,24 @@ html.dark .grid-table .param-link {
 .hit-cell {
   font-variant-numeric: tabular-nums;
   font-size: 12px;
+}
+
+/* 逐日明细宽表: 表头吸顶照抄 StockDividend 约定——EP 默认 .el-table{overflow:hidden}
+   会成为 sticky 的滚动容器(自身不滚 → 表头吸顶失效); overflow:clip 视觉同样裁剪
+   但不建立滚动容器, 表头得以感知真正的滚动容器(AppLayout 的 .content),
+   保持「页面单滚动」模型, 不引入表格内部滚动 */
+.days-table {
+  overflow: clip;
+}
+
+.days-table :deep(.el-table__header-wrapper) {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+.days-table :deep(td) {
+  font-variant-numeric: tabular-nums;
 }
 
 .hit-invalid {
