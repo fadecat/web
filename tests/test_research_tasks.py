@@ -22,12 +22,16 @@ class FakeProvider:
     name = "fake"
 
     def __init__(self, *, bars_by_symbol: dict[str, list[DailyBar]] | None = None,
+                 raw_by_symbol: dict[str, list[DailyBar]] | None = None,
+                 hfq_by_symbol: dict[str, list[DailyBar]] | None = None,
                  fail_symbols: set[str] | None = None,
                  calendar_dates: list[date] | None = None,
                  calendar_error: bool = False,
                  events_by_symbol: dict[str, list[CorporateEvent]] | None = None,
                  events_error_symbols: set[str] | None = None) -> None:
         self.bars_by_symbol = bars_by_symbol or {}
+        self.raw_by_symbol = raw_by_symbol or {}
+        self.hfq_by_symbol = hfq_by_symbol or {}
         self.fail_symbols = fail_symbols or set()
         self.calendar_dates = calendar_dates or []
         self.calendar_error = calendar_error
@@ -49,6 +53,9 @@ class FakeProvider:
         if symbol in self.fail_symbols:
             raise RuntimeError(f"network error for {symbol}")
         self.bar_calls.append((symbol, adjust_mode.name))
+        mode_map = self.raw_by_symbol if adjust_mode.name == "RAW" else self.hfq_by_symbol
+        if symbol in mode_map:
+            return mode_map[symbol]
         return self.bars_by_symbol.get(symbol, [])
 
     def get_corporate_events(self, symbol):
@@ -307,3 +314,76 @@ def test_default_provider_factory_routes_by_config(tmp_path):
     )
     assert research_tasks._resolve_data_source({"data_source": "Tencent "}) == "tencent"
     assert research_tasks._resolve_data_source({}) == "akshare"
+
+
+# ---------------------------------------------------------------------------
+# 尾部发布滞后截齐(腾讯 ETF hfq 晚于 raw 出数)
+# ---------------------------------------------------------------------------
+
+
+def _shared_db():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from backend.models.database import Base
+    from backend.models import (  # noqa: F401
+        app_setting, data_status, jisilu_account, jisilu_stock, research, valuation,
+    )
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    return engine, sessionmaker(bind=engine)
+
+
+def test_sync_aligns_trailing_publication_lag(tmp_path):
+    """raw 比 hfq 多尾部 1 天: 截齐到共同末日发布成功, 库内只落配对天。"""
+    from sqlalchemy import select as sa_select
+    from backend.models.research import ResearchDailyBarRaw
+
+    provider = FakeProvider(
+        bars_by_symbol={"510300.SH": _bars(_DATES)},
+        raw_by_symbol={"600900.SH": _bars(_DATES + [date(2026, 1, 8)])},
+        hfq_by_symbol={"600900.SH": _bars(_DATES)},
+        calendar_dates=_DATES,
+    )
+    engine, session_factory = _shared_db()
+    try:
+        result = _run(tmp_path, provider, session_factory=session_factory)
+        assert result["status"] == "success"
+        assert result["fail_count"] == 0
+        with session_factory() as db:
+            stored = set(db.scalars(
+                sa_select(ResearchDailyBarRaw.trade_date).where(
+                    ResearchDailyBarRaw.symbol == "600900.SH")
+            ).all())
+        assert stored == set(_DATES)  # 尾部未配对的 1/8 未落库
+    finally:
+        engine.dispose()
+
+
+def test_sync_rejects_interior_mismatch_even_with_alignment(tmp_path):
+    """hfq 缺中间一天: 两侧末日相同不触发截齐, 严格配对照旧拒绝。"""
+    hole_dates = [_DATES[0], _DATES[2]]  # 缺 2026-01-06
+    provider = FakeProvider(
+        bars_by_symbol={"510300.SH": _bars(_DATES)},
+        raw_by_symbol={"600900.SH": _bars(_DATES)},
+        hfq_by_symbol={"600900.SH": _bars(hole_dates)},
+        calendar_dates=_DATES,
+    )
+    result = _run(tmp_path, provider)
+    assert result["status"] == "partial"
+    assert result["fail_count"] == 1
+    assert any("600900.SH" in err for err in result["errors"])
+
+
+def test_sync_rejects_excessive_trailing_lag(tmp_path):
+    """尾部滞后超过容忍上限(>5 根): 视为数据异常, 不截齐、保持失败。"""
+    big_lag = _DATES + [date(2026, 1, d) for d in range(8, 16)]  # 多 8 天
+    provider = FakeProvider(
+        bars_by_symbol={"510300.SH": _bars(_DATES)},
+        raw_by_symbol={"600900.SH": _bars(big_lag)},
+        hfq_by_symbol={"600900.SH": _bars(_DATES)},
+        calendar_dates=_DATES,
+    )
+    result = _run(tmp_path, provider)
+    assert result["status"] == "partial"
+    assert result["fail_count"] == 1

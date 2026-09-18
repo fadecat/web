@@ -49,6 +49,38 @@ def _default_provider_factory(data_source: str = _DATA_SOURCE_DEFAULT) -> Market
     return provider_factory(data_source)
 
 
+# 尾部发布滞后最多容忍的 bar 数(实测腾讯 ETF hfq 晚于 raw 出数 1 天; 更大差异视为数据异常)
+_TRAILING_LAG_MAX_BARS = 5
+
+
+def _align_trailing_publication_lag(
+    raw_bars: list, hfq_bars: list,
+) -> tuple[list, list, date | None]:
+    """一侧末尾若干 bar 尚未发布(如腾讯 ETF hfq 晚于 raw 出数)时, 两侧截齐到共同末日。
+
+    只处理「纯尾部滞后」: 长侧截掉尾部后与短侧仍逐日可配对(残余错位由
+    publish_paired_snapshot 的严格配对校验兜底拒绝)。内部空洞/大面积错位不在
+    此列, 不截齐、保持失败可见。返回 (raw, hfq, 截齐到的共同末日 or None)。
+    """
+    if not raw_bars or not hfq_bars:
+        return raw_bars, hfq_bars, None
+    raw_last = max(bar.trade_date for bar in raw_bars)
+    hfq_last = max(bar.trade_date for bar in hfq_bars)
+    if raw_last == hfq_last:
+        return raw_bars, hfq_bars, None
+    if raw_last > hfq_last:
+        longer, complete_last = raw_bars, hfq_last
+    else:
+        longer, complete_last = hfq_bars, raw_last
+    aligned = [bar for bar in longer if bar.trade_date <= complete_last]
+    dropped = len(longer) - len(aligned)
+    if dropped <= 0 or dropped > _TRAILING_LAG_MAX_BARS:
+        return raw_bars, hfq_bars, None
+    if raw_last > hfq_last:
+        return aligned, hfq_bars, complete_last
+    return raw_bars, aligned, complete_last
+
+
 def run_research_daily_sync(
     *,
     provider_factory_fn: Any = None,
@@ -103,6 +135,12 @@ def run_research_daily_sync(
                     row["symbol"], history_start, request_end,
                     AdjustMode.HFQ, security_type=row["security_type"],
                 )
+                # 尾部发布滞后截齐(如腾讯 ETF hfq 晚于 raw 出数): 只截纯尾部, 内部错位仍严格拒绝
+                raw_bars, hfq_bars, common_last = _align_trailing_publication_lag(raw_bars, hfq_bars)
+                if common_last is not None:
+                    logger.warning(
+                        "%s: raw/hfq 尾部发布滞后, 截齐到共同末日 %s 后发布", row["symbol"], common_last,
+                    )
                 result = research_store.publish_paired_snapshot(
                     db, row["symbol"], raw_bars, hfq_bars,
                     source=provider.name,
