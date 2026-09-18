@@ -400,14 +400,24 @@ def _tencent_code(symbol: str) -> str:
 
 
 def _tencent_extract_rows(payload: dict[str, Any], code: str, fq: str) -> list:
-    """从 fqkline 响应 data[code] 中取行; 复权键缺失直接报错(不静默退回未复权)。"""
+    """从 fqkline 响应 data[code] 中取行; 复权键缺失时若替身键有数据直接报错(不静默退回未复权)。
+
+    例外: 窗口内无交易日时腾讯对 hfq 请求也回 'day' 键的空列表(实测 2021-01-01..2021-01-03),
+    空列表不存在口径歧义, 视为空页返回。
+    """
     data = (payload or {}).get("data", {}).get(code) or {}
     key = f"{fq}day" if fq else "day"
     rows = data.get(key)
     if rows is None:
-        raise ResearchSourceError(
-            f"tencent fqkline 响应缺少 {key!r} 键(可用键: {sorted(data)}), 拒绝静默换口径"
-        )
+        for fallback_key in ("day", "hfqday"):
+            fallback = data.get(fallback_key)
+            if fallback:
+                # 替身键有实际数据: 这才是要拦的静默换口径
+                raise ResearchSourceError(
+                    f"tencent fqkline 响应缺少 {key!r} 键但 {fallback_key!r} 有数据"
+                    f"(可用键: {sorted(data)}), 拒绝静默换口径"
+                )
+        return []  # 全空响应(如无交易日窗口): 无口径歧义
     return rows or []
 
 
@@ -520,6 +530,10 @@ class TencentFqklineProvider:
             for row in rows:
                 if row and row[0] is not None:
                     rows_by_date[str(row[0])] = row
+            # 页行数不足 = 窗口已取尽(腾讯回窗口内最新 count 条), 不再发尾窗请求
+            # (尾窗常为无交易日区间, 徒增一次空请求)
+            if len(rows) < self._page_size:
+                break
             try:
                 first_date = date.fromisoformat(str(rows[0][0]))
             except ValueError:

@@ -228,6 +228,36 @@ def test_tencent_provider_paginates_with_backward_cursor():
     assert bars[0].source == "tencent:fqkline"
 
 
+def test_tencent_extract_rows_empty_window_is_empty_not_error():
+    """无交易日窗口: 腾讯对 hfq 请求也回 'day' 空列表——空响应无口径歧义, 返回空。"""
+    empty_day = {"data": {"sh600900": {"day": [], "qt": {}, "version": ""}}}
+    assert _tencent_extract_rows(empty_day, "sh600900", "hfq") == []
+    no_rows_keys = {"data": {"sh600900": {"qt": {}, "version": ""}}}
+    assert _tencent_extract_rows(no_rows_keys, "sh600900", "hfq") == []
+
+
+def test_tencent_provider_stops_on_partial_page_without_tail_request():
+    """末页行数 < page_size 即取尽, 不再发尾窗请求(实测 2021-01-01 起全量翻页踩过)。"""
+    all_dates = [date(2021, 1, 1) + timedelta(days=i) for i in range(25)]
+    calls: list[tuple[str, str]] = []
+
+    def fake_kline(code, fq, start_s, end_s, count):
+        calls.append((start_s, end_s))
+        end = date.fromisoformat(end_s)
+        window = [d for d in all_dates if date.fromisoformat(start_s) <= d <= end]
+        return [_tencent_row(d) for d in window[-count:]]
+
+    provider = TencentFqklineProvider(
+        kline_fetch_fn=fake_kline, sleep=lambda _s: None, page_size=10, page_gap=0.0,
+    )
+    bars = provider.get_daily_bars(
+        "600900.SH", all_dates[0], all_dates[-1], AdjustMode.HFQ, security_type="STOCK",
+    )
+    assert len(calls) == 3  # 10 + 10 + 5(末页不足 10 即止), 无第 4 次尾窗请求
+    assert calls[2] == (all_dates[0].isoformat(), all_dates[4].isoformat())
+    assert [bar.trade_date for bar in bars] == all_dates
+
+
 def test_tencent_provider_row_order_and_volume_units():
     """行序 [date, open, close, high, low, volume(手)]: 股票与 ETF 成交量均 ×100。"""
     row = _tencent_row(date(2026, 1, 5), close=10.0, volume=5.0)  # 5 手
