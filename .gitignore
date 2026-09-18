@@ -59,3 +59,6 @@ data/.test_*/
 
 # pytest 测试产物(独立目录, 不入库, 见 tests/conftest.py)
 .test-artifacts/
+
+# WorkBuddy 本地会话工作区(记忆日志与研究草稿, 各环境独立)
+.workbuddy/
