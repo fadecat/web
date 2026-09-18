@@ -1,0 +1,11 @@
+# 研究回放(次日 T 价位研究 V1)标的与参数配置。
+# 设计: docs/superpowers/specs/2026-09-18-next-day-t-research-replay-design.md
+# 加标的只改本文件不改代码; symbol 用规范代码(带交易所后缀)。
+history_start: "2021-01-01"          # 日线拉取下界(请求下界, 非保证; 上市晚的标的从上市日起有数据)
+corporate_action_tolerance: 0.002    # r_t=raw_close/hfq_close 相对阶跃容差, Phase 0 PoC 标定后回填
+targets:
+  - { symbol: "600900.SH", name: "长江电力", type: "stock", source: "akshare", selection_list: "高股息" }
+  - { symbol: "001286.SZ", name: "陕西能源", type: "stock", source: "akshare", selection_list: "高股息" }
+  - { symbol: "601288.SH", name: "农业银行", type: "stock", source: "akshare", selection_list: "高股息" }
+  - { symbol: "510300.SH", name: "沪深300ETF", type: "etf", source: "akshare", selection_list: "手动ETF" }
+  - { symbol: "511010.SH", name: "国债ETF", type: "etf", source: "akshare", selection_list: "手动ETF" }

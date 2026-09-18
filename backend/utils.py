@@ -217,6 +217,51 @@ def load_index_eod_targets(config_path: str | Path | None = None) -> list[dict[s
     return targets
 
 
+def load_research_targets(config_path: str | Path | None = None) -> list[dict[str, Any]]:
+    """加载研究回放标的配置(config/research.yaml)。
+
+    用途: 次日 T 价位研究 V1 的标的清单, 与 load_index_eod_targets 同一模式:
+    YAML 清单驱动, 加标的只改配置不改代码。
+
+    返回: targets 列表, 每项含 symbol(规范代码带交易所后缀) / name /
+    type(stock|etf) / source / selection_list 字段。
+    """
+    if config_path:
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    else:
+        data = load_yaml_config("research.yaml")
+
+    targets = data.get("targets") or []
+    valid: list[dict[str, Any]] = []
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        symbol = str(target.get("symbol") or "").strip().upper()
+        if not symbol or "." not in symbol:
+            continue
+        valid.append({
+            "symbol": symbol,
+            "name": str(target.get("name") or symbol),
+            "type": str(target.get("type") or "stock").strip().lower(),
+            "source": str(target.get("source") or "akshare").strip().lower(),
+            "selection_list": str(target.get("selection_list") or "手动ETF"),
+        })
+    if not valid:
+        raise ValueError("research 配置无有效标的(需 symbol 形如 600900.SH)")
+    return valid
+
+
+def load_research_settings(config_path: str | Path | None = None) -> dict[str, Any]:
+    """加载研究回放全局参数(history_start / corporate_action_tolerance 等)。"""
+    if config_path:
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    else:
+        data = load_yaml_config("research.yaml")
+    return data if isinstance(data, dict) else {}
+
+
 # ---------------------------------------------------------------------------
 # 交易日判断
 # ---------------------------------------------------------------------------
