@@ -3,6 +3,78 @@
 // 归一方式), 放在模板里既测不了也容易两处写不一致。
 
 import { EMPTY, TREND_FLAT, TREND_UP, TREND_DOWN, trendOf, formatReturnPct } from './portfolioList.mjs';
+import { isDate } from './portfolioAssets.mjs';
+
+// ---------------------------------------------------------------------------
+// 区间快捷选择(控制条「请选择」下拉)
+// ---------------------------------------------------------------------------
+
+/**
+ * 事件锚点沿用韭圈儿「请选择」下拉里的 5 个点位(2026-09-19 由用户截图提出)。
+ *
+ * ⚠ 它们是**固定历史日期**, 不是"近 N 年" —— 对成立较晚的组合会早于 T0, 此时由后端的
+ *    "起点前移"规则夹到 T0 并回显(`actual_start`), **前端不自己改口径**。
+ */
+export const RANGE_EVENT_PRESETS = [
+  { key: 'evt-2015-crash', label: '2015 股灾以来(2015-06-12)', start: '2015-06-12' },
+  { key: 'evt-2016-circuit', label: '2016 熔断以来(2016-01-17)', start: '2016-01-17' },
+  { key: 'evt-2019-bull', label: '2019 牛市以来(2019-01-04)', start: '2019-01-04' },
+  { key: 'evt-2020-covid', label: '2020 疫情以来(2020-01-17)', start: '2020-01-17' },
+  { key: 'evt-2021-cny', label: '2021 春节以来(2021-02-18)', start: '2021-02-18' },
+];
+
+export const RANGE_INCEPTION_KEY = 'inception';
+
+/**
+ * 按年份的区间: 从 T0 那年到数据最新日那年, **倒序**。
+ * 当年/跨年的年末日期夹到 `lastDataDate`(未来日期没有意义, 后端也会前移)。
+ */
+export const buildYearRangePresets = (t0, lastDataDate) => {
+  if (!isDate(t0) || !isDate(lastDataDate)) return [];
+  const first = Number(t0.slice(0, 4));
+  const last = Number(lastDataDate.slice(0, 4));
+  if (!Number.isFinite(first) || !Number.isFinite(last) || last < first) return [];
+  const out = [];
+  for (let year = last; year >= first; year -= 1) {
+    const yearEnd = `${year}-12-31`;
+    out.push({
+      key: `year-${year}`,
+      label: `${year}年`,
+      start: `${year}-01-01`,
+      end: yearEnd < lastDataDate ? yearEnd : lastDataDate,
+    });
+  }
+  return out;
+};
+
+/** 分组给 UI 用: 区间 / 事件锚点 / 按年份。 */
+export const buildRangePresetGroups = ({ t0, lastDataDate } = {}) => {
+  const years = buildYearRangePresets(t0, lastDataDate);
+  return [
+    {
+      label: '区间',
+      options: [{ key: RANGE_INCEPTION_KEY, label: '成立以来', start: isDate(t0) ? t0 : null }],
+    },
+    { label: '事件锚点', options: [...RANGE_EVENT_PRESETS] },
+    ...(years.length ? [{ label: '按年份', options: years }] : []),
+  ];
+};
+
+/**
+ * 选中项 → 起止日(交给回测表单)。
+ *
+ * ⚠ 「成立以来」必须**显式给 T0**: `start=null` 会落到后端"末端回推 10 年"的默认,
+ *    那不是"成立以来"。拿不到 T0 时返回 null(让 UI 什么都不做, 不猜)。
+ */
+export const resolveRangePreset = (key, { t0, lastDataDate } = {}) => {
+  for (const group of buildRangePresetGroups({ t0, lastDataDate })) {
+    const hit = group.options.find((option) => option.key === key);
+    if (!hit) continue;
+    if (hit.key === RANGE_INCEPTION_KEY && !isDate(t0)) return null;
+    return { key: hit.key, start: hit.start, end: hit.end ?? null };
+  }
+  return null;
+};
 
 // ---------------------------------------------------------------------------
 // 收益条(区域①)

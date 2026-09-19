@@ -5,7 +5,7 @@
 // 数值换算逻辑已由 src/utils/backtestView.test.mjs 覆盖。
 import { describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
-import ElementPlus from 'element-plus';
+import ElementPlus, { ElSelect } from 'element-plus';
 
 import AddAssetDialog from '../../src/components/portfolio/AddAssetDialog.vue';
 import CorrelationMatrix from '../../src/components/portfolio/CorrelationMatrix.vue';
@@ -142,7 +142,7 @@ describe('CorrelationMatrix(区域⑥ 相关性矩阵)', () => {
 describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () => {
   // 背景: 详情页最初只做了"从已注册标的里挑", 而标的库里的标的都已在本组合中
   //       → 下拉恒为空, 用户完全没法往组合里加东西。这里把"入口必须存在"锁死。
-  const mountPage = async ({ assets = [], listAssetsResult = [] } = {}) => {
+  const mountPage = async ({ assets = [], listAssetsResult = [], runResult = null } = {}) => {
     api.getPortfolio.mockResolvedValue({
       id: 1,
       name: '空组合',
@@ -155,9 +155,13 @@ describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () =
       data_readiness: { assets: [], all_ready: false, common_start: null },
     });
     api.listAssets.mockResolvedValue(listAssetsResult);
-    api.runBacktest.mockRejectedValue({
-      response: { status: 422, data: { detail: '组合还没有成员' } },
-    });
+    if (runResult) {
+      api.runBacktest.mockResolvedValue(runResult);
+    } else {
+      api.runBacktest.mockRejectedValue({
+        response: { status: 422, data: { detail: '组合还没有成员' } },
+      });
+    }
     const wrapper = mount(PortfolioDetail, {
       global: {
         plugins: [ElementPlus],
@@ -304,5 +308,49 @@ describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () =
     await flushPromises();
 
     expect(wrapper.text()).not.toContain('纳指ETF国泰'); // 该标的已撤出草稿
+  });
+
+  // 区间快捷选择(控制条「请选择」下拉, 韭圈儿同款: 成立以来 / 事件锚点 / 按年份)
+  const RUN_OK = {
+    id: 1,
+    result: {
+      windows: WINDOWS,
+      t0_date: '2013-04-26',
+      metrics: {},
+      drawdown: null,
+      data_range: { start: '2013-04-26', last: '2026-09-18' },
+      assets: MEMBERS,
+    },
+  };
+
+  it('控制条有「请选择」区间快捷下拉', async () => {
+    const wrapper = await mountPage({ assets: MEMBERS });
+    const select = wrapper.findComponent(ElSelect);
+    expect(select.exists()).toBe(true);
+    expect(select.props('placeholder')).toBe('请选择');
+  });
+
+  it('区间快捷: 选「成立以来」把起始日设为 T0 并立即重跑', async () => {
+    const wrapper = await mountPage({ assets: MEMBERS, runResult: RUN_OK });
+    api.runBacktest.mockClear();
+
+    wrapper.findComponent(ElSelect).vm.$emit('change', 'inception');
+    await flushPromises();
+
+    expect(api.runBacktest).toHaveBeenCalledTimes(1);
+    const payload = api.runBacktest.mock.calls[0][0];
+    // ⚠ 必须显式给 T0: start 为空会落到后端"末端回推 10 年"的默认, 那不是"成立以来"
+    expect(payload.start).toBe('2013-04-26');
+    expect(payload.end).toBeNull();
+  });
+
+  it('区间快捷: 还没跑成过一次回测(无 T0)时不猜日期、不重跑', async () => {
+    const wrapper = await mountPage({ assets: MEMBERS }); // runBacktest 被拒 → 无 result
+    api.runBacktest.mockClear();
+
+    wrapper.findComponent(ElSelect).vm.$emit('change', 'inception');
+    await flushPromises();
+
+    expect(api.runBacktest).not.toHaveBeenCalled();
   });
 });

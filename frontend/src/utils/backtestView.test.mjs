@@ -10,12 +10,16 @@ import {
   buildChartData,
   buildCorrelationView,
   buildMetricCards,
+  buildRangePresetGroups,
   buildReturnCells,
+  buildYearRangePresets,
   correlationCellStyle,
   drawdownSummaryText,
   normalizeToReturnPct,
   priceBasisLabel,
+  RANGE_INCEPTION_KEY,
   rebalanceLabel,
+  resolveRangePreset,
 } from './backtestView.mjs';
 
 const WINDOWS = {
@@ -260,4 +264,54 @@ test('相关性矩阵: 后端没给样本数时不显示 n(而不是显示 n=0)'
   );
   assert.equal(view.rows[0].cells[1].sampleText, '');
   assert.equal(view.rows[0].cells[1].samples, null);
+});
+
+// ---------------------------------------------------------------------------
+// 区间快捷选择(控制条「请选择」下拉, 韭圈儿同款)
+// ---------------------------------------------------------------------------
+
+test('区间快捷: 按年份倒序, 当年的年末夹到数据最新日', () => {
+  const years = buildYearRangePresets('2013-04-26', '2026-09-18');
+  assert.equal(years.length, 14); // 2013 ~ 2026
+  assert.equal(years[0].key, 'year-2026');
+  // 当年: 12-31 在未来 → 夹到最新数据日(否则会请求一个未来的区间)
+  assert.deepEqual([years[0].start, years[0].end], ['2026-01-01', '2026-09-18']);
+  assert.deepEqual([years[1].start, years[1].end], ['2025-01-01', '2025-12-31']);
+  assert.equal(years.at(-1).key, 'year-2013');
+  assert.equal(years.at(-1).end, '2013-12-31');
+});
+
+test('区间快捷: 缺 T0 或数据末端就不给年份(不猜)', () => {
+  assert.deepEqual(buildYearRangePresets(null, '2026-09-18'), []);
+  assert.deepEqual(buildYearRangePresets('2013-04-26', null), []);
+  assert.deepEqual(buildYearRangePresets('2026-01-01', '2013-12-31'), []); // 首尾颠倒
+});
+
+test('区间快捷: 「成立以来」必须显式给 T0', () => {
+  // start=null 会落到后端"末端回推 10 年"的默认 —— 那不是"成立以来"
+  assert.deepEqual(
+    resolveRangePreset(RANGE_INCEPTION_KEY, { t0: '2013-04-26', lastDataDate: '2026-09-18' }),
+    { key: 'inception', start: '2013-04-26', end: null },
+  );
+  assert.equal(
+    resolveRangePreset(RANGE_INCEPTION_KEY, { t0: null, lastDataDate: '2026-09-18' }),
+    null,
+  );
+});
+
+test('区间快捷: 事件锚点是固定历史日期(早于 T0 时交给后端前移)', () => {
+  const hit = resolveRangePreset('evt-2020-covid', { t0: '2013-04-26', lastDataDate: '2026-09-18' });
+  assert.deepEqual(hit, { key: 'evt-2020-covid', start: '2020-01-17', end: null });
+  // 未选到 → null(UI 什么都不做, 不拿最近的选项顶替)
+  assert.equal(resolveRangePreset('nope', { t0: '2013-04-26', lastDataDate: '2026-09-18' }), null);
+});
+
+test('区间快捷: 分组固定为 区间/事件锚点/按年份', () => {
+  const groups = buildRangePresetGroups({ t0: '2013-04-26', lastDataDate: '2026-09-18' });
+  assert.deepEqual(groups.map((g) => g.label), ['区间', '事件锚点', '按年份']);
+  assert.equal(groups[0].options[0].label, '成立以来');
+  assert.equal(groups[1].options.length, 5);
+  // 拿不到 T0 时"按年份"整组不出现(不给一组点不动的空选项)
+  const bare = buildRangePresetGroups({ t0: null, lastDataDate: null });
+  assert.deepEqual(bare.map((g) => g.label), ['区间', '事件锚点']);
 });

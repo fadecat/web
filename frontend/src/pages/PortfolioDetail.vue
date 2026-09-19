@@ -23,8 +23,8 @@ import {
 } from '../api/portfolio';
 import {
   basisCompositionText, buildBasisNotes, buildChartData, buildMetricCards,
-  drawdownSummaryText, EXEC_PRICE_TIP, priceBasisLabel, QDII_FOOTNOTE, REBALANCE_OPTIONS,
-  REBALANCE_TIP, rebalanceLabel,
+  buildRangePresetGroups, drawdownSummaryText, EXEC_PRICE_TIP, priceBasisLabel,
+  QDII_FOOTNOTE, REBALANCE_OPTIONS, REBALANCE_TIP, rebalanceLabel, resolveRangePreset,
 } from '../utils/backtestView.mjs';
 import {
   EMPTY, formatDate, formatReturnPct, formatWeight, readinessText, trendOf, weightSummaryText,
@@ -124,6 +124,37 @@ const rangeWarning = computed(() => (
     ? `起始日 ${form.start} 不早于数据最新日 ${lastDataDate.value}，区间不足两个交易日，无法回测`
     : ''
 ));
+
+// ---------------------------------------------------------------------------
+// 区间快捷选择(控制条「请选择」下拉): 成立以来 / 事件锚点 / 按年份
+// ---------------------------------------------------------------------------
+
+// T0 = 回测给出的建仓日(共同起点), 无 result 时用组合的数据就绪摘要
+const t0Date = computed(
+  () => result.value?.t0_date ?? detail.value?.data_readiness?.common_start ?? null,
+);
+const rangePresetGroups = computed(
+  () => buildRangePresetGroups({ t0: t0Date.value, lastDataDate: lastDataDate.value }),
+);
+// 选中项由表单**反推**(不另存一份状态): 用户手动改日期时会自动取消高亮, 不会撒谎
+const rangePresetKey = computed(() => {
+  for (const group of rangePresetGroups.value) {
+    const hit = group.options.find(
+      (option) => (option.start || '') === form.start && (option.end || '') === (form.end || ''),
+    );
+    if (hit) return hit.key;
+  }
+  return '';
+});
+
+const applyRangePreset = async (key) => {
+  const preset = resolveRangePreset(key, { t0: t0Date.value, lastDataDate: lastDataDate.value });
+  if (!preset) return; // 拿不到 T0(还没跑成过一次回测) → 什么都不做, 不猜日期
+  form.start = preset.start || '';
+  form.end = preset.end || '';
+  // 韭圈儿点选即刷新; 权重不全时只填表单(此时「组合回测」按钮本来也是灰的)
+  if (weightsComplete.value) await runIt(false);
+};
 
 // ---------------------------------------------------------------------------
 // 加载 / 回测 / 编辑
@@ -415,6 +446,28 @@ onMounted(load);
 
           <div class="control-line">
             <span class="control-label">自定义：</span>
+            <!-- 区间快捷选择: 成立以来 / 事件锚点 / 按年份(韭圈儿「请选择」下拉) -->
+            <el-select
+              :model-value="rangePresetKey"
+              class="range-preset"
+              size="small"
+              placeholder="请选择"
+              style="width: 196px"
+              @change="applyRangePreset"
+            >
+              <el-option-group
+                v-for="group in rangePresetGroups"
+                :key="group.label"
+                :label="group.label"
+              >
+                <el-option
+                  v-for="option in group.options"
+                  :key="option.key"
+                  :label="option.label"
+                  :value="option.key"
+                />
+              </el-option-group>
+            </el-select>
             <el-date-picker
               v-model="form.start"
               type="date"
