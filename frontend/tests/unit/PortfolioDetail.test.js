@@ -109,6 +109,15 @@ describe('CorrelationMatrix(区域⑥ 相关性矩阵)', () => {
     expect(wrapper.find('.range').text()).toContain('2026-09-18');
   });
 
+  it('⭐ 标题旁有「?」帮助入口(相关性最易被误读成"涨跌比例", 帮助是规格要求)', () => {
+    // 帮助文案的要点见 page-spec §二-⑥: 各档体感 + "低相关=不会一起亏" +
+    // ⚠ "只描述长期步调, 不能用来猜某一天谁涨谁跌"。这里只守住"入口必须在"。
+    const wrapper = mountWith(CorrelationMatrix, { correlation, assets });
+    const icon = wrapper.find('.corr-head .hint-icon');
+    expect(icon.exists()).toBe(true);
+    expect(icon.text()).toBe('?');
+  });
+
   it('行列表头按 1..N 编号, 且带名称与代码', () => {
     const wrapper = mountWith(CorrelationMatrix, { correlation, assets });
     const colHeads = wrapper.findAll('.col-head').map((n) => n.text());
