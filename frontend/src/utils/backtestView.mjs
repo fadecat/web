@@ -246,6 +246,22 @@ export const buildChartData = (nav) => {
 // 口径提示(区域⑧)
 // ---------------------------------------------------------------------------
 
+/**
+ * 本组合的口径**构成**(page-spec §三-3): 混合持仓必须说清由哪些口径组成,
+ * 否则用户会拿"ETF 后复权价"与"场外分红再投净值"直接横向比较。
+ *
+ * 例: `后复权价 3 只 · 分红再投净值 1 只`；没有成员时给空串(不显示)。
+ */
+export const basisCompositionText = (assets = []) => {
+  const counts = new Map();
+  for (const asset of Array.isArray(assets) ? assets : []) {
+    const basis = asset?.price_basis;
+    if (!basis) continue;
+    counts.set(basis, (counts.get(basis) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([basis, n]) => `${priceBasisLabel(basis)} ${n} 只`).join(' · ');
+};
+
 /** 后端给的逐条口径说明 → 追加一条基准口径提示(价格指数不含股息, 与组合不可直接比)。 */
 export const buildBasisNotes = (result) => {
   const notes = [...(result?.price_basis_note ?? [])];

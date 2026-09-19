@@ -138,7 +138,7 @@ onBeforeUnmount(() => {
       <p>点击右上角「+ 添加标的」注册第一只股票或 ETF。</p>
     </div>
     <div v-else class="assets-table-wrap page-card">
-      <el-table :data="rows" row-key="id" size="small" table-layout="fixed">
+      <el-table :data="rows" row-key="id" size="small" stripe table-layout="fixed">
         <el-table-column label="标的" min-width="160">
           <template #default="{ row }">
             <strong class="asset-name">{{ row.name || '—' }}</strong>
@@ -381,5 +381,18 @@ onBeforeUnmount(() => {
   margin: 4px 0;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+
+/* 响应式断点(page-spec §五: 1280 / 960): 窄屏收内边距, 表格横向滚动兜底 */
+@media (max-width: 1280px) {
+  .assets-table-wrap :deep(.el-table) {
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 960px) {
+  .assets-page {
+    padding: 12px;
+  }
 }
 </style>

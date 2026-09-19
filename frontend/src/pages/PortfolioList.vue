@@ -217,9 +217,18 @@ onMounted(load);
 .card-metrics { display: grid; grid-template-columns: repeat(3, 1fr); text-align: center; }
 .metric-value { font-size: 18px; font-weight: 600; line-height: 1.4; }
 .metric-label { font-size: 12px; color: var(--el-text-color-secondary); margin-top: 2px; }
-/* 涨红跌绿(A 股习惯) */
-.trend-up { color: #d93025; }
-.trend-down { color: #1a8f3c; }
-.trend-flat { color: var(--el-text-color-secondary); }
+/* 涨跌色用全局 .trend-up/.trend-down(style.css) —— 同一口径只留一份定义,
+   否则改一处漏一处(这里原本重复定义了三个色值)。 */
 .page-foot { margin-top: 16px; font-size: 12px; color: var(--el-text-color-secondary); }
+
+/* 响应式断点(page-spec §五: 1280 / 960): 两列卡片 → 窄屏收间距 → 单列 */
+@media (max-width: 1280px) {
+  .card-grid { gap: 12px; }
+  .portfolio-card { padding: 12px 14px; }
+}
+
+@media (max-width: 960px) {
+  .card-grid { grid-template-columns: minmax(0, 1fr); }
+  .metric-value { font-size: 16px; }
+}
 </style>

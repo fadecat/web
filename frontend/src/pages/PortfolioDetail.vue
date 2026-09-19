@@ -22,9 +22,9 @@ import {
   deletePortfolio, getPortfolio, listAssets, patchPortfolio, refreshAsset, runBacktest,
 } from '../api/portfolio';
 import {
-  buildBasisNotes, buildChartData, buildMetricCards, drawdownSummaryText,
-  EXEC_PRICE_TIP, priceBasisLabel, QDII_FOOTNOTE, REBALANCE_OPTIONS, REBALANCE_TIP,
-  rebalanceLabel,
+  basisCompositionText, buildBasisNotes, buildChartData, buildMetricCards,
+  drawdownSummaryText, EXEC_PRICE_TIP, priceBasisLabel, QDII_FOOTNOTE, REBALANCE_OPTIONS,
+  REBALANCE_TIP, rebalanceLabel,
 } from '../utils/backtestView.mjs';
 import {
   EMPTY, formatDate, formatReturnPct, formatWeight, readinessText, trendOf, weightSummaryText,
@@ -87,6 +87,8 @@ const metricCards = computed(() =>
   result.value ? buildMetricCards(result.value.metrics, result.value.drawdown) : [],
 );
 const basisNotes = computed(() => buildBasisNotes(result.value));
+// 图例要标本组合的口径构成(page-spec §三-3) —— 取成员的真实口径, 不用曲线反推
+const basisComposition = computed(() => basisCompositionText(detail.value?.assets ?? []));
 const drawdownText = computed(() => drawdownSummaryText(result.value?.drawdown));
 
 const assetRows = computed(() => result.value?.assets ?? detail.value?.assets ?? []);
@@ -483,8 +485,11 @@ onMounted(load);
           <div v-if="chartTab === 'drawdown' && result?.drawdown" class="drawdown-note">
             {{ drawdownText }}
           </div>
-          <div v-else-if="chartData?.benchmark" class="benchmark-note">
-            ■ 本组合（红） vs ■ {{ chartData.benchmark.name }}（蓝，{{ priceBasisLabel(chartData.benchmark.priceBasis) }}）
+          <div v-else-if="chartData?.portfolio" class="benchmark-note">
+            ■ 本组合（红）<template v-if="basisComposition">，口径：{{ basisComposition }}</template>
+            <template v-if="chartData?.benchmark">
+              &nbsp;&nbsp;vs ■ {{ chartData.benchmark.name }}（蓝，{{ priceBasisLabel(chartData.benchmark.priceBasis) }}）
+            </template>
           </div>
         </div>
       </section>
@@ -569,6 +574,7 @@ onMounted(load);
           <el-table
             :data="draft"
             size="small"
+            stripe
             style="width: 100%"
             :row-class-name="({ row }) => (statusOf(row).blocked ? 'row-blocked' : '')"
           >
@@ -635,6 +641,7 @@ onMounted(load);
             v-else
             :data="assetRows"
             size="small"
+            stripe
             style="width: 100%"
             :row-class-name="({ row }) => (syncOf(row.symbol).blocked ? 'row-blocked' : '')"
           >
@@ -996,9 +1003,16 @@ onMounted(load);
   margin-left: 4px;
 }
 
-/* 「无数据/抓取失败」的行标红(page-spec §四): 让用户一眼看出哪一行不能用 */
+/* 「无数据/抓取失败」的行标红(page-spec §四): 让用户一眼看出哪一行不能用。
+   ⚠ 表格开了斑马纹(stripe), Element 的 `.el-table__row--striped td` 会盖掉行背景,
+     所以这里必须直接压到单元格上。 */
 :deep(.el-table .row-blocked) {
   --el-table-tr-bg-color: var(--el-color-danger-light-9);
+}
+
+:deep(.el-table .row-blocked > td.el-table__cell),
+:deep(.el-table .row-blocked.el-table__row--striped > td.el-table__cell) {
+  background-color: var(--el-color-danger-light-9) !important;
 }
 
 .table-foot {
@@ -1018,5 +1032,28 @@ onMounted(load);
 
 .basis-notes {
   margin-top: 6px;
+}
+
+/* 响应式断点(page-spec §五: 1280 / 960)。
+   指标卡本身用 auto-fit 自适应; 这里收卡片内边距与控制条间距, 表格由 el-table 横向滚动兜底。 */
+@media (max-width: 1280px) {
+  .card {
+    padding: 12px;
+  }
+}
+
+@media (max-width: 960px) {
+  .card {
+    padding: 10px;
+    margin-bottom: 10px;
+  }
+
+  .control-line {
+    gap: 6px;
+  }
+
+  .metric-value {
+    font-size: 16px;
+  }
 }
 </style>

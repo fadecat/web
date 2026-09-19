@@ -5,6 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  basisCompositionText,
   buildBasisNotes,
   buildChartData,
   buildCorrelationView,
@@ -181,6 +182,17 @@ test('口径提示: 后端已给过同类提示就不重复追加', () => {
     benchmark: { symbol: '000300', name: '沪深300', price_basis: 'PRICE' },
   });
   assert.equal(notes.length, 1);
+});
+
+test('口径构成: 混合持仓说清由哪些口径组成(page-spec §三-3)', () => {
+  const text = basisCompositionText([
+    { price_basis: 'HFQ' }, { price_basis: 'HFQ' }, { price_basis: 'HFQ' },
+    { price_basis: 'NAV_ADJ' },
+  ]);
+  assert.equal(text, '后复权价 3 只 · 分红再投净值 1 只');
+  // 没有成员 / 字段缺失 → 空串(图例不显示这一段), 不编造
+  assert.equal(basisCompositionText([]), '');
+  assert.equal(basisCompositionText([{ symbol: 'A' }]), '');
 });
 
 test('文案: 复权口径与再平衡名称', () => {
