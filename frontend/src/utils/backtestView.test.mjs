@@ -190,3 +190,62 @@ test('文案: 复权口径与再平衡名称', () => {
   assert.equal(priceBasisLabel(null), '—');
   assert.equal(rebalanceLabel('quarterly'), '季平衡');
 });
+
+test('指标卡: 覆盖规格 §二-⑤ 的全部项(含最差年度与累计换手)', () => {
+  const cards = buildMetricCards(
+    {
+      cagr: 8.9, mdd: -16.5, vol: 11.2, sharpe: 0.79, sortino: 1.1, calmar: 0.54,
+      worst_year: -6.2, worst_month: -3.1, turnover: 312.4,
+    },
+    { recovery_days: 418, trough_date: '2020-03-23' },
+  );
+  const keys = cards.map((c) => c.key);
+  for (const key of ['cagr', 'mdd', 'vol', 'sharpe', 'sortino', 'calmar',
+    'worst_year', 'worst_month', 'recovery', 'turnover']) {
+    assert.ok(keys.includes(key), `指标卡缺 ${key}`);
+  }
+  const byKey = Object.fromEntries(cards.map((c) => [c.key, c]));
+  assert.equal(byKey.worst_year.value, '-6.20%');
+  assert.equal(byKey.turnover.value, '312.40%');
+  // 换手不参与收益计算 —— 提示里必须写明, 否则会被误读成成本
+  assert.ok(byKey.turnover.hint.includes('不参与收益计算'));
+});
+
+test('指标卡: 后端没算出来的项显示破折号, 不编造', () => {
+  const cards = buildMetricCards({}, null);
+  for (const card of cards) {
+    assert.equal(card.value, '—', `${card.key} 应为 —`);
+  }
+});
+
+test('相关性矩阵: 非对角格带样本数 n(ambiguity-audit D8)', () => {
+  const view = buildCorrelationView(
+    {
+      start: '2016-09-19',
+      end: '2026-09-18',
+      symbols: ['100001.OF', '100002.OF'],
+      matrix: [
+        [1, 0.43],
+        [0.43, 1],
+      ],
+      // 后端 key 规则: 字典序小的在前
+      sample_sizes: { '100001.OF|100002.OF': 2438 },
+    },
+    [],
+  );
+  assert.equal(view.rows[0].cells[1].samples, 2438);
+  assert.equal(view.rows[0].cells[1].sampleText, 'n=2438');
+  // 对角线不显示样本数(自己跟自己)
+  assert.equal(view.rows[0].cells[0].sampleText, '');
+  // 对称: 第 2 行第 1 列要取到同一个 key
+  assert.equal(view.rows[1].cells[0].sampleText, 'n=2438');
+});
+
+test('相关性矩阵: 后端没给样本数时不显示 n(而不是显示 n=0)', () => {
+  const view = buildCorrelationView(
+    { start: 'a', end: 'b', symbols: ['A', 'B'], matrix: [[1, 0.1], [0.1, 1]] },
+    [],
+  );
+  assert.equal(view.rows[0].cells[1].sampleText, '');
+  assert.equal(view.rows[0].cells[1].samples, null);
+});

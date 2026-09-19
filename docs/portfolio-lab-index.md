@@ -157,11 +157,11 @@
 | `page-spec` §四 | 无数据/代码无效 → 该行标红 | ⚠️ 部分 |
 | `page-spec` §五 | 视觉：首格 ~34px（现 28）· 表格行高 ≥48px · 数值右对齐 · 断点 1280/960 | ⚠️ 未逐项对齐 |
 | `page-spec` §八 | 契约命名：`effective_start`（现 `actual_start`）· `asset_class`（现 `security_type`）· `manager`（现 `fund_manager`）· `nav_series`（现 `nav.{dates,nav}`） | ⚠️ 语义一致、**命名不一致** |
-| `page-spec` §八 | `metrics` 应含 `worst_year` / `turnover` / `recovery_days` | ⚠️ 前两者未算；`recovery_days` 放在 `drawdown` 里 |
+| `page-spec` §八 | `metrics` 应含 `worst_year` / `turnover` / `recovery_days` | ✅ `worst_year`+`turnover` 已补（`recovery_days` 仍在 `drawdown` 里） |
 | `page-spec` §9.6 | 新建/复制组合 → **立即**算三格 | ✅ 已补 |
 | `page-spec` §9.6 | 成员/权重变更 → 重算 | ✅ 已补 |
-| `ambiguity-audit` D5 | 指标卡**默认收起** | ❌ 未实现（现常驻展开） |
-| `ambiguity-audit` D8 | 相关性格子**显示样本数 n** | ❌ 后端已算 `sample_sizes`，**前端未展示** |
+| `ambiguity-audit` D5 | 指标卡**默认收起** | ✅ 已补（折叠 + 默认收起） |
+| `ambiguity-audit` D8 | 相关性格子**显示样本数 n** | ✅ 已补（后端 `sample_sizes` → 格子小字 `n=2438`） |
 | `ambiguity-audit` D9 | 数据太旧 → **拒绝添加** | ❌ 未实现（判定基准待定：末端 − 5 交易日） |
 | `ambiguity-audit` D3 | 口径可比性**验证**(A) + 标注(B) | ⚠️ 只做了 B |
 | `multi-portfolio` §六-1 | 标的库显示"**该标的被 N 个组合使用**" | ❌ 未实现 |

@@ -50,6 +50,8 @@ const chartTab = ref('return'); // return | drawdown
 const showAddDialog = ref(false);
 // 「新增标的可能把组合起点往后推」的警示条(规格 add-asset-ux 第 5 步)
 const startShift = ref(null);
+// 指标卡是**我方增强**(韭圈儿无此区) → ambiguity-audit D5 定"折叠在曲线下方, 默认收起"
+const showMetrics = ref(false);
 
 // 控制条 = 表单 draft; 点「组合回测」才落到 run 上(表单/结果分离)
 const form = reactive({
@@ -355,6 +357,23 @@ onMounted(load);
 
         <!-- 区域④ 曲线 / 回撤 -->
         <div v-loading="running" class="chart-area">
+          <!-- 曲线头部(规格 §二-④): 数据截止日 · 基准名 + 基准区间收益 · 「查看完整曲线」 -->
+          <div class="chart-head">
+            <span class="chart-asof">{{ result?.actual_end || EMPTY }}</span>
+            <span v-if="result?.benchmark" class="chart-benchmark">
+              ● {{ result.benchmark.name || result.benchmark.symbol }}
+              <b :class="`trend-${trendOf(result.benchmark.total_return)}`">
+                {{ formatReturnPct(result.benchmark.total_return) }}
+              </b>
+              <span class="muted">（{{ priceBasisLabel(result.benchmark.price_basis) }}）</span>
+            </span>
+            <el-tooltip
+              content="该模式起点为「成立最久的标的」、未成立者按空仓 —— 与「共同起点」规则互斥，v1 不实现"
+              placement="top"
+            >
+              <el-button size="small" disabled>查看完整曲线</el-button>
+            </el-tooltip>
+          </div>
           <NavChart :data="chartData" :mode="chartTab === 'drawdown' ? 'drawdown' : 'return'" />
           <div v-if="chartTab === 'drawdown' && result?.drawdown" class="drawdown-note">
             {{ drawdownText }}
@@ -365,10 +384,13 @@ onMounted(load);
         </div>
       </section>
 
-      <!-- 区域⑤ 指标卡(我方增强; 只列后端真的算出来的, 不放置灰占位) -->
+      <!-- 区域⑤ 指标卡(我方增强; 默认收起 —— ambiguity-audit D5) -->
       <section v-if="result" class="card">
-        <div class="section-title">指标</div>
-        <div class="metrics">
+        <div class="section-title clickable" @click="showMetrics = !showMetrics">
+          指标
+          <span class="toggle">{{ showMetrics ? '收起 ▲' : '展开 ▼' }}</span>
+        </div>
+        <div v-show="showMetrics" class="metrics">
           <div v-for="card in metricCards" :key="card.key" class="metric">
             <div class="metric-value" :class="card.key === 'mdd' ? 'trend-down' : ''">
               {{ card.value }}
@@ -642,6 +664,42 @@ onMounted(load);
 
 .chart-area {
   min-height: 240px;
+}
+
+.chart-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.chart-asof {
+  font-variant-numeric: tabular-nums;
+  color: var(--el-text-color-regular);
+}
+
+.chart-benchmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chart-head .el-button {
+  margin-left: auto;
+}
+
+.section-title.clickable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.section-title .toggle {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--el-text-color-secondary);
+  margin-left: 6px;
 }
 
 .drawdown-note,

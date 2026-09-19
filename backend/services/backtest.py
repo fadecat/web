@@ -53,6 +53,9 @@ class Ledger:
     nav: tuple[float, ...]
     final_weights: dict[str, float]   # 末端**漂移权重**(%), = 页面「当前占比」
     latest_prices: dict[str, float]   # 各标的归一副权价的最新值
+    # 每次调仓: (调仓日, 该次换手 %)。**不平衡时为空元组**。
+    # 页面「累计换手」= 本字段求和(规格 §二-⑤: Σ|Δw|, 零成本口径下不参与收益计算)。
+    rebalances: tuple[tuple[date, float], ...] = ()
 
     @property
     def series(self) -> tuple[tuple[date, float], ...]:
@@ -157,6 +160,7 @@ def run_ledger(
 
     latest: dict[str, float] = {}
     nav_series: list[tuple[date, float]] = []
+    rebalances: list[tuple[date, float]] = []
     for day in dates:
         for symbol in symbols:
             value = adj[symbol].get(day)
@@ -167,7 +171,13 @@ def run_ledger(
         nav = sum(shares[s] * latest[s] for s in symbols)
         nav_series.append((day, nav))
         if day in rebal:  # 拉回初始比例
+            # 换手 = Σ|Δw|(规格 §二-⑤): 调仓**前**的漂移权重与目标权重之差的绝对值之和
+            before = {s: shares[s] * latest[s] / nav * 100.0 for s in symbols}
             shares = {s: nav * weight_fraction[s] / latest[s] for s in symbols}
+            rebalances.append((
+                day,
+                sum(abs(weight_fraction[s] * 100.0 - before[s]) for s in symbols),
+            ))
 
     if not nav_series:
         raise BacktestError("账本为空（共同起点之后没有可用交易日）")
@@ -180,6 +190,7 @@ def run_ledger(
         nav=tuple(v for _, v in nav_series),
         final_weights=final_weights,
         latest_prices=dict(latest),
+        rebalances=tuple(rebalances),
     )
 
 
@@ -311,21 +322,22 @@ def correlation(
 
 
 def performance_metrics(ledger: Ledger) -> dict[str, float | None]:
-    """指标卡: 年化收益 / 最大回撤 / 波动率 / 夏普 / 索提诺 / 卡玛 / 最差月。
+    """指标卡: 年化 / 最大回撤 / 波动 / 夏普 / 索提诺 / 卡玛 / 最差月度 / 最差年度 / 累计换手。
 
     基于**日 NAV 序列**, 年化用 252 交易日; 无风险利率取 0(与"不计成本"口径一致)。
+    ⚠ `turnover`(Σ|Δw|) **不参与任何收益计算** —— 零成本口径下它只是"实盘可行性的参考值"。
     """
+    _KEYS = (
+        "cagr", "mdd", "vol", "sharpe", "sortino", "calmar",
+        "worst_month", "worst_year", "turnover",
+    )
     if len(ledger.nav) < 2:
-        return dict.fromkeys(
-            ("cagr", "mdd", "vol", "sharpe", "sortino", "calmar", "worst_month"), None,
-        )
+        return dict.fromkeys(_KEYS, None)
     nav = ledger.nav
     first, last = nav[0], nav[-1]
     days = (ledger.dates[-1] - ledger.dates[0]).days
     if first <= 0 or days <= 0:
-        return dict.fromkeys(
-            ("cagr", "mdd", "vol", "sharpe", "sortino", "calmar", "worst_month"), None,
-        )
+        return dict.fromkeys(_KEYS, None)
     years = days / 365.25
     total_return = last / first
     cagr = (total_return ** (1.0 / years) - 1.0) * 100.0 if years > 0 else None
@@ -348,6 +360,8 @@ def performance_metrics(ledger: Ledger) -> dict[str, float | None]:
         "sortino": (mean * 252 * 100.0 / dvol) if dvol else None,
         "calmar": (cagr / abs(mdd)) if (cagr is not None and mdd) else None,
         "worst_month": _worst_month(ledger),
+        "worst_year": _worst_year(ledger),
+        "turnover": sum(value for _, value in ledger.rebalances),
     }
 
 
@@ -362,6 +376,21 @@ def _worst_month(ledger: Ledger) -> float | None:
     worst = None
     for prev, cur in zip(keys, keys[1:]):
         change = (month_end[cur] / month_end[prev] - 1.0) * 100.0
+        worst = change if worst is None else min(worst, change)
+    return worst
+
+
+def _worst_year(ledger: Ledger) -> float | None:
+    """最差单年收益(%): 按年取**该年最后一天**的 NAV 环比(与「最差月度」同一口径)。"""
+    year_end: dict[int, float] = {}
+    for d, v in ledger.series:
+        year_end[d.year] = v  # 升序遍历, 保留每年最后一天
+    keys = sorted(year_end)
+    if len(keys) < 2:
+        return None
+    worst = None
+    for prev, cur in zip(keys, keys[1:]):
+        change = (year_end[cur] / year_end[prev] - 1.0) * 100.0
         worst = change if worst is None else min(worst, change)
     return worst
 

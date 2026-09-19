@@ -52,7 +52,8 @@ DEFAULT_WINDOW_YEARS = 10
 #      `window_return` 起点早于 T0 时退化为账本首点(原返回空 → 收益条空白)
 #   v3 收益条区间起点改**自然月回推**(原"近1月"按 30 天算, 比自然月回推晚 1 个交易日,
 #      实测让近1月偏 0.28pp); 「今年来」显式取上年最后一天; y1/y3 闰日不再抛异常
-ENGINE_VERSION = 3
+#   v4 `metrics` 补 `worst_year` 与 `turnover`(累计换手 = Σ|Δw|, 只算所选区间内的调仓)
+ENGINE_VERSION = 4
 # 与 portfolio_store 同一容差(权重合计 100% 判定)
 _WEIGHT_SUM_TOLERANCE = 0.01
 # 基准曲线最多保留的点数(超长区间按等间隔抽稀, 只为前端画图; 指标永远用全量)
@@ -205,6 +206,8 @@ def _slice_ledger(ledger: backtest.Ledger, start: date, end: date) -> backtest.L
         nav=tuple(v / base for _, v in points),
         final_weights=dict(ledger.final_weights),
         latest_prices=dict(ledger.latest_prices),
+        # 「累计换手」只算**落在所选区间内**的调仓(否则用户改区间后这个数不会变, 不合理)
+        rebalances=tuple((d, v) for d, v in ledger.rebalances if start <= d <= end),
     )
 
 

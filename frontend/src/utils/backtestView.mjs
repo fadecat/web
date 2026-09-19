@@ -104,8 +104,9 @@ const num = (value, digits = 2) =>
   value === null || value === undefined || Number.isNaN(value) ? EMPTY : Number(value).toFixed(digits);
 
 /**
- * 指标卡。⚠ 只列后端**真的算出来**的指标: 规格里写的「最差年度」「累计换手」目前没有实现,
- * 这里不放置灰占位, 也不拿别的数字顶替(宁可少一格, 不给假数据)。
+ * 指标卡。⚠ 只列后端**真的算出来**的指标 —— 宁可少一格, 也不放置灰占位。
+ * 覆盖规格 §二-⑤ / §三-4 的全部项: 年化 / 回撤 / 波动 / Sharpe / Sortino /
+ * Calmar / 最差年度 / 最差月度 / 最长恢复 / 累计换手。
  */
 export const buildMetricCards = (metrics, drawdown) => {
   const m = metrics ?? {};
@@ -121,6 +122,7 @@ export const buildMetricCards = (metrics, drawdown) => {
     { key: 'sharpe', label: 'Sharpe', value: num(m.sharpe), hint: '无风险利率取 0' },
     { key: 'sortino', label: 'Sortino', value: num(m.sortino), hint: '只惩罚下行波动' },
     { key: 'calmar', label: 'Calmar', value: num(m.calmar), hint: '年化收益 / |最大回撤|' },
+    { key: 'worst_year', label: '最差年度', value: pct(m.worst_year), hint: '按自然年重采样' },
     { key: 'worst_month', label: '最差月度', value: pct(m.worst_month), hint: '按自然月重采样' },
     {
       key: 'recovery',
@@ -132,6 +134,12 @@ export const buildMetricCards = (metrics, drawdown) => {
         drawdown?.recovery_days === null || drawdown?.recovery_days === undefined
           ? '至区间末端仍未回到前高'
           : `自 ${drawdown.trough_date} 起`,
+    },
+    {
+      key: 'turnover',
+      label: '累计换手',
+      value: pct(m.turnover),
+      hint: 'Σ|Δw|（只统计区间内的调仓）· 零成本口径下不参与收益计算，仅作实盘可行性参考',
     },
   ];
 };
@@ -186,9 +194,17 @@ export const buildCorrelationView = (correlation, assets) => {
     cells: correlation.symbols.map((_, colIndex) => {
       const raw = correlation.matrix?.[rowIndex]?.[colIndex];
       const value = clampCorr(raw);
+      // ⚠ ambiguity-audit D8: 相关性格子要**显示样本数 n** —— 标的不全同期时,
+      //    pairwise 交集的对数不同, 只看相关系数会误判可信度。
+      //    后端 key 规则: 字典序小的在前(`symbols` 已排序, 所以按下标拼即可)。
+      const other = correlation.symbols[colIndex];
+      const sampleKey = rowIndex <= colIndex ? `${rowSymbol}|${other}` : `${other}|${rowSymbol}`;
+      const samples = rowIndex === colIndex ? null : (correlation.sample_sizes?.[sampleKey] ?? null);
       return {
         value,
         text: value === null ? EMPTY : value.toFixed(2),
+        samples,
+        sampleText: samples === null ? '' : `n=${samples}`,
         diagonal: rowIndex === colIndex,
         ...correlationCellStyle(value),
       };

@@ -49,7 +49,9 @@ const view = computed(() => buildCorrelationView(props.correlation, props.assets
               :class="{ 'is-strong': cell.strong, 'is-diagonal': cell.diagonal }"
               :style="{ background: cell.background }"
             >
-              {{ cell.text }}
+              <span class="corr-value">{{ cell.text }}</span>
+              <!-- 样本数 n(ambiguity-audit D8): 标的不全同期时只看系数会误判可信度 -->
+              <span v-if="cell.sampleText" class="corr-n">{{ cell.sampleText }}</span>
             </td>
           </tr>
         </tbody>
@@ -145,8 +147,21 @@ const view = computed(() => buildCorrelationView(props.correlation, props.assets
 .value {
   text-align: center;
   font-size: 13px;
-  padding: 6px 0;
+  padding: 4px 0;
   /* 底色由 correlationCellStyle 按相关系数叠加(透明→深红/深蓝) */
+}
+
+.corr-value {
+  display: block;
+  line-height: 1.25;
+}
+
+/* 样本数 n: 小字灰, 跟随单元格文字颜色(强相关时白字) */
+.corr-n {
+  display: block;
+  font-size: 10px;
+  line-height: 1.1;
+  opacity: 0.7;
 }
 
 /* 底色够深时转白字, 保证可读 */

@@ -10,7 +10,7 @@ from datetime import date
 
 import pytest
 
-from backend.services import backtest, series
+from backend.services import backtest, backtest_service, series
 
 D = date
 
@@ -326,3 +326,60 @@ def test_normalize_equivalent_to_pct_chain_when_all_have_t0_point() -> None:
 def test_normalize_returns_empty_before_t0() -> None:
     c = _contract("A", [(D(2026, 1, 1), 2.0)])
     assert backtest.normalize_on_t0(c, D(2026, 6, 1)) == {}
+
+
+# ---------------------------------------------------------------------------
+# 指标卡补充项(page-spec §二-⑤ / §三-4): 最差年度 + 累计换手
+# ---------------------------------------------------------------------------
+
+class TestMetricsExtra:
+    def test_turnover_is_zero_when_never_rebalanced(self) -> None:
+        """不平衡 → 从不调仓 → 累计换手 0(没有任何买卖)。"""
+        c = {"A": _contract("A", [(D(2026, 1, 1), 1.0), (D(2026, 6, 1), 1.2)])}
+        ledger = backtest.run_ledger(c, {"A": 100.0}, backtest.REBALANCE_NONE)
+        assert ledger.rebalances == ()
+        assert backtest.performance_metrics(ledger)["turnover"] == 0.0
+
+    def test_turnover_accumulates_and_is_bounded(self) -> None:
+        """季平衡 → 每次调仓记一笔 `Σ|Δw|`; 两标的时单次上限 100(权重各 50)。"""
+        a = _contract("A", [(D(2026, 1, 1), 1.0), (D(2026, 4, 1), 2.0), (D(2026, 7, 1), 2.0)])
+        b = _contract("B", [(D(2026, 1, 1), 1.0), (D(2026, 4, 1), 1.0), (D(2026, 7, 1), 1.0)])
+        ledger = backtest.run_ledger(
+            {"A": a, "B": b}, {"A": 50.0, "B": 50.0}, backtest.REBALANCE_QUARTERLY,
+        )
+        assert ledger.rebalances, "季平衡至少要有一次调仓"
+        # ⚠ 单次换手可以是 0 —— 调仓日恰好落在 T0(或漂移后正好是初始比例)时无需买卖
+        assert all(0.0 <= value <= 100.0 + 1e-9 for _, value in ledger.rebalances)
+        # 累计换手 = 各次之和(不参与任何收益计算, 只是实盘可行性参考)
+        total = backtest.performance_metrics(ledger)["turnover"]
+        assert total == pytest.approx(sum(v for _, v in ledger.rebalances))
+        assert total > 0.0, "有价格漂移时至少有一次真实调仓"
+
+    def test_worst_year_uses_year_end_nav(self) -> None:
+        """最差年度 = 按年取**该年最后一天** NAV 的环比(与「最差月度」同口径)。"""
+        c = {"A": _contract("A", [
+            (D(2024, 12, 31), 1.0), (D(2025, 12, 31), 1.5), (D(2026, 6, 30), 1.2),
+        ])}
+        ledger = backtest.run_ledger(c, {"A": 100.0})
+        # 2024→2025 = +50%;  2025→2026 = 1.2/1.5−1 = −20%
+        assert backtest.performance_metrics(ledger)["worst_year"] == pytest.approx(-20.0, abs=1e-6)
+
+    def test_worst_year_is_none_within_one_year(self) -> None:
+        """只有一年数据 → 算不出"年度环比" → None(页面显示 —, 不编造)。"""
+        c = {"A": _contract("A", [(D(2026, 1, 1), 1.0), (D(2026, 6, 1), 1.2)])}
+        ledger = backtest.run_ledger(c, {"A": 100.0})
+        assert backtest.performance_metrics(ledger)["worst_year"] is None
+
+    def test_slice_keeps_only_in_window_rebalances(self, db) -> None:
+        """切片账本只保留**区间内**的调仓 —— 换手要随用户选的区间变。"""
+        a = _contract("A", [
+            (D(2026, 1, 1), 1.0), (D(2026, 4, 1), 2.0), (D(2026, 7, 1), 2.0), (D(2026, 10, 1), 2.0),
+        ])
+        b = _contract("B", [(D(2026, 1, 1), 1.0), (D(2026, 10, 1), 1.0)])
+        ledger = backtest.run_ledger(
+            {"A": a, "B": b}, {"A": 50.0, "B": 50.0}, backtest.REBALANCE_QUARTERLY,
+        )
+        assert len(ledger.rebalances) >= 2
+        sliced = backtest_service._slice_ledger(ledger, D(2026, 5, 1), D(2026, 10, 1))
+        assert all(d >= D(2026, 5, 1) for d, _ in sliced.rebalances)
+        assert len(sliced.rebalances) < len(ledger.rebalances)
