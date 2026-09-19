@@ -33,11 +33,17 @@ const menus = [
       { path: '/commodities', title: '商品监控', icon: '🛢️' },
     ],
   },
+  // 一级模块「组合」(flow.md §五 的"导航归属": 与 市场分析/研究 并列的一级分组)
   {
-    group: '研究',
+    group: '组合',
     items: [
       { path: '/portfolios', title: '组合回测', icon: '🧪' },
       { path: '/portfolio-assets', title: '标的库', icon: '📦' },
+    ],
+  },
+  {
+    group: '研究',
+    items: [
       { path: '/research', title: '信号回放', icon: '🔬' },
     ],
   },

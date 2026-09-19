@@ -132,7 +132,7 @@ const runIt = async (reuse = true) => {
       reuse,
     });
   } catch (err) {
-    run.value = null;
+    // ⚠ page-spec §四: 回测失败**不清空已有结果**（避免页面闪烁成空白）
     ElMessage.error(err?.response?.data?.detail || '回测失败');
   } finally {
     running.value = false;
@@ -379,8 +379,8 @@ onMounted(load);
         </div>
       </section>
 
-      <!-- 区域⑥ 相关性矩阵 -->
-      <section v-if="result" class="card">
+      <!-- 区域⑥ 相关性矩阵(⚠ 单标的时隐藏: 1×1 矩阵没有信息量 —— page-spec §四) -->
+      <section v-if="result && assetRows.length > 1" class="card">
         <CorrelationMatrix :correlation="result.correlation" :assets="assetRows" />
       </section>
 

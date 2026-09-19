@@ -420,6 +420,41 @@ class TestCachedMetrics:
         assert detail["cached_day_return"] is None
         assert detail["cached_asof_date"] is None
 
+    def test_patch_assets_refreshes_cache_immediately(self, contract_client, thread_db) -> None:
+        """⭐ `PATCH /portfolios/{id}` 改了成员/权重 → 三格缓存**立即**重算。
+
+        page-spec §9.6 的「失效条件」: 组合成员或权重变更 → 标记待重算。
+        不做的话用户改完权重看到的还是**上一次的旧数字**(最迟次日 23:30 才纠正)。
+        """
+        pid = _seed_two_funds(thread_db)
+        # 人为清空缓存, 模拟"还没算过"的状态
+        portfolio_store.write_cached_metrics(
+            thread_db, pid, day_return=None, month_return=None, ytd_return=None, asof_date=None,
+        )
+        assert portfolio_store.portfolio_detail(thread_db, pid)["cached_day_return"] is None
+
+        resp = contract_client.patch(f"/api/portfolio/portfolios/{pid}", json={
+            "assets": [
+                {"symbol": "100001.OF", "target_weight": 50.0},
+                {"symbol": "100002.OF", "target_weight": 50.0},
+            ],
+        })
+        assert resp.status_code == 200
+        detail = resp.json()
+        assert detail["cached_day_return"] is not None, "PATCH 后应立即重算, 不能等次日任务"
+        assert detail["cached_asof_date"] == D[2].isoformat()
+        # 与详情页收益条同源(规格 9.3: 两页数字必须一致)
+        windows = backtest_service.compute(thread_db, pid)["result"]["windows"]
+        assert detail["cached_day_return"] == windows["d1"]["value"]
+
+    def test_create_empty_portfolio_keeps_cache_empty(self, contract_client) -> None:
+        """新建空组合: 刷新拿不到结果 → 缓存留空, 卡片显示 —(而不是 0.00%)。"""
+        resp = contract_client.post("/api/portfolio/portfolios", json={"name": "空组合"})
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["cached_day_return"] is None
+        assert body["cached_asof_date"] is None
+
     def test_batch_refresh_isolates_failure(self, db) -> None:
         good = _seed_two_funds(db)
         _portfolio(db, {}, name="空组合")

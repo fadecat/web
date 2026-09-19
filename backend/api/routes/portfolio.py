@@ -144,6 +144,22 @@ def _portfolio_error(exc: portfolio_store.PortfolioError) -> HTTPException:
     return HTTPException(status_code=422, detail=message)
 
 
+def _refresh_cached_metrics_quietly(db: Session, portfolio_id: int) -> None:
+    """成员/权重变更后立即重算 L1 三格缓存(page-spec §9.6)。
+
+    ⭐ 为什么必须在这里做: 三格是"不平衡 + 三个固定区间"的**固定参数结果** ——
+       新建/复制组合、改完成员或权重之后, 卡片上的数字必须马上跟上;
+       否则用户看到的是 `—` 或**上一次的旧数字**, 最迟到次日 23:30 任务才纠正。
+
+    ⚠ 失败**不打断主流程**: 组合本身已经保存成功, 缓存只是派生数据,
+      次日 `portfolio_cache_refresh` 任务会兜底重算。
+    """
+    try:
+        backtest_service.refresh_cached_metrics(db, portfolio_id)
+    except Exception:  # noqa: BLE001 派生数据失败不该让"保存组合"这个动作失败
+        logger.exception("三格缓存刷新失败(次日定时任务会兜底): portfolio_id=%s", portfolio_id)
+
+
 @router.get("/portfolios")
 def list_portfolios(
     include_archived: bool = Query(False, description="是否含已归档"),
@@ -158,12 +174,16 @@ def create_portfolio(request: PortfolioCreate, db: Session = Depends(get_db)) ->
     """新建组合; 带 `from_id` 时复制来源组合的成员与权重。"""
     try:
         if request.from_id is not None:
-            return portfolio_store.copy_portfolio(db, request.from_id, request.name)
-        return portfolio_store.create_portfolio(
-            db, request.name, request.note, default_rebalance=request.default_rebalance,
-        )
+            created = portfolio_store.copy_portfolio(db, request.from_id, request.name)
+        else:
+            created = portfolio_store.create_portfolio(
+                db, request.name, request.note, default_rebalance=request.default_rebalance,
+            )
     except portfolio_store.PortfolioError as exc:
         raise _portfolio_error(exc) from None
+    # 复制来的组合**立刻算一次**三格缓存(page-spec §9.6 刷新时机②)
+    _refresh_cached_metrics_quietly(db, created["id"])
+    return created
 
 
 @router.get("/portfolios/{portfolio_id}")
@@ -191,6 +211,9 @@ def patch_portfolio(
             _replace_assets(db, portfolio_id, request.assets)
     except portfolio_store.PortfolioError as exc:
         raise _portfolio_error(exc) from None
+    # 成员或权重变过 → 缓存立即失效重算(page-spec §9.6 失效条件)
+    if request.assets is not None:
+        _refresh_cached_metrics_quietly(db, portfolio_id)
     detail = portfolio_store.portfolio_detail(db, portfolio_id)
     if detail is None:
         raise HTTPException(status_code=404, detail=f"未知组合: {portfolio_id}")
