@@ -2,6 +2,11 @@
 
 状态：生产模式参考稿；V1 研究回放方案已迁至 [次日 T 价位研究回放设计](2026-09-18-next-day-t-research-replay-design.md)。本稿中的 Tushare 权限门槛和独立复权因子要求不再阻塞 V1，待生产模式启动时再核验。
 
+> ⚠️ **2026-09-19 核对补注：本稿第 4 节的表名与实际实现不一致。**
+> 本稿设计的是 `security_master` / `daily_bar` / `daily_adj_factor` / `market_data_revision` / `market_data_sync_state`；**代码中这些表均不存在**（已 grep 全库确认）。实际落地的是 `backend/models/research.py` 中的同名集：
+> `research_security`（证券主数据）、`research_daily_bar_raw`（原始事实）、`research_daily_bar_adjusted`（后复权）、`research_data_revision`（修订追踪）、`research_trade_calendar`（交易日历）、`research_corporate_event`（权益事件）。
+> **要选表请按实际实现，不要按本稿表名**（2026-09-19 组合实验室设计曾差点因此选错主表）。本节的字段设计思想（原始/复权分离、内容哈希、修订记录、源端单位在 Provider 边界转换）仍然有效。
+
 ## 1. 目标与边界
 
 从现有高股息股票和可转债正股名单选取 A 股；ETF 可按代码加入关注名单。交易日收盘后，在同日原始日线、复权因子与交易日历齐备时，为下一交易日生成可解释的买卖各三档**建议**、每档数量与 T 仓上限；不连接券商、不创建或取消真实条件单。首版只用日线；日线只能验证某档是否被日内高低价触达，不能推断买卖发生顺序或真实成交利润。
