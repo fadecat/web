@@ -13,10 +13,13 @@ from backend.services.market_data import (
     CAP_RAW_DAILY_BAR,
     CAP_TRADE_CALENDAR,
     AdjustMode,
+    AdjustedSeriesUnavailable,
     AkShareEastmoneyProvider,
     CorporateEvent,
+    FundAdjustmentEvent,
     ResearchSourceError,
     TencentFqklineProvider,
+    _parse_eastmoney_adjustments,
     _sina_parse_events,
     _tencent_extract_rows,
     normalize_research_bars,
@@ -391,3 +394,134 @@ def test_source_module_has_no_stray_requests_import():
         stripped = line.strip()
         if stripped.startswith("import requests"):
             assert stripped.startswith("import requests  # noqa"), stripped  # 函数内延迟 import
+
+
+# ---------------------------------------------------------------------------
+# 腾讯无复权序列 → 核验后降级
+#
+# 起因(2026-09-20 线上): 加 159985.SZ(豆粕ETF) 同步失败 —— 腾讯 fqkline 只为**有复权
+# 事件**的标的生产 `hfqday`(12/12 样本一致: 159915/159937 折算、159941/513100 分拆、
+# 510300 分红 → 都有; 159985/159980/159981/159766/159611/159892/159509 无任何分红
+# 折算 → 都没有), 于是这类标的请求 hfq 只拿到 'day', 被守卫拦下。
+#
+# 守卫不能删(它拦的是 513100 那种 -80% 折算跳空), 但"取不到"≠"口径会错":
+# 无复权事件时复权因子恒为 1, raw ≡ hfq。故改为**拿到第三方证据才降级**。
+# 下面把四种分支钉死, 全部注入桩、不触网。
+# ---------------------------------------------------------------------------
+
+_FUND_TITLE = "豆粕ETF华夏(159985)基金分红送配 _ 基金档案 _ 天天基金网"
+
+
+def _fund_html(rows: list[str], title: str = _FUND_TITLE) -> str:
+    body = "".join(f"<tr>{row}</tr>" for row in rows)
+    return f"<html><head><title>{title}</title></head><body><table>{body}</table></body></html>"
+
+
+def test_eastmoney_adjustment_parser_separates_empty_from_unverifiable():
+    """`[]`(确认无事件 → 可降级) 与 `None`(核验不可用 → 必须拒绝) 语义相反, 不得混淆。"""
+    html = _fund_html([
+        "<td>2011年</td><td>2011-11-30</td><td>份额折算</td><td>1:1.1456</td>",
+        "<td>2026年</td><td>2026-01-16</td><td>2026-01-19</td>"
+        "<td>每份派现金0.0600元</td><td>2026-01-23</td>",
+    ])
+    events = _parse_eastmoney_adjustments(html)
+    assert [event.event_date for event in events] == [date(2011, 11, 30), date(2026, 1, 16)]
+    assert events[0].kind == "份额折算"
+
+    # 有表格但无任何"YYYY年"数据行 → 空列表(可降级), 不是 None
+    assert _parse_eastmoney_adjustments(_fund_html(["<td>暂无分红</td>"])) == []
+
+    # 非基金代码: 天天基金照回 200 且显示"暂无分红"(实测 601899 有 24 次分红),
+    # 靠标题里有没有基金名区分 —— 认不出基金就返回 None
+    stock_title = "(601899)基金分红送配 _ 基金档案 _ 天天基金网"
+    assert _parse_eastmoney_adjustments(_fund_html([], title=stock_title)) is None
+    assert _parse_eastmoney_adjustments("<html><body>结构变了</body></html>") is None
+
+
+def test_tencent_missing_adjusted_key_raises_catchable_specific_error():
+    """必须抛 `AdjustedSeriesUnavailable` 这个子类 —— 抛裸 ResearchSourceError 就降级不了。"""
+    raw_only = {"data": {"sh600900": {"qt": {}, "day": [_tencent_row(date(2026, 1, 5))]}}}
+    with pytest.raises(AdjustedSeriesUnavailable):
+        _tencent_extract_rows(raw_only, "sh600900", "hfq")
+
+
+def test_tencent_falls_back_to_raw_after_verifying_no_adjustment_events():
+    """核验通过(确无分红/折算/分拆) → 改用未复权; 只多一次请求, 不重复试探。"""
+    calls: list[str] = []
+
+    def kline(_code: str, fq: str, _start: str, _end: str, _count: int) -> list:
+        calls.append(fq)
+        if fq == "hfq":
+            raise AdjustedSeriesUnavailable(
+                "tencent fqkline 响应缺少 'hfqday' 键但 'day' 有数据, 拒绝静默换口径"
+            )
+        return [_tencent_row(date(2026, 1, 5))]
+
+    provider = TencentFqklineProvider(
+        kline_fetch_fn=kline,
+        adjustment_fetch_fn=lambda _code: [],
+        sleep=lambda _seconds: None,
+    )
+    bars = provider.get_daily_bars(
+        "159985.SZ", date(2026, 1, 1), date(2026, 1, 31), AdjustMode.HFQ, security_type="ETF",
+    )
+    assert [bar.trade_date for bar in bars] == [date(2026, 1, 5)]
+    assert calls == ["hfq", ""]  # 先试复权 → 核验后改未复权; 不再回头重试
+
+
+def test_tencent_refuses_fallback_when_symbol_has_adjustment_events():
+    """有复权事件却拿不到复权序列 → 拒绝降级(否则把折算跳空当真实下跌)。"""
+    calls: list[str] = []
+
+    def kline(_code: str, fq: str, _start: str, _end: str, _count: int) -> list:
+        calls.append(fq)
+        raise AdjustedSeriesUnavailable("缺少 'hfqday' 键但 'day' 有数据, 拒绝静默换口径")
+
+    provider = TencentFqklineProvider(
+        kline_fetch_fn=kline,
+        adjustment_fetch_fn=lambda _code: [
+            FundAdjustmentEvent(date(2022, 1, 13), "份额分拆", "1:5.0000"),
+        ],
+        sleep=lambda _seconds: None,
+    )
+    with pytest.raises(AdjustedSeriesUnavailable):
+        provider.get_daily_bars(
+            "513100.SH", date(2026, 1, 1), date(2026, 1, 31), AdjustMode.HFQ, security_type="ETF",
+        )
+    assert calls == ["hfq"]  # 拒绝后不尝试未复权
+
+
+def test_tencent_refuses_fallback_when_verification_unavailable():
+    """核验不可用(接口不可达/抛异常) 一律维持拒绝 —— fail-safe, 宁可加不了也不能错。"""
+
+    def kline(_code: str, _fq: str, _start: str, _end: str, _count: int) -> list:
+        raise AdjustedSeriesUnavailable("缺少 'hfqday' 键但 'day' 有数据, 拒绝静默换口径")
+
+    def raising(_code: str) -> list:
+        raise RuntimeError("网络断了")
+
+    for stub in (lambda _code: None, raising):
+        provider = TencentFqklineProvider(
+            kline_fetch_fn=kline, adjustment_fetch_fn=stub, sleep=lambda _seconds: None,
+        )
+        with pytest.raises(AdjustedSeriesUnavailable):
+            provider.get_daily_bars(
+                "159985.SZ", date(2026, 1, 1), date(2026, 1, 31),
+                AdjustMode.HFQ, security_type="ETF",
+            )
+
+
+def test_tencent_raw_request_never_falls_back():
+    """RAW 请求报这个错 = 源端连未复权都没有, 没有可降级的下家, 原样上抛。"""
+    def kline(_code: str, _fq: str, _start: str, _end: str, _count: int) -> list:
+        raise AdjustedSeriesUnavailable("缺少 'day' 键但 'hfqday' 有数据, 拒绝静默换口径")
+
+    provider = TencentFqklineProvider(
+        kline_fetch_fn=kline,
+        adjustment_fetch_fn=lambda _code: [],
+        sleep=lambda _seconds: None,
+    )
+    with pytest.raises(AdjustedSeriesUnavailable):
+        provider.get_daily_bars(
+            "159985.SZ", date(2026, 1, 1), date(2026, 1, 31), AdjustMode.RAW, security_type="ETF",
+        )
