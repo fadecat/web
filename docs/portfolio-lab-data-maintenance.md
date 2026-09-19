@@ -258,25 +258,25 @@ status = success  if fail==0 and success>0
 
 ## 十、实施顺序（与 `flow.md` 的 P0~P3 对齐）
 
-| 阶段 | 数据侧要做的事 |
-| --- | --- |
-| **P0** 股票/ETF 注册与按需抓取 | ① `security_type` 加 `FUND`（先搭好枚举）② `research_security` 加 4 个同步状态字段 ③ 抽出 `sync_one_symbol()` ④ 新增 `POST /api/portfolio/assets/{symbol}/sync` ⑤ `history_start` 放宽到 2013 ⑥ 顺带修 `catalog()` 的 source 硬编码 |
-| **P1** 场外基金链路 | ⑦ `DanjuanProvider`（实现 `capabilities` / `get_daily_bars` / 复用交易日历）⑧ 迁移 0005：建 `fund_nav_daily` ⑨ 新增 `fund_nav_sync` job + 注册进 `registry` / `EVERYDAY_JOB_IDS` / `data_catalog` ⑩ 蛋卷的 `_assert_symbol_type` 独立分支 |
-| **P2** 序列层 | ⑪ `get_series()` 统一读两套表 ⑫ 口径标注（`HFQ` / `NAV_ADJ`）⑬ 交易日对齐（并集 + 前值填充） |
-| **P3** 回测与展示 | ⑭ 数据就绪检查接入组合页 ⑮ 列表页三格的缓存刷新挂到 job 末尾 |
+| 阶段 | 数据侧要做的事 | 状态 |
+| --- | --- | --- |
+| **P0** 股票/ETF 注册与按需抓取 | ① `security_type` 加 `FUND`（先搭好枚举）② `research_security` 加 4 个同步状态字段 ③ 抽出 `sync_one_symbol()` ④ 新增 `POST /api/portfolio/assets/{symbol}/sync` ⑤ `history_start` 放宽到 2013 ⑥ 顺带修 `catalog()` 的 source 硬编码 | ✅ **已完成**（2026-09-19，提交 `280a85b` / `bab81fe` / `9e16f92`） |
+| **P1** 场外基金链路 | ⑦ `DanjuanProvider`（实现 `capabilities` / `get_daily_bars` / 复用交易日历）⑧ 迁移 **0006**：建 `fund_nav_daily`（⚠ 原写 0005，已被 P0-1 的 `0005_add_research_security_sync_state` 占用）⑨ 新增 `fund_nav_sync` job + 注册进 `registry` / `EVERYDAY_JOB_IDS` / `data_catalog` ⑩ 蛋卷的 `_assert_symbol_type` 独立分支 | ✅ **已完成**（2026-09-19，提交 `6fd2350`） |
+| **P2** 序列层 | ⑪ `get_series()` 统一读两套表 ⑫ 口径标注（`HFQ` / `NAV_ADJ`）⑬ 交易日对齐（并集 + 前值填充） | ⬜ 未开始 |
+| **P3** 回测与展示 | ⑭ 数据就绪检查接入组合页 ⑮ 列表页三格的缓存刷新挂到 job 末尾 | ⬜ 未开始 |
 
 > **P0 是零风险起点**：不新增数据源、不建表、不做迁移，只是把标的入口从配置文件换成 API。做完这一步，"自由构建组合"的股票 + ETF 那一半就能用了。
 
 ---
 
-## 十一、需要你拍板的 4 件事
+## 十一、需要你拍板的 4 件事（**P0/P1 已按"建议"列全部落地**，此处留档）
 
-| # | 事项 | 建议 |
-| --- | --- | --- |
-| 1 | **场外基金的标识形态**：`100018.OF` vs 纯 `100018` | **`100018.OF`**（显式、避免与指数/股票代码混淆；`ResearchSecurity.symbol` 已有唯一约束） |
-| 2 | **`history_start` 放宽到哪一年** | **2013-01-01**（够覆盖基准组合的 2013-04-26；再早只是多抓几页，无收益） |
-| 3 | **`fund_nav_sync` 的调度时刻** | **23:10**（22:09 之后，给 QDII 留出公布时间） |
-| 4 | **`catalog()` 的 source 硬编码 bug 是否顺手修** | **修**（与组合回测无关，但会污染新标的的来源显示） |
+| # | 事项 | 建议 | 落地情况 |
+| --- | --- | --- | --- |
+| 1 | **场外基金的标识形态**：`100018.OF` vs 纯 `100018` | **`100018.OF`**（显式、避免与指数/股票代码混淆；`ResearchSecurity.symbol` 已有唯一约束） | ✅ `portfolio_assets.py` 规范化为 `{code}.OF` |
+| 2 | **`history_start` 放宽到哪一年** | **2013-01-01**（够覆盖基准组合的 2013-04-26；再早只是多抓几页，无收益） | ✅ `config/research.yaml` 已改为 `2013-01-01` |
+| 3 | **`fund_nav_sync` 的调度时刻** | **23:10**（22:09 之后，给 QDII 留出公布时间） | ✅ `registry.py` 注册 `("fund_nav_sync", ..., 23, 10)` 并进 `EVERYDAY_JOB_IDS` |
+| 4 | **`catalog()` 的 source 硬编码 bug 是否顺手修** | **修**（与组合回测无关，但会污染新标的的来源显示） | ⚠ **未修**：`data_catalog.py:47` 仍为 `load_research_settings().get("data_source", "akshare")`（从配置读、默认值 `akshare`）。场外基金走独立 Policy 不受影响，仅"研究行情日线"组的来源显示可能与实际（tencent）不符 |
 
 ---
 

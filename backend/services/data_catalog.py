@@ -62,7 +62,12 @@ def catalog():
         },
         # 场外基金净值(蛋卷, 单序列): 标的在运行时按需添加, 无法从 yaml 枚举 →
         # 用 "*" 通配(同"商品价格与分位"), 由 apply_catalog 逐实体套用同一 Policy。
-        "场外基金净值": {"*": ("场外基金净值", Policy("danjuan", "fund_nav_sync", 23, 10))},
+        # ⚠ trading_day_offset=1 是场外基金与股票/ETF 的关键差异(见
+        # docs/portfolio-lab-data-maintenance.md §六): 净值 T 日晚间才公布, QDII 再滞后 1~2 日。
+        # 不设 offset 会让"应到日期"恒为当日 → 每个交易日都误报 lagging 红色告警。
+        "场外基金净值": {
+            "*": ("场外基金净值", Policy("danjuan", "fund_nav_sync", 23, 10, trading_day_offset=1))
+        },
     }
 
 
