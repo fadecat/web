@@ -15,7 +15,7 @@ Windows 用户只需调用：
 - `action`：`start`、`stop`、`restart`、`status`、`build`。
 - `target`：`all`、`backend`、`frontend`，省略为 `all`。
 - `Environment`：省略为 `local`；`ecs` 通过 SSH 调用仓库内的 `scripts/app.sh`。
-- ECS 默认 SSH 别名 `aliyun-ecs`、项目目录 `/opt/webapp`、systemd 服务 `webapp`，均允许参数或环境变量覆盖。
+- ECS 默认 SSH 别名 `ecs-aliyun`（⚠ 2026-09-20 修正：此前误写成 `aliyun-ecs`，与 `~/.ssh/config` 不符，导致不带 `-EcsHost` 的 ECS 调用全部连不上）、项目目录 `/opt/webapp`、systemd 服务 `webapp`，均允许参数或环境变量覆盖。
 
 ## Windows 本地行为
 

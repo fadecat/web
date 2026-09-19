@@ -87,8 +87,9 @@ $env:APP_PYTHON = 'D:\tools\Python313\python.exe'
 .\scripts\app.ps1 restart backend
 ```
 
-Windows也用同一入口管理ECS。它通过SSH别名 `aliyun-ecs` 调用ECS仓库中的
-`scripts/app.sh`；该命令只做启停和构建，不执行 `git pull`、数据库迁移或数据同步。
+Windows也用同一入口管理ECS。它通过SSH别名 `ecs-aliyun`（⚠ 不是 `aliyun-ecs`）调用ECS仓库中的
+`scripts/app.sh`；该命令只做启停和构建，不执行 `git pull`、数据库迁移或数据同步——
+这几步怎么做见下面的「**代码上线**」。
 
 ```powershell
 .\scripts\app.ps1 status -Environment ecs
@@ -109,12 +110,45 @@ ECS前端是由FastAPI托管的静态文件，没有独立前端进程。因此E
 
 ```powershell
 .\scripts\app.ps1 status -Environment ecs `
-  -EcsHost aliyun-ecs -EcsRoot /opt/webapp -ServiceName webapp
+  -EcsHost ecs-aliyun -EcsRoot /opt/webapp -ServiceName webapp
 
 # 只查看计划，不启动、停止或连接ECS
 .\scripts\app.ps1 restart -DryRun
 .\scripts\app.ps1 restart -Environment ecs -DryRun
 ```
+
+### 代码上线
+
+`app.ps1 -Environment ecs` 只做**启停与构建**。把新代码送上去要自己走这三步，
+其中第 2 步的**顺序不能调换**：
+
+```bash
+# 1) 代码：本地 push → ECS 拉取
+git push origin main
+ssh ecs-aliyun 'cd /opt/webapp && git pull --ff-only'
+
+# 2) 数据库：停服 → 迁移 → 起服     ← 🚨 顺序不能反
+ssh ecs-aliyun 'cd /opt/webapp && systemctl stop webapp'
+ssh ecs-aliyun 'cd /opt/webapp && venv/bin/python scripts/migrate_db.py'
+ssh ecs-aliyun 'cd /opt/webapp && systemctl start webapp'
+
+# 3) 前端有改动时才需要（原子发布：先建到 .dist-next，成功才替换 dist，失败回滚）
+.\scripts\app.ps1 build frontend -Environment ecs
+```
+
+**为什么必须先停服**：`backend/models/database.py` 里有 `Base.metadata.create_all()`，
+**服务一启动就会把缺失的表建出来**。若先起服再迁移，alembic 会撞上
+`table xxx already exists` 并卡在中间版本（2026-09-20 实际踩过：alembic 停在 `0005`
+而 schema 其实已是 `0008`，最后用
+`alembic -x database_url=sqlite:////opt/webapp/data/web.db stamp head` 修正）。
+注意 `create_all` **只建缺失的表、不给已有表加列** —— 所以「加列」类迁移仍然必须走 alembic。
+
+`migrations/env.py` 强制要求显式 URL：直接调 alembic 要写成
+`alembic -x database_url=sqlite:////opt/webapp/data/web.db upgrade head`（SQLite 绝对路径是**4 个斜杠**）；
+用 `scripts/migrate_db.py` 则不用（它自己定位仓库根并默认 `data/web.db`）。
+
+> 备选通道：不想动远端时可用 `git bundle create <file> origin/main..main` → `scp` →
+> ECS `git fetch <file> main && git merge --ff-only FETCH_HEAD`（不需要任何凭据）。
 
 若 PowerShell 执行策略阻止脚本，可用一次性进程范围调用：
 

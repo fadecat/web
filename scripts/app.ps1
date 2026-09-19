@@ -11,7 +11,9 @@ param(
     [ValidateSet('local', 'ecs')]
     [string]$Environment = 'local',
 
-    [string]$EcsHost = $(if ($env:APP_ECS_HOST) { $env:APP_ECS_HOST } else { 'aliyun-ecs' }),
+    # ⚠ 必须与 ~/.ssh/config 里的别名一致(实际是 ecs-aliyun)。曾误写成 aliyun-ecs,
+    #    导致不带 -EcsHost 的调用全部连不上(2026-09-20 改正)。
+    [string]$EcsHost = $(if ($env:APP_ECS_HOST) { $env:APP_ECS_HOST } else { 'ecs-aliyun' }),
     [string]$EcsRoot = $(if ($env:APP_ECS_ROOT) { $env:APP_ECS_ROOT } else { '/opt/webapp' }),
     [string]$ServiceName = $(if ($env:APP_SERVICE) { $env:APP_SERVICE } else { 'webapp' }),
     [int]$BackendPort = 8001,

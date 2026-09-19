@@ -16,9 +16,14 @@ Python 3.11+（开发环境 3.13）/ Node 20+ / pnpm 9+。所有命令从仓库�
 .\scripts\app.ps1 restart backend                        # 单独操作
 .\scripts\app.ps1 build frontend                         # 前端构建
 
-# ECS(阿里云, 经 SSH 别名 aliyun-ecs 调用远端 scripts/app.sh; 只做启停/构建, 不做 git pull/迁移)
+# ECS(阿里云, 经 SSH 别名 ecs-aliyun 调用远端 scripts/app.sh; ⚠ 只做启停/构建, 不含 git pull/迁移)
 .\scripts\app.ps1 status -Environment ecs
 .\scripts\app.ps1 restart backend -Environment ecs
+
+# 代码上线顺序(🚨 不能反): push → ECS `git pull --ff-only` → **停服** → `venv/bin/python scripts/migrate_db.py` → 起服
+#   → 前端有改动再 `app.ps1 build frontend -Environment ecs`
+#   为什么必须停服: models/database.py 里有 `create_all()`, 服务一启动就补建缺失的表;
+#   先起服再迁移必撞 "table xxx already exists", alembic 会卡在中间版本(2026-09-20 踩过)。
 
 # 后端单独跑(开发)
 uvicorn backend.main:app --port 8001                     # API 文档: /api/docs

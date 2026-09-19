@@ -30,7 +30,9 @@ Host ecs-aliyun
     Port 22
 ```
 
-> ⚠️ **文档笔误**：`CLAUDE.md` 与 `README.md` 里写的别名是 **`aliyun-ecs`**，与实际配置的 **`ecs-aliyun`** 不一致。按文档里的名字连会失败，建议修正文档或改用现成的 `ecs-aliyun`。
+> ✅ **别名笔误已修正（2026-09-20）**：`CLAUDE.md`、`README.md` 与
+> `docs/superpowers/specs/2026-09-10-app-operations-design.md` 已统一为实际配置的 **`ecs-aliyun`**，
+> `scripts/app.ps1` 的默认值也一并改正（此前默认值是 `aliyun-ecs`，不带 `-EcsHost` 的 ECS 调用会连不上）。
 
 ECS 环境实测：
 
@@ -306,8 +308,10 @@ ssh ecs-aliyun "cd /tmp && /opt/webapp/venv/bin/python probe_data_source.py"
 ## 六、下一步建议（按成本从低到高）
 
 1. **扩 `config/research.yaml` 标的**——零风险、零新代码，直接解锁组合回测的资产面。建议纳入：红利低波 ETF、黄金 ETF、纳指 ETF（QDII 在 A 股交易，日历天然对齐），以及长久期国债 ETF `511260`(10Y) 或 `511090`(30Y)——现有 `511010` 是 5 年期，久期偏短，当"长债腿"会低估利率敏感度。
-2. **修 `docs`/`README` 里的 SSH 别名笔误**（`aliyun-ecs` → `ecs-aliyun`）。
-3. **排查 `931052`/`980081` 股息率只有 1 行的问题**。
+2. ~~**修 `docs`/`README` 里的 SSH 别名笔误**（`aliyun-ecs` → `ecs-aliyun`）。~~ ✅ **2026-09-20 已完成**：
+   `README.md` / `CLAUDE.md` / 本文件的 app-operations spec 与 `scripts/app.ps1` 默认值均已统一为 `ecs-aliyun`。
+3. ~~**排查 `931052`/`980081` 股息率只有 1 行的问题**。~~ ✅ **2026-09-20 已查明**：不是抓取写错代码，
+   而是 `storage_code` 双轨切换的残留（详见本文件上文「核查中发现的两个新问题」第 1 条）。
 4. **场外基金改用蛋卷 `djapi`（见第五之二）**——请求数从 7/301 降到 1，限流风险基本消除。抓取器形态：
    - 全历史回填：**每只基金 1 个请求**（`size=6000` 一页到底），单标的串行即可。
    - 日频增量：只拉最近一页（`size=20` 足够）。
