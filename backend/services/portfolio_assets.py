@@ -397,6 +397,14 @@ def probe(
             except Exception as exc:  # noqa: BLE001 蛋卷详情对场内 ETF 等不可用, 降级不抛
                 logger.warning("probe 蛋卷详情失败(%s): %s", candidate.symbol, exc)
                 fund_unresolved += 1
+            if not name:
+                # 蛋卷详情拿不到名字(场内 ETF 以 .OF 形态添加时是常态) → **回落行情源**补名字。
+                # 为什么必须补: 注册走 `_default_name_fetch`, 那条路本来就会回落 —— 不补的话
+                # 候选卡片写「（未解析到名称）」、添加完却有了名字, 预览与结果自相矛盾
+                # (用户实测: 线上场外 tab 输入 513100 看到的就是这个, 还以为是 token 没配)。
+                # ⚠ 只补 `name`, **不动 `resolved`** —— resolved 表达的是"蛋卷详情是否可用",
+                #   它决定前端放不放行(场外基金详情不可用也能加)与下面那句 note 提示。
+                name = _name_from_quote(fund_code, probe_fetch_fn)
             results.append({
                 **candidate.to_dict(),
                 **base,
@@ -518,6 +526,22 @@ def is_placeholder_name(name: str, code: str) -> bool:
     return text in {code.upper(), f"{code}.OF", f"{code}.SH", f"{code}.SZ"}
 
 
+def _name_from_quote(code: str, fetch_fn: ProbeFetchFn | None = None) -> str | None:
+    """从**行情源**(腾讯)取标的真名; 交易所推不出来或请求失败返回 None。
+
+    抽出来是因为它有两个调用方: 注册时的名字自愈(`_default_name_fetch`)、以及 probe 的
+    **候选预览**。场内 ETF 以 `.OF` 形态添加时(如 513100.OF, 走蛋卷净值口径), 蛋卷**详情**
+    接口对它不可用是常态 —— 只能靠这条回落拿名字(纳指ETF国泰)。
+    `fetch_fn` 可注入(测试走桩、不触网), 缺省用真腾讯行情。
+    """
+    exchange = _exchange_of(code, None)
+    if exchange is None:
+        return None
+    probe_fn = fetch_fn or _default_probe_fetch
+    name, _ = probe_fn(f"{exchange.lower()}{code}", _PROBE_COUNT)
+    return name
+
+
 def _default_name_fetch(symbol: str, security_type: str) -> str | None:
     """取标的**真名**: 场外基金走蛋卷详情, 股票/ETF 走腾讯行情(复用 probe 的解析)。
 
@@ -533,11 +557,7 @@ def _default_name_fetch(symbol: str, security_type: str) -> str | None:
                 return detail["name"]
         except Exception as exc:  # noqa: BLE001 场内 ETF 的详情不可用是常态
             logger.warning("取基金名失败(%s, 回落行情源): %s", symbol, exc)
-    exchange = _exchange_of(code, None)
-    if exchange is None:
-        return None
-    name, _ = _default_probe_fetch(f"{exchange.lower()}{code}", _PROBE_COUNT)
-    return name
+    return _name_from_quote(code)
 
 
 def resolve_asset_name(symbol: str, security_type: str) -> str | None:

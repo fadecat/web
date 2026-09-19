@@ -167,13 +167,28 @@ class TestProbe:
 
         513100.OF 就是这样用的 —— 场内 ETF 想按蛋卷净值口径回测。前端据此放行
         (resolved=False 的 FUND 不拦添加), 所以候选必须回给 UI, 只是标注清楚。
+        ⭐ 名字仍要**回落行情源**补上: 注册那条路本来就回落, 候选预览不回落就会
+        "卡片写「（未解析到名称）」、添加完却有了名字"(用户实测线上看到的正是这个, 还以为是
+        token 没配)。⚠ 回落只补 `name`, 不能改 `resolved` —— 它表达的是"蛋卷详情可用",
+        决定前端放不放行 + 那句 note 提示。
         """
         def not_on_sale(code: str) -> dict:
             raise RuntimeError("danjuan fund 详情响应缺少 data")
 
-        got = portfolio_assets.probe("513100.OF", db=db, fund_detail_fetch_fn=not_on_sale)
+        quote_calls: list[str] = []
+
+        def quote_fn(code: str, count: int):
+            quote_calls.append(code)
+            return "纳指ETF国泰", "2026-09-18"
+
+        got = portfolio_assets.probe(
+            "513100.OF", db=db,
+            probe_fetch_fn=quote_fn, fund_detail_fetch_fn=not_on_sale,
+        )
         assert [c["symbol"] for c in got] == ["513100.OF"]
-        assert got[0]["resolved"] is False
+        assert got[0]["name"] == "纳指ETF国泰"     # ← 回落行情源补的名字
+        assert quote_calls == ["sh513100"]          # 打的是腾讯, 且只打一次
+        assert got[0]["resolved"] is False          # 蛋卷详情仍算未解析 → 前端放行 + 提示
         assert "净值同步" in (got[0]["note"] or "")
 
     def test_source_down_raises_unavailable(self, db) -> None:
