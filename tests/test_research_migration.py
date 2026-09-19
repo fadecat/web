@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""研究回放表迁移测试(0003 研究表 + 0004 权益事件表 + 0005 同步状态列, 对齐 test_commodity_migration 模式)。"""
+"""研究回放表迁移测试(0003 研究表 + 0004 权益事件 + 0005 同步状态列 + 0006 基金净值表, 对齐 test_commodity_migration 模式)。"""
 from contextlib import closing
 from pathlib import Path
 import sqlite3
@@ -18,6 +18,7 @@ RESEARCH_TABLES = {
     "research_replay_run",
     "research_replay_day",
     "research_corporate_event",
+    "fund_nav_daily",
 }
 
 
@@ -28,7 +29,7 @@ def _cfg(db_path: Path) -> Config:
     return cfg
 
 
-def test_research_migration_creates_all_tables_head_0005(test_artifact_dir):
+def test_research_migration_creates_all_tables_head_0006(test_artifact_dir):
     db_path = test_artifact_dir / "research-migration.db"
     command.upgrade(_cfg(db_path), "head")
 
@@ -40,7 +41,7 @@ def test_research_migration_creates_all_tables_head_0005(test_artifact_dir):
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
 
     assert RESEARCH_TABLES <= names
-    assert version == "0005"
+    assert version == "0006"
 
 
 def test_research_migration_downgrade_0003_to_0002(test_artifact_dir):
@@ -80,7 +81,7 @@ def test_research_migration_rebuilds_empty_existing_table(test_artifact_dir):
     assert "selection_list" in columns
     assert "uq_research_security_symbol" in constraints
     assert {"last_sync_at", "last_sync_status", "last_sync_error", "last_sync_rows"} <= columns
-    assert version == "0005"
+    assert version == "0006"
 
 
 def test_research_migration_rejects_nonempty_existing_table(test_artifact_dir):
@@ -130,7 +131,7 @@ def test_corporate_event_migration_upgrade_downgrade(test_artifact_dir):
 
     assert {"symbol", "event_date", "factor", "cumulative_dividend", "source", "fetched_at"} <= columns
     assert "uq_research_corporate_event_key" in sql
-    assert version == "0005"
+    assert version == "0006"
 
     command.downgrade(cfg, "0003")
     with closing(sqlite3.connect(db_path)) as conn:

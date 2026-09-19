@@ -116,7 +116,12 @@ def run_research_daily_sync(
 
     with create_session() as db:  # type: Session
         securities = db.scalars(
-            select(ResearchSecurity).where(ResearchSecurity.enabled.is_(True))
+            select(ResearchSecurity).where(
+                ResearchSecurity.enabled.is_(True),
+                # 场外基金是单序列净值, 由 fund_nav_sync 走蛋卷处理(见 fund_tasks.py);
+                # 混进来只会拿腾讯去抓基金, 每天白记一次失败。
+                ResearchSecurity.security_type != "FUND",
+            )
         ).all()
         rows = [
             {"symbol": s.symbol, "security_type": s.security_type, "source": s.source}

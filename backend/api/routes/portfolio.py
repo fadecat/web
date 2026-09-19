@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
-"""组合实验室标的路由(P0-2): 解析候选 / 注册 / 列表 / 单标的补抓。
+"""组合实验室标的路由(P0-2 + P1): 解析候选 / 注册 / 列表 / 单标的补抓。
 
 职责边界(刻意 thin): 只做参数校验、错误码映射与「注册后异步触发抓取」的编排,
-取数与落库全在 services/portfolio_assets.py。
+取数与落库全在 services/portfolio_assets.py(股票/ETF 走腾讯, 场外基金走蛋卷净值)。
 
 错误码契约:
 - code 写法非法 → 422(判定见 portfolio_assets.describe_code_problem)
 - 写法合法但没有候选 / 未知标的 id → 404
-- security_type=FUND → 501(P1 实现)
 - 抓取失败不是 HTTP 错误: 写 last_sync_* 后原样返回, UI 据此给「重试」
 """
 from __future__ import annotations
@@ -81,10 +80,7 @@ def create_asset(
     except ResearchSourceError as exc:  # 代码与类型矛盾等
         raise HTTPException(status_code=422, detail=str(exc)) from None
     except ValueError as exc:
-        message = str(exc)
-        if "场外基金链路" in message:
-            raise HTTPException(status_code=501, detail=message) from None
-        raise HTTPException(status_code=422, detail=message) from None
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     if row["created"]:
         background_tasks.add_task(_run_background_sync, row["id"])
         return {**row, "last_sync_status": portfolio_assets.STATUS_RUNNING}

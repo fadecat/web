@@ -12,7 +12,7 @@ import pytest
 
 from backend.api.routes import portfolio as portfolio_routes
 from backend.models.research import ResearchSecurity
-from backend.services import portfolio_assets
+from backend.services import fund_nav, portfolio_assets
 from backend.services.market_data import AdjustMode, DailyBar, ResearchSourceError
 
 _DATES = [date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7)]
@@ -108,11 +108,30 @@ class TestProbe:
         assert stock["price_basis"] == "HFQ"
         assert db.query(ResearchSecurity).count() == 0  # 不落库
 
-    def test_fund_candidate_not_resolved_but_annotated(self, db) -> None:
-        got = portfolio_assets.probe("000001", db=db, probe_fetch_fn=lambda *_: (None, None))
+    def test_fund_candidate_resolved_via_danjuan_detail(self, db) -> None:
+        """P1: FUND 候选走蛋卷详情拿名称/类型; 详情失败降级为未解析, 不抛。"""
+        def detail(code: str) -> dict:
+            assert code == "000001"
+            return {"data": {"fd_name": "华夏成长混合", "type_desc": "混合型-灵活"}}
+
+        got = portfolio_assets.probe(
+            "000001", db=db, probe_fetch_fn=lambda *_: (None, None), fund_detail_fetch_fn=detail,
+        )
         fund = next(c for c in got if c["security_type"] == "FUND")
-        assert fund["resolved"] is False
-        assert "P1" in (fund.get("note") or "")
+        assert fund["resolved"] is True
+        assert fund["name"] == "华夏成长混合"
+        assert fund["type_desc"] == "混合型-灵活"
+        assert fund["price_basis"] == "NAV_ADJ"
+
+        def not_on_sale(code: str) -> dict:  # 蛋卷详情对场内 ETF 等"暂不销售"
+            raise RuntimeError("该基金暂不销售")
+
+        got2 = portfolio_assets.probe(
+            "000001", db=db, probe_fetch_fn=lambda *_: (None, None), fund_detail_fetch_fn=not_on_sale,
+        )
+        fund2 = next(c for c in got2 if c["security_type"] == "FUND")
+        assert fund2["resolved"] is False
+        assert fund2["name"] is None
 
     def test_network_error_degrades_without_raising(self, db) -> None:
         def boom(tencent_code: str, count: int) -> tuple[str | None, str | None]:
@@ -147,9 +166,20 @@ class TestRegister:
         assert first["id"] == second["id"]
         assert db.query(ResearchSecurity).count() == 1
 
-    def test_register_fund_rejected_in_p0(self, db) -> None:
-        with pytest.raises(ValueError, match="场外基金链路"):
-            portfolio_assets.register("000001.OF", "FUND", "华夏成长混合", db=db)
+    def test_register_fund_uses_otc_and_danjuan(self, db) -> None:
+        """P1: 场外基金可注册, exchange=OTC, source=danjuan(不走行情源路由)。"""
+        row = portfolio_assets.register("000001.OF", "FUND", "华夏成长混合", db=db)
+        assert row["created"] is True
+        assert row["symbol"] == "000001.OF"
+        assert row["exchange"] == "OTC"
+        assert row["source"] == "danjuan"
+        assert row["price_basis"] == "NAV_ADJ"
+
+    def test_register_fund_is_idempotent(self, db) -> None:
+        first = portfolio_assets.register("000001.OF", "FUND", "华夏成长混合", db=db)
+        second = portfolio_assets.register("000001.OF", "FUND", "华夏成长混合", db=db)
+        assert first["created"] is True and second["created"] is False
+        assert first["id"] == second["id"]
 
     def test_register_unknown_type_rejected(self, db) -> None:
         with pytest.raises(ValueError, match="未知标的类型"):
@@ -221,6 +251,79 @@ class TestSyncOne:
         assert rows[0]["row_count"] == len(_DATES)
 
 
+def _fund_payload(rows: list[dict]) -> dict:
+    """构造蛋卷 nav/history 响应(降序, 含成立首日无 percentage)。"""
+    return {"data": {"total_items": len(rows), "items": rows}}
+
+
+_FUND_ITEMS = [
+    {"date": "2026-01-06", "nav": 2.0, "percentage": 1.0, "value": 2.0},
+    {"date": "2026-01-05", "nav": 1.9802, "percentage": 1.01, "value": 1.9802},
+    {"date": "2026-01-01", "nav": 1.9604, "value": 1.9604},  # 成立首日: 无 percentage
+]
+
+
+class TestFundSyncOne:
+    """P1 场外基金: 蛋卷净值 → 链式复权 → fund_nav_daily 幂等覆盖。"""
+
+    def _seed(self, db) -> int:
+        return portfolio_assets.register("000001.OF", "FUND", "华夏成长混合", db=db)["id"]
+
+    def test_success_writes_nav_rows_and_status(self, db) -> None:
+        security_id = self._seed(db)
+        result = portfolio_assets.sync_one(
+            security_id, db_factory=lambda: db,
+            nav_history_fetch_fn=lambda code, size, page: _fund_payload(_FUND_ITEMS),
+        )
+        assert result["status"] == "success"
+        assert result["last_sync_status"] == "success"
+        assert result["rows"] == 3
+        assert result["first_date"] == "2026-01-01"
+        assert result["last_date"] == "2026-01-06"
+
+        from backend.models.research import FundNavDaily
+        rows = db.query(FundNavDaily).filter(FundNavDaily.symbol == "000001.OF").all()
+        assert len(rows) == 3
+        first = next(r for r in rows if r.nav_date.isoformat() == "2026-01-01")
+        last = next(r for r in rows if r.nav_date.isoformat() == "2026-01-06")
+        assert first.daily_return_pct is None  # 成立首日事实为 NULL, 不冒充 0
+        # 链式: 1.9604 → ×1.0101 → ×1.01
+        assert abs(last.adj_nav - 1.9604 * 1.0101 * 1.01) < 1e-9
+
+    def test_resync_is_idempotent_overwrite(self, db) -> None:
+        security_id = self._seed(db)
+        fetch = lambda code, size, page: _fund_payload(_FUND_ITEMS)  # noqa: E731
+        portfolio_assets.sync_one(security_id, db_factory=lambda: db, nav_history_fetch_fn=fetch)
+        portfolio_assets.sync_one(security_id, db_factory=lambda: db, nav_history_fetch_fn=fetch)
+        from backend.models.research import FundNavDaily
+        assert db.query(FundNavDaily).filter(FundNavDaily.symbol == "000001.OF").count() == 3
+
+    def test_failure_writes_failed_status(self, db) -> None:
+        security_id = self._seed(db)
+
+        def boom(code: str, size: int, page: int) -> dict:
+            raise RuntimeError("danjuan down")
+
+        result = portfolio_assets.sync_one(
+            security_id, db_factory=lambda: db, nav_history_fetch_fn=boom,
+        )
+        assert result["status"] == "failed"
+        assert result["last_sync_status"] == "failed"
+        assert "danjuan down" in (result["last_sync_error"] or "")
+
+    def test_list_assets_reads_fund_nav_table(self, db) -> None:
+        security_id = self._seed(db)
+        portfolio_assets.sync_one(
+            security_id, db_factory=lambda: db,
+            nav_history_fetch_fn=lambda code, size, page: _fund_payload(_FUND_ITEMS),
+        )
+        rows = portfolio_assets.list_assets(db)
+        assert rows[0]["symbol"] == "000001.OF"
+        assert rows[0]["row_count"] == 3
+        assert rows[0]["first_date"] == "2026-01-01"
+        assert rows[0]["price_basis"] == "NAV_ADJ"
+
+
 # ---------------------------------------------------------------------------
 # 路由契约
 # ---------------------------------------------------------------------------
@@ -288,10 +391,21 @@ class TestRoutes:
         assert r.status_code == 201
         assert r.json()["last_sync_status"] == "running"
 
-    def test_create_fund_returns_501(self, contract_client) -> None:
+    def test_create_fund_returns_201_and_runs_danjuan_sync(self, contract_client, wire_sync, monkeypatch) -> None:
+        """P1: 场外基金注册成功且后台同步走蛋卷链路(不再 501)。"""
+        from datetime import date as _d
+        fake_rows = [
+            fund_nav.FundNavRow(nav_date=_d(2026, 1, 1), unit_nav=1.9604, daily_return_pct=None, adj_nav=1.9604),
+            fund_nav.FundNavRow(nav_date=_d(2026, 1, 5), unit_nav=1.98, daily_return_pct=1.0, adj_nav=1.980004),
+        ]
+        monkeypatch.setattr(fund_nav, "fetch_nav_history", lambda *a, **k: fake_rows)
         r = contract_client.post(BASE, json={"symbol": "000001.OF", "security_type": "FUND",
                                              "name": "华夏成长混合"})
-        assert r.status_code == 501
+        assert r.status_code == 201
+        body = r.json()
+        assert body["symbol"] == "000001.OF"
+        assert body["source"] == "danjuan"
+        assert body["last_sync_status"] == "running"
 
     def test_create_duplicate_is_idempotent(self, contract_client, thread_db, monkeypatch) -> None:
         monkeypatch.setattr(portfolio_routes, "_session_factory", lambda: thread_db)

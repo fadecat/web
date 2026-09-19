@@ -60,6 +60,9 @@ def catalog():
             str(t["symbol"]): (str(t["name"]), Policy(research_source, "research_daily_sync", 17, 30))
             for t in load_research_targets()
         },
+        # 场外基金净值(蛋卷, 单序列): 标的在运行时按需添加, 无法从 yaml 枚举 →
+        # 用 "*" 通配(同"商品价格与分位"), 由 apply_catalog 逐实体套用同一 Policy。
+        "场外基金净值": {"*": ("场外基金净值", Policy("danjuan", "fund_nav_sync", 23, 10))},
     }
 
 
@@ -67,7 +70,8 @@ def apply_catalog(groups, freshness, now=None):
     definitions = catalog()
     for group in groups:
         entries = definitions.get(group["name"], {})
-        if group["name"] == "商品价格与分位":
+        # 通配组("*"): 标的在运行时按需添加, 无法从配置枚举 → 组内每个实体套用同一 Policy
+        if group["name"] in ("商品价格与分位", "场外基金净值"):
             policy = entries["*"][1]
             entities = []
             for entity in group["entities"]:

@@ -40,8 +40,8 @@ def _utcnow() -> datetime:
 # 标的名单与交易日历
 # ---------------------------------------------------------------------------
 
-_TYPE_TO_SECURITY_TYPE = {"stock": "STOCK", "etf": "ETF"}
-_EXCHANGE_BY_SUFFIX = {"SH": "SSE", "SZ": "SZSE"}
+_TYPE_TO_SECURITY_TYPE = {"stock": "STOCK", "etf": "ETF", "fund": "FUND"}
+_EXCHANGE_BY_SUFFIX = {"SH": "SSE", "SZ": "SZSE", "OF": "OTC"}
 
 
 def _target_exchange(symbol: str) -> str:

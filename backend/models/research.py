@@ -287,3 +287,34 @@ class ResearchReplayDay(Base):
         UniqueConstraint("run_id", "plan_date", name="uq_research_replay_day_key"),
         Index("ix_research_replay_day_run", "run_id", "plan_date"),
     )
+
+
+class FundNavDaily(Base):
+    """场外基金净值日线(组合实验室 P1, 数据源蛋卷)。
+
+    设计要点(docs/portfolio-lab-data-maintenance.md §七):
+    - unit_nav + daily_return_pct 是「不可变的历史事实」(蛋卷 date/nav/percentage);
+    - adj_nav 是由 daily_return_pct 链式推出的「派生值」(首日=unit_nav,
+      之后 prev_adj×(1+pct/100)), 全量重算而非增量递推, 分红/份额折算不影响自洽;
+    - 成立首日无 percentage → daily_return_pct 存 NULL(链式起点);
+    - 幂等: 唯一键 (symbol, nav_date), 重复同步覆盖写。
+    """
+
+    __tablename__ = "fund_nav_daily"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False)  # 规范代码, 如 100018.OF
+    nav_date: Mapped[date] = mapped_column(Date, nullable=False)
+    unit_nav: Mapped[float] = mapped_column(Float, nullable=False)
+    # 蛋卷 percentage(当日净值增长率, %); 成立首日为 NULL
+    daily_return_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 分红再投链式复权净值(派生值, 重算覆盖)
+    adj_nav: Mapped[float] = mapped_column(Float, nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="danjuan")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "nav_date", name="uq_fund_nav_daily_key"),
+        Index("ix_fund_nav_daily_symbol_date", "symbol", "nav_date"),
+    )

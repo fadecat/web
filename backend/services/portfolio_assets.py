@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""组合实验室标的服务层(P0-2): 代码归一化 / 解析 / 注册 / 单标的同步 / 列表。
+"""组合实验室标的服务层(P0-2 + P1): 代码归一化 / 解析 / 注册 / 单标的同步 / 列表。
 
-范围: 股票与 ETF 可注册并同步; 场外基金只产生候选, 注册与抓取留给 P1(P1 未到,
-不伪造名称与区间)。
+范围: 股票/ETF 走腾讯 raw+hfq 配对; **场外基金(FUND)走蛋卷净值**(P1 打通,
+落 fund_nav_daily, 链式分红再投复权, 见 backend/services/fund_nav.py)。
 
 三条硬约束(源于实测事实, 不是风格偏好):
 1. **六位数字三义**: `000001` 同时可以是 平安银行(股票) / 华夏成长混合(场外基金) /
@@ -10,6 +10,7 @@
    层里不替用户做决定; 候选上限 3(数据源克制: 每个候选最多 1 个请求)。
 2. **数据源克制**: probe 对每个候选最多发 1 个 HTTP 请求, 且腾讯 fqkline 的 count
    必须 ≤ 640(实测更大会静默返回空数组, 不报错); sync 才按 640/页向后分页拉全。
+   蛋券详情接口对场内 ETF 不可用 → FUND 候选解析失败必须降级, 不上抛。
 3. **非法输入返回空列表而不是抛异常**(路由据此区分 422/404); 未命中就是未命中,
    不回填任何猜测值。
 
@@ -29,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from backend.models.database import SessionLocal
 from backend.models.research import ResearchDailyBarRaw, ResearchSecurity
-from backend.services import research_store
+from backend.services import fund_nav, research_store
 from backend.services.market_data import AdjustMode, ResearchSourceError, provider_factory
 from backend.services.market_data import _assert_symbol_type  # 私有但唯一的类型一致性断言源, 不复制一份
 from backend.tasks import research_tasks
@@ -45,7 +46,8 @@ _MAX_CANDIDATES = 3
 _MAX_SYNC_ERROR = 255
 # probe 只需名称与最新交易日; count 上限 640, 取小值更快也够用
 _PROBE_COUNT = 10
-_FUND_NOTE = "场外基金链路 P1 实现"
+_FUND_NOTE = "场外基金链路 P1 实现"  # 兼容旧引用(测试断言文案); P1 已打通, 仅留作历史文案
+_FUND_SOURCE = "danjuan"
 
 STATUS_RUNNING = "running"
 STATUS_SUCCESS = "success"
@@ -54,7 +56,7 @@ STATUS_FAILED = "failed"
 _PRICE_BASIS = {"STOCK": "HFQ", "ETF": "HFQ", "FUND": "NAV_ADJ"}
 
 _PREFIX_RE = re.compile(r"^(SH|SZ)(\d{6})$")
-_SUFFIX_RE = re.compile(r"^(\d{6})\.?(SH|SZ)$")
+_SUFFIX_RE = re.compile(r"^(\d{6})\.?(SH|SZ|OF)$")
 _BARE_RE = re.compile(r"^\d{6}$")
 
 _SH_FIRST = frozenset({"5", "6", "9"})
@@ -249,12 +251,17 @@ def _default_probe_fetch(tencent_code: str, count: int) -> tuple[str | None, str
 
 
 def _local_stats(db: Session | None, symbol: str) -> tuple[bool, int | None, str | None, str | None]:
-    """本库注册情况与已入库区间; 未注册一律 None(不用 0 冒充)。"""
+    """本库注册情况与已入库区间; 未注册一律 None(不用 0 冒充)。
+
+    股票/ETF 读 research_daily_bar_raw; 场外基金(.OF)读 fund_nav_daily。
+    """
     if db is None:
         return False, None, None, None
     exists = db.scalar(select(ResearchSecurity.id).where(ResearchSecurity.symbol == symbol))
     if exists is None:
         return False, None, None, None
+    if str(symbol).strip().upper().endswith(".OF"):
+        return (True, *fund_nav.fund_nav_stats(db, symbol))
     row_count, first_date, last_date = db.execute(
         select(
             func.count(ResearchDailyBarRaw.id),
@@ -276,10 +283,12 @@ def probe(
     *,
     db: Session | None = None,
     probe_fetch_fn: ProbeFetchFn | None = None,
+    fund_detail_fetch_fn: fund_nav.FundDetailFetchFn | None = None,
 ) -> list[dict[str, Any]]:
     """解析代码 → 候选列表(每个候选最多 1 个 HTTP 请求), **不落库**。
 
-    场外基金 P0 不真抓: 候选照给, resolved=False / 名称为空 + note 说明。
+    股票/ETF 走腾讯(名称+最新交易日); 场外基金走蛋卷详情(名称/类型/成立日,
+    ⚠ 该接口对场内 ETF 不可用, 失败按未解析降级, 不上抛)。
     网络异常捕获为 resolved=False, 不上抛(路由不得因为单一数据源抖动变 500)。
     """
     candidates = normalize_code(code, type_hint)
@@ -294,7 +303,25 @@ def probe(
             "last_date": last_date,
         }
         if candidate.security_type == "FUND":
-            results.append({**candidate.to_dict(), **base, "note": _FUND_NOTE})
+            fund_code = candidate.symbol[:6]
+            name: str | None = None
+            type_desc: str | None = None
+            resolved = False
+            try:
+                detail = fund_nav.fetch_fund_detail(fund_code, fetch_fn=fund_detail_fetch_fn)
+                name = detail.get("name")
+                type_desc = detail.get("type_desc")
+                resolved = bool(name)
+            except Exception as exc:  # noqa: BLE001 蛋卷详情对场内 ETF 等不可用, 降级不抛
+                logger.warning("probe 蛋卷详情失败(%s): %s", candidate.symbol, exc)
+            results.append({
+                **candidate.to_dict(),
+                **base,
+                "name": name,
+                "type_desc": type_desc,
+                "latest_date": last_date or None,  # 已入库时本库最晚净值日; 否则未知
+                "resolved": resolved,
+            })
             continue
         # 腾讯代码只需后缀: 600900.SH → sh600900(此处候选必带 .SH/.SZ)
         tencent_code = f"{candidate.symbol[-2:].lower()}{candidate.symbol[:6]}"
@@ -350,26 +377,31 @@ def _security_payload(db: Session, security: ResearchSecurity) -> dict[str, Any]
 def register(symbol: str, security_type: str, name: str, *, db: Session) -> dict[str, Any]:
     """写入 / 更新 research_security(只增不删), 返回标的行 + `created` 标记。
 
-    - exchange: 股票/ETF 按代码后缀给 SSE/SZSE; FUND 给 OTC(P0 尚未到, 已先拒);
-    - 幂等: 重复注册同一 symbol 返回已存在的行, created=False(调用方据此决定是否首抓);
-    - P0 拒绝 FUND: ValueError("场外基金链路 P1 实现") 由路由转 501。
+    - exchange: 股票/ETF 按代码后缀给 SSE/SZSE; FUND 给 OTC;
+    - FUND 的 source 固定 danjuan(蛋卷净值链路), 不走 research.yaml 的行情源路由;
+    - 幂等: 重复注册同一 symbol 返回已存在的行, created=False(调用方据此决定是否首抓)。
     """
     normalized_type = str(security_type or "").strip().upper()
     if normalized_type not in _PRICE_BASIS:
         raise ValueError(f"未知标的类型: {security_type!r}(支持 STOCK / ETF / FUND)")
-    if normalized_type == "FUND":
-        raise ValueError(_FUND_NOTE)
 
     code, explicit_exchange = _split_input(symbol)
     if code is None:
         raise ValueError(f"无法识别的标的代码: {symbol!r}(支持 600900 / sh600900 / 600900.SH)")
-    exchange = _exchange_of(code, explicit_exchange)
-    if exchange is None:
-        raise ValueError(f"代码首位 {code[0]} 不在支持的交易所范围: {symbol!r}")
-    canonical = f"{code}.{exchange}"
+    if normalized_type == "FUND":
+        # 场外基金: 6 位纯数字, 无交易所概念; 规范形态 {code}.OF
+        canonical = f"{code}.OF"
+    else:
+        exchange = _exchange_of(code, explicit_exchange)
+        if exchange is None:
+            raise ValueError(f"代码首位 {code[0]} 不在支持的交易所范围: {symbol!r}")
+        canonical = f"{code}.{exchange}"
     _assert_symbol_type(canonical, code, normalized_type)  # 类型/代码矛盾 → ResearchSourceError(ValueError)
 
-    source = str(load_research_settings().get("data_source") or _SOURCE_DEFAULT).strip().lower()
+    if normalized_type == "FUND":
+        source = _FUND_SOURCE
+    else:
+        source = str(load_research_settings().get("data_source") or _SOURCE_DEFAULT).strip().lower()
     targets: Sequence[dict[str, Any]] = [{
         "symbol": canonical,
         "name": str(name or "").strip(),
@@ -421,9 +453,12 @@ def sync_one(
     db_factory: Callable[[], Session] | None = None,
     provider_factory_fn: Callable[[str], Any] | None = None,
     request_end: date | None = None,
+    nav_history_fetch_fn: fund_nav.NavHistoryFetchFn | None = None,
 ) -> dict[str, Any]:
-    """单标的: 置 running → 抓 RAW/HFQ 配对 → 发布 → 回写同步状态。
+    """单标的: 置 running → 抓取 → 落库 → 回写同步状态。
 
+    股票/ETF: 腾讯 raw/hfq 配对 → publish_paired_snapshot;
+    场外基金(FUND): 蛋卷净值全历史(1 请求) → 链式复权 → 幂等覆盖写 fund_nav_daily。
     网络在事务外、每标的一个独立 Session(主流程与落库各一次), 与既有任务范式一致;
     失败写 failed + 原因(截断 255), 不向上抛(单标的失败不影响其余标的)。
     """
@@ -455,48 +490,73 @@ def sync_one(
     first_date: date | None = None
     last_date: date | None = None
     source_name: str | None = None
-    try:
-        provider = make_provider(target["source"])
-        source_name = getattr(provider, "name", target["source"])
-        raw_bars = provider.get_daily_bars(
-            target["symbol"], history_start, today, AdjustMode.RAW,
-            security_type=target["security_type"],
-        )
-        hfq_bars = provider.get_daily_bars(
-            target["symbol"], history_start, today, AdjustMode.HFQ,
-            security_type=target["security_type"],
-        )
-        # 尾部发布滞后截齐(与定时任务同一份逻辑, 不复制)
-        raw_bars, hfq_bars, common_last = research_tasks._align_trailing_publication_lag(raw_bars, hfq_bars)
-        if common_last is not None:
-            logger.warning("%s: raw/hfq 尾部发布滞后, 截齐到共同末日 %s 后发布", target["symbol"], common_last)
-        with create_session() as db:  # type: Session
-            result = research_store.publish_paired_snapshot(
-                db, target["symbol"], raw_bars, hfq_bars,
-                source=source_name, request_start=history_start, request_end=today,
-            )
-            if result.status == "success":
-                inserted, revised, unchanged = result.inserted_rows, result.revised_rows, result.unchanged_rows
-                if raw_bars:
-                    first_date = min(bar.trade_date for bar in raw_bars)
-                    last_date = max(bar.trade_date for bar in raw_bars)
-            else:
-                failure = result.error or "配对快照被拒绝"
-            rows = inserted + revised + unchanged
-            _write_sync_state(
-                db, security_id,
-                STATUS_SUCCESS if failure is None else STATUS_FAILED,
-                error=failure,
-                rows=rows if failure is None else 0,
-            )
-    except Exception as exc:  # noqa: BLE001 单标的失败不中断(后台任务/刷新端点均据此展示)
-        failure = f"{type(exc).__name__}: {exc}"[:_MAX_SYNC_ERROR]
-        logger.warning("单一标的同步失败(id=%s, %s): %s", security_id, target["symbol"], exc)
+
+    if target["security_type"] == "FUND":
+        # ------- P1 场外基金: 蛋卷净值全历史 → 链式复权 → 幂等覆盖写 -------
         try:
+            rows = fund_nav.fetch_nav_history(
+                target["symbol"][:6], fetch_fn=nav_history_fetch_fn,
+            )
             with create_session() as db:  # type: Session
-                _write_sync_state(db, security_id, STATUS_FAILED, error=failure, rows=0)
-        except Exception:  # noqa: BLE001 状态回写失败只能记录, 不能改变主失败语义
-            logger.exception("同步状态回写失败: security_id=%s", security_id)
+                stats = fund_nav.upsert_fund_nav(db, target["symbol"], rows, source=_FUND_SOURCE)
+                first_date = rows[0].nav_date
+                last_date = rows[-1].nav_date
+                inserted = stats["rows_written"]  # 本次写入行数(幂等覆盖, 含未变更)
+                _write_sync_state(
+                    db, security_id, STATUS_SUCCESS,
+                    error=None, rows=stats["rows_written"],
+                )
+        except Exception as exc:  # noqa: BLE001
+            failure = f"{type(exc).__name__}: {exc}"[:_MAX_SYNC_ERROR]
+            logger.warning("场外基金同步失败(id=%s, %s): %s", security_id, target["symbol"], exc)
+            try:
+                with create_session() as db:  # type: Session
+                    _write_sync_state(db, security_id, STATUS_FAILED, error=failure, rows=0)
+            except Exception:  # noqa: BLE001
+                logger.exception("同步状态回写失败: security_id=%s", security_id)
+    else:
+        try:
+            provider = make_provider(target["source"])
+            source_name = getattr(provider, "name", target["source"])
+            raw_bars = provider.get_daily_bars(
+                target["symbol"], history_start, today, AdjustMode.RAW,
+                security_type=target["security_type"],
+            )
+            hfq_bars = provider.get_daily_bars(
+                target["symbol"], history_start, today, AdjustMode.HFQ,
+                security_type=target["security_type"],
+            )
+            # 尾部发布滞后截齐(与定时任务同一份逻辑, 不复制)
+            raw_bars, hfq_bars, common_last = research_tasks._align_trailing_publication_lag(raw_bars, hfq_bars)
+            if common_last is not None:
+                logger.warning("%s: raw/hfq 尾部发布滞后, 截齐到共同末日 %s 后发布", target["symbol"], common_last)
+            with create_session() as db:  # type: Session
+                result = research_store.publish_paired_snapshot(
+                    db, target["symbol"], raw_bars, hfq_bars,
+                    source=source_name, request_start=history_start, request_end=today,
+                )
+                if result.status == "success":
+                    inserted, revised, unchanged = result.inserted_rows, result.revised_rows, result.unchanged_rows
+                    if raw_bars:
+                        first_date = min(bar.trade_date for bar in raw_bars)
+                        last_date = max(bar.trade_date for bar in raw_bars)
+                else:
+                    failure = result.error or "配对快照被拒绝"
+                rows = inserted + revised + unchanged
+                _write_sync_state(
+                    db, security_id,
+                    STATUS_SUCCESS if failure is None else STATUS_FAILED,
+                    error=failure,
+                    rows=rows if failure is None else 0,
+                )
+        except Exception as exc:  # noqa: BLE001 单标的失败不中断(后台任务/刷新端点均据此展示)
+            failure = f"{type(exc).__name__}: {exc}"[:_MAX_SYNC_ERROR]
+            logger.warning("单一标的同步失败(id=%s, %s): %s", security_id, target["symbol"], exc)
+            try:
+                with create_session() as db:  # type: Session
+                    _write_sync_state(db, security_id, STATUS_FAILED, error=failure, rows=0)
+            except Exception:  # noqa: BLE001 状态回写失败只能记录, 不能改变主失败语义
+                logger.exception("同步状态回写失败: security_id=%s", security_id)
 
     status = STATUS_FAILED if failure else STATUS_SUCCESS
     stored: dict[str, Any] = {"last_sync_status": status}
