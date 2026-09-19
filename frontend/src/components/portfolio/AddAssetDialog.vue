@@ -2,8 +2,9 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { createAsset, probeAsset } from '../../api/portfolio';
 import {
-  TYPE_HINT_OPTIONS, buildStartShiftNotice, candidateKey, exchangeLabel, formatRange,
-  isDate, priceBasisLabel, securityTypeLabel,
+  TYPE_HINT_OPTIONS, buildStartShiftNotice, candidateKey, candidateRangeText,
+  confirmSubtitle, exchangeLabel, formatRange, isDate, priceBasisLabel,
+  securityTypeLabel, sourceLabel,
 } from '../../utils/portfolioAssets.mjs';
 import { createRequestGuard } from '../../utils/requestGuard.js';
 
@@ -233,8 +234,9 @@ defineExpose({ open: () => emit('update:modelValue', true), close, reset: resetA
         >
           <span class="candidate-name">{{ item.name || '（未解析到名称）' }}</span>
           <span class="candidate-meta">
-            {{ securityTypeLabel(item.security_type) }} · {{ exchangeLabel(item.symbol) }}/{{ item.source || '—' }}
+            {{ securityTypeLabel(item.security_type) }} · {{ exchangeLabel(item.symbol) }} · {{ sourceLabel(item.source) }}
           </span>
+          <span class="candidate-range">{{ candidateRangeText(item) }}</span>
         </el-radio>
       </el-radio-group>
     </div>
@@ -242,6 +244,8 @@ defineExpose({ open: () => emit('update:modelValue', true), close, reset: resetA
     <!-- 第 3 步: 确认卡(口径摆在最前面) -->
     <div v-if="selected" class="confirm-card">
       <div class="confirm-name">{{ selected.name || '（未解析到名称）' }}</div>
+      <!-- 副标题: 代码 · 类型描述 · 基金经理(add-asset-ux §二第 3 步的示例形态) -->
+      <div class="confirm-subtitle">{{ confirmSubtitle(selected) }}</div>
       <div class="confirm-row">
         <span class="confirm-label">代码 · 类型</span>
         <span>{{ selected.symbol }} · {{ securityTypeLabel(selected.security_type) }}</span>
@@ -257,7 +261,7 @@ defineExpose({ open: () => emit('update:modelValue', true), close, reset: resetA
       <div class="confirm-row">
         <span class="confirm-label">数据源</span>
         <span>
-          {{ selected.source || '—' }}
+          {{ sourceLabel(selected.source) }}
           <template v-if="selected.latest_date">（最新 {{ selected.latest_date }}）</template>
         </span>
       </div>
@@ -352,6 +356,15 @@ defineExpose({ open: () => emit('update:modelValue', true), close, reset: resetA
   color: var(--el-text-color-secondary);
 }
 
+/* 候选的数据区间(未抓取时显示「成立/最新 …（待抓取）」, 不编造区间) */
+.candidate-range {
+  display: block;
+  margin: 2px 0 0 24px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
 .confirm-card {
   margin-top: 12px;
   padding: 12px;
@@ -363,7 +376,14 @@ defineExpose({ open: () => emit('update:modelValue', true), close, reset: resetA
 .confirm-name {
   font-size: 15px;
   font-weight: 600;
+  margin-bottom: 2px;
+}
+
+/* 确认卡副标题: 代码 · 类型描述 · 基金经理 */
+.confirm-subtitle {
   margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 .confirm-row {

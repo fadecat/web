@@ -179,9 +179,11 @@ def fetch_nav_history(
 
 
 def parse_fund_detail(payload: dict) -> dict[str, Any]:
-    """蛋卷 /djapi/fund/{code} 响应 → {name, type_desc, found_date}。
+    """蛋卷 /djapi/fund/{code} 响应 → {name, type_desc, found_date, manager}。
 
     ⚠ 对场内 ETF 该接口返回错误体 → 由调用方 try/except 容错。
+    `manager` 取自响应里的 `manager_name`(实测 100018 = '黄纪亮') —— 确认卡与
+    详情表「基金经理」列都要它(`add-asset-ux` §二第 3 步的确认卡示例含经理名)。
     """
     data = (payload or {}).get("data")
     if not isinstance(data, dict) or not data:
@@ -190,11 +192,12 @@ def parse_fund_detail(payload: dict) -> dict[str, Any]:
         "name": str(data.get("fd_name") or "").strip() or None,
         "type_desc": str(data.get("type_desc") or "").strip() or None,
         "found_date": str(data.get("found_date") or "").strip() or None,
+        "manager": str(data.get("manager_name") or "").strip() or None,
     }
 
 
 def fetch_fund_detail(code: str, *, fetch_fn: FundDetailFetchFn | None = None) -> dict[str, Any]:
-    """场外基金详情(名称/类型/成立日); 失败向上抛, 由调用方决定降级。"""
+    """场外基金详情(名称/类型/成立日/基金经理); 失败向上抛, 由调用方决定降级。"""
     fetch = fetch_fn or _default_fund_detail_fetch
     return parse_fund_detail(fetch(code))
 

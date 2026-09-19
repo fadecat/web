@@ -4,7 +4,8 @@ import { ElMessage } from 'element-plus';
 import { listAssets, refreshAsset } from '../api/portfolio';
 import AddAssetDialog from '../components/portfolio/AddAssetDialog.vue';
 import {
-  computePortfolioStart, formatCount, formatRange, priceBasisLabel, securityTypeLabel,
+  computePortfolioStart, formatCount, formatRange, priceBasisLabel, rowStatusOf,
+  securityTypeLabel, usedByText,
 } from '../utils/portfolioAssets.mjs';
 
 // P0 宿主页: 标的注册与按需抓取。组合构建/回测属后续阶段, 页脚常驻说明。
@@ -15,6 +16,10 @@ const error = ref('');
 const dialogVisible = ref(false);
 const startNotice = ref(null); // 起点被推后时的警示条
 const refreshingId = ref(null);
+
+// 状态口径只应有一份实现(与组合详情页共用 rowStatusOf):
+// 「有行数但 last_sync_status 为空」是**就绪**, 不是「—」—— 那是种子/脚本写入的标的。
+const statusOf = (row) => rowStatusOf(row);
 
 // 组合共同起点 = 所有标的 first_date 里最晚的那个
 const startInfo = computed(() => computePortfolioStart(rows.value));
@@ -156,19 +161,35 @@ onBeforeUnmount(() => {
         </el-table-column>
         <el-table-column label="同步状态" width="120" align="center">
           <template #default="{ row }">
-            <span v-if="row.last_sync_status === 'running'" class="status-running">
-              <span class="status-spinner" />同步中
+            <span v-if="statusOf(row).key === 'running'" class="status-running">
+              <span class="status-spinner" />{{ statusOf(row).label }}
             </span>
-            <span v-else-if="row.last_sync_status === 'success'" class="status-success">就绪</span>
+            <span v-else-if="statusOf(row).key === 'ready'" class="status-success">
+              {{ statusOf(row).label }}
+            </span>
             <el-tooltip
-              v-else-if="row.last_sync_status === 'failed'"
-              :content="row.last_sync_error || '同步失败'"
+              v-else-if="statusOf(row).tone === 'down'"
+              :content="statusOf(row).detail || '同步失败'"
               placement="top"
               :show-after="120"
             >
-              <span class="status-failed">失败</span>
+              <span class="status-failed">{{ statusOf(row).label }}</span>
             </el-tooltip>
             <span v-else class="status-unknown">—</span>
+          </template>
+        </el-table-column>
+        <!-- multi-portfolio §六-1: 标的是**全局注册表**, 停用/删除前要知道被谁用着 -->
+        <el-table-column label="被组合使用" width="160" align="center">
+          <template #default="{ row }">
+            <el-tooltip
+              v-if="row.used_by_count"
+              :content="usedByText(row)"
+              placement="top"
+              :show-after="120"
+            >
+              <span class="used-by">{{ row.used_by_count }} 个组合</span>
+            </el-tooltip>
+            <span v-else class="status-unknown">未被使用</span>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="90" align="center">
@@ -176,11 +197,11 @@ onBeforeUnmount(() => {
             <el-button
               link
               size="small"
-              :type="row.last_sync_status === 'failed' ? 'danger' : 'primary'"
+              :type="statusOf(row).retry ? 'danger' : 'primary'"
               :loading="refreshingId === row.id"
               @click="refreshOne(row)"
             >
-              {{ row.last_sync_status === 'failed' ? '重试' : '刷新' }}
+              {{ statusOf(row).retry ? '重试' : '刷新' }}
             </el-button>
           </template>
         </el-table-column>
@@ -336,6 +357,12 @@ onBeforeUnmount(() => {
 
 .status-unknown {
   color: var(--el-text-color-placeholder);
+}
+
+/* 「被 N 个组合使用」(multi-portfolio §六-1) */
+.used-by {
+  color: var(--el-color-primary);
+  cursor: help;
 }
 
 @keyframes asset-spin {

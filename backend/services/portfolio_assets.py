@@ -54,6 +54,8 @@ STATUS_SUCCESS = "success"
 STATUS_FAILED = "failed"
 
 _PRICE_BASIS = {"STOCK": "HFQ", "ETF": "HFQ", "FUND": "NAV_ADJ"}
+# 公开别名: 组合服务层的成员表要标「复权口径」, 口径映射只应有一份定义
+PRICE_BASIS = _PRICE_BASIS
 
 _PREFIX_RE = re.compile(r"^(SH|SZ)(\d{6})$")
 _SUFFIX_RE = re.compile(r"^(\d{6})\.?(SH|SZ|OF)$")
@@ -333,6 +335,14 @@ def _local_stats(db: Session | None, symbol: str) -> tuple[bool, int | None, str
     )
 
 
+def local_stats(db: Session, symbol: str) -> tuple[bool, int | None, str | None, str | None]:
+    """(是否已注册, 行数, 首日, 末日); 公开版 `_local_stats`, 供组合服务层的成员表复用。
+
+    按资产类型分表读: 股票/ETF 读 `research_daily_bar_raw`, 场外基金读 `fund_nav_daily`。
+    """
+    return _local_stats(db, symbol)
+
+
 def probe(
     code: str,
     type_hint: str | None = None,
@@ -374,11 +384,15 @@ def probe(
             fund_code = candidate.symbol[:6]
             name: str | None = None
             type_desc: str | None = None
+            manager: str | None = None
+            found_date: str | None = None
             resolved = False
             try:
                 detail = fund_nav.fetch_fund_detail(fund_code, fetch_fn=fund_detail_fetch_fn)
                 name = detail.get("name")
                 type_desc = detail.get("type_desc")
+                manager = detail.get("manager")
+                found_date = detail.get("found_date")
                 resolved = bool(name)
             except Exception as exc:  # noqa: BLE001 蛋卷详情对场内 ETF 等不可用, 降级不抛
                 logger.warning("probe 蛋卷详情失败(%s): %s", candidate.symbol, exc)
@@ -388,6 +402,8 @@ def probe(
                 **base,
                 "name": name,
                 "type_desc": type_desc,
+                "manager": manager,
+                "found_date": found_date,
                 "latest_date": last_date or None,  # 已入库时本库最晚净值日; 否则未知
                 "resolved": resolved,
                 # 显式要场外基金却拿不到详情 → 说明白"名称取不到但净值能同步", 否则
@@ -413,6 +429,10 @@ def probe(
             "name": name or None,
             "latest_date": latest_date,
             "resolved": resolved,
+            # 统一形状: 股票/ETF 无「基金经理/成立日」概念(经理是基金特有), 显式给 None
+            "type_desc": None,
+            "manager": None,
+            "found_date": None,
         })
     # 腾讯链路全挂(且其余候选也只是"蛋卷查不到") → 服务不可用, 而不是"代码不存在"
     if errored and errored + fund_unresolved == len(results):
@@ -433,8 +453,33 @@ def get_asset(db: Session, security_id: int) -> dict[str, Any] | None:
     return _security_payload(db, security) if security is not None else None
 
 
-def _security_payload(db: Session, security: ResearchSecurity) -> dict[str, Any]:
+def _used_by_map(db: Session, symbol: str | None = None) -> dict[str, list[str]]:
+    """标的 symbol → 正在使用它的组合名(只算未归档的组合)。
+
+    `multi-portfolio` §六-1: 标的库要显示「该标的被 N 个组合使用」。`research_security`
+    是**全局注册表**, 停用/删除一个标的会影响所有用到它的组合 —— 用户在动手前需要知道是谁。
+    """
+    from backend.models.portfolio import Portfolio, PortfolioAsset  # noqa: PLC0415 避免循环导入
+    from backend.services import portfolio_store  # noqa: PLC0415
+
+    stmt = (
+        select(PortfolioAsset.symbol, Portfolio.name)
+        .join(Portfolio, Portfolio.id == PortfolioAsset.portfolio_id)
+        .where(Portfolio.status != portfolio_store.ARCHIVED)
+    )
+    if symbol is not None:
+        stmt = stmt.where(PortfolioAsset.symbol == symbol)
+    used: dict[str, list[str]] = {}
+    for used_symbol, portfolio_name in db.execute(stmt).all():
+        used.setdefault(used_symbol, []).append(portfolio_name)
+    return used
+
+
+def _security_payload(
+    db: Session, security: ResearchSecurity, *, used_by: list[str] | None = None,
+) -> dict[str, Any]:
     _, row_count, first_date, last_date = _local_stats(db, security.symbol)
+    names = used_by if used_by is not None else _used_by_map(db, security.symbol).get(security.symbol, [])
     return {
         "id": security.id,
         "symbol": security.symbol,
@@ -452,6 +497,8 @@ def _security_payload(db: Session, security: ResearchSecurity) -> dict[str, Any]
         "last_sync_status": security.last_sync_status,
         "last_sync_error": security.last_sync_error,
         "last_sync_rows": security.last_sync_rows,
+        "used_by": names,
+        "used_by_count": len(names),
     }
 
 
@@ -675,6 +722,10 @@ def sync_one(
 # ---------------------------------------------------------------------------
 
 def list_assets(db: Session) -> list[dict[str, Any]]:
-    """已注册标的列表(按注册顺序), 含本库行数/区间与同步状态。"""
+    """已注册标的列表(按注册顺序), 含本库行数/区间、同步状态与「被哪些组合使用」。
+
+    `used_by` 一次性查出(逐个标的查会有 N 次 SQL, 列表页标的数虽小但不必要)。
+    """
     securities = db.scalars(select(ResearchSecurity).order_by(ResearchSecurity.id)).all()
-    return [_security_payload(db, security) for security in securities]
+    used = _used_by_map(db)
+    return [_security_payload(db, s, used_by=used.get(s.symbol, [])) for s in securities]

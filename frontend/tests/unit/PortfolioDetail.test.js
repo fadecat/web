@@ -18,6 +18,10 @@ const api = vi.hoisted(() => ({
   patchPortfolio: vi.fn(),
   deletePortfolio: vi.fn(),
   runBacktest: vi.fn(),
+  // 详情页会用到的其余端点(AddAssetDialog 的注册/解析、成员行重试)
+  probeAsset: vi.fn(),
+  createAsset: vi.fn(),
+  refreshAsset: vi.fn(),
 }));
 vi.mock('../../src/api/portfolio', () => api);
 vi.mock('vue-router', () => ({
@@ -203,5 +207,102 @@ describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () =
     await flushPromises();
 
     expect(wrapper.findComponent(AddAssetDialog).props('modelValue')).toBe(true);
+  });
+
+  // add-asset-ux §二第 4 步(状态列) + §四(失败可重试 / 无数据标红)
+  const MEMBERS = [
+    {
+      id: 11, symbol: '600900.SH', name: '长江电力', security_type: 'STOCK',
+      target_weight: 50, added_at: '2026-09-19T00:00:00', row_count: 0,
+      last_sync_status: null, last_sync_error: null,
+    },
+    {
+      id: 12, symbol: '159698.SZ', name: '粮食ETF', security_type: 'ETF',
+      target_weight: 50, added_at: '2026-09-19T00:00:00', row_count: 1200,
+      last_sync_status: 'success', last_sync_error: null,
+    },
+  ];
+
+  const enterEdit = async (wrapper) => {
+    const editBtn = wrapper.findAll('button').find((b) => b.text() === '编辑');
+    await editBtn.trigger('click');
+    await flushPromises();
+  };
+
+  it('编辑器状态列: 有行数=就绪, 没抓到数据=无数据且整行标红', async () => {
+    const wrapper = await mountPage({ assets: MEMBERS });
+    await enterEdit(wrapper);
+
+    expect(wrapper.text()).toContain('就绪');
+    expect(wrapper.text()).toContain('无数据');
+    // 标红是"真的用不了"的信号, 只该出现在无数据那一行
+    expect(wrapper.findAll('.row-blocked').length).toBe(1);
+    expect(wrapper.findAll('button').some((b) => b.text() === '重试')).toBe(true);
+  });
+
+  it('点「重试」走单标的补抓, 且不重跑回测', async () => {
+    api.refreshAsset.mockResolvedValue({ status: 'success', rows: 1200 });
+    const wrapper = await mountPage({ assets: MEMBERS });
+    api.runBacktest.mockClear(); // 进页面那次默认回测不算
+    await enterEdit(wrapper);
+
+    const retryBtn = wrapper.findAll('button').find((b) => b.text() === '重试');
+    await retryBtn.trigger('click');
+    await flushPromises();
+    await flushPromises();
+
+    expect(api.refreshAsset).toHaveBeenCalledWith(11);
+    expect(api.runBacktest).not.toHaveBeenCalled(); // 回测只由用户点按钮触发
+  });
+
+  // add-asset-ux §四: 权重合计 ≠ 100% → 按钮置灰(后端也 422, 前端先拦住)
+  const backtestBtn = (wrapper) => wrapper.findAll('button').find((b) => b.text() === '组合回测');
+
+  it('权重合计 100% 时「组合回测」可用', async () => {
+    const wrapper = await mountPage({ assets: MEMBERS }); // 50 + 50
+    expect(backtestBtn(wrapper).attributes('disabled')).toBeUndefined();
+  });
+
+  it('权重合计≠100% 时「组合回测」置灰并说明原因', async () => {
+    const wrapper = await mountPage({
+      assets: [{ ...MEMBERS[1], target_weight: 50 }],
+    });
+    expect(backtestBtn(wrapper).attributes('disabled')).toBeDefined();
+    expect(wrapper.text()).toContain('权重合计须为 100%');
+  });
+
+  it('空组合也不能回测(按钮置灰, 不靠后端报错)', async () => {
+    const wrapper = await mountPage();
+    expect(backtestBtn(wrapper).attributes('disabled')).toBeDefined();
+  });
+
+  it('起点前移警示条可一键移除该标的(add-asset-ux §二第 5 步)', async () => {
+    const wrapper = await mountPage({
+      assets: [
+        ...MEMBERS,
+        {
+          id: 13, symbol: '513100.SH', name: '纳指ETF国泰', security_type: 'ETF',
+          target_weight: 0, added_at: '2026-09-19T00:00:00', row_count: 6494,
+          last_sync_status: 'success', last_sync_error: null,
+        },
+      ],
+    });
+    await enterEdit(wrapper);
+    expect(wrapper.text()).toContain('纳指ETF国泰');
+
+    wrapper.findComponent(AddAssetDialog).vm.$emit('start-change', {
+      asset: { symbol: '513100.SH', name: '纳指ETF国泰' },
+      newStart: '2013-04-26',
+      title: '⚠ 新的组合起点：2013-04-26',
+      detail: '原起点 2003-12-02 → 前移 9.4 年',
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain('新的组合起点');
+
+    const remove = wrapper.findAll('button').find((b) => b.text() === '移除该标的');
+    await remove.trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).not.toContain('纳指ETF国泰'); // 该标的已撤出草稿
   });
 });

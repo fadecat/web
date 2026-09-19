@@ -87,8 +87,11 @@ describe('AddAssetDialog 解析候选', () => {
     expect(wrapper.text()).toContain('平安银行');
     expect(wrapper.text()).toContain('华夏成长混合');
     expect(wrapper.text()).toContain('上证指数');
-    // 每行展示「类型 · 交易所/来源」
-    expect(wrapper.text()).toContain('股票 · 深交所/tencent');
+    // 每行展示「类型 · 交易所 · 来源」+ 数据区间(未抓取时不编造, 明说「待抓取」)
+    expect(wrapper.text()).toContain('股票 · 深交所 · 腾讯');
+    expect(wrapper.text()).toContain('场外基金 · 场外 · 蛋卷');
+    expect(wrapper.text()).toContain('最新 2026-09-18（待抓取）');
+    expect(wrapper.text()).toContain('数据区间未知（待抓取）');
     // 多选时不直接进确认卡
     expect(wrapper.find('.confirm-card').exists()).toBe(false);
     wrapper.unmount();
@@ -107,6 +110,28 @@ describe('AddAssetDialog 解析候选', () => {
     expect(card.text()).toContain('复权口径');
     expect(wrapper.find('.basis-row').text()).toContain('后复权价');
     expect(card.text()).toContain('2021-01-04 ~ 2026-09-18（1200 个交易日）');
+    wrapper.unmount();
+  });
+
+  it('②b 确认卡副标题为「代码 · 类型描述 · 基金经理」, 来源出中文', async () => {
+    probeAsset.mockResolvedValue([{
+      ...CANDIDATE_FUND,
+      symbol: '161116.OF',
+      name: '易方达黄金主题人民币A',
+      type_desc: 'QDII-商品',
+      manager: '殷春涛',
+      found_date: '2011-05-09',
+      latest_date: '2026-09-17',
+      resolved: true,
+    }]);
+    const wrapper = await mountDialog();
+    await typeCode(wrapper, '161116.OF');
+
+    const card = wrapper.find('.confirm-card');
+    expect(card.exists()).toBe(true);
+    expect(wrapper.find('.confirm-subtitle').text()).toBe('161116 · QDII-商品 · 殷春涛');
+    expect(card.text()).toContain('蛋卷');
+    expect(card.text()).not.toContain('danjuan'); // 内部源名不给用户看
     wrapper.unmount();
   });
 

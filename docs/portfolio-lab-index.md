@@ -154,9 +154,9 @@
 | `page-spec` §四 | 回测中 → 已有结果**不清空** | ✅ 已补 |
 | `page-spec` §四 | 起点早于共同起始日 → 自动前移 + 提示 | ✅ 已有 |
 | `page-spec` §四 | **起点晚于末端 → 阻止提交 + 提示** | ✅ 已补（按钮置灰 + 红字说明） |
-| `page-spec` §四 | 无数据/代码无效 → 该行标红 | ⚠️ 部分 |
+| `page-spec` §四 | 无数据/代码无效 → 该行标红 | ✅ 已补（编辑器「状态」列 + `row-blocked` 整行标红） |
 | `page-spec` §五 | 视觉：首格 **34px** · 表格行高 ≥48px · 数值右对齐 | ✅ 已补（响应式断点 1280/960 未做） |
-| `page-spec` §八 | 契约命名：`effective_start`（现 `actual_start`）· `asset_class`（现 `security_type`）· `manager`（现 `fund_manager`）· `nav_series`（现 `nav.{dates,nav}`） | ⚠️ 语义一致、**命名不一致** |
+| `page-spec` §八 | 契约命名：`effective_start`（现 `actual_start`）· `asset_class`（现 `security_type`）· `manager`（现 `fund_manager`）· `nav_series`（现 `nav.{dates,nav}`） | ⚠️ 语义一致、**命名不一致**（`manager` 已改正，其余待统一） |
 | `page-spec` §八 | `metrics` 应含 `worst_year` / `turnover` / `recovery_days` | ✅ `worst_year`+`turnover` 已补（`recovery_days` 仍在 `drawdown` 里） |
 | `page-spec` §9.6 | 新建/复制组合 → **立即**算三格 | ✅ 已补 |
 | `page-spec` §9.6 | 成员/权重变更 → 重算 | ✅ 已补 |
@@ -164,15 +164,23 @@
 | `ambiguity-audit` D8 | 相关性格子**显示样本数 n** | ✅ 已补（后端 `sample_sizes` → 格子小字 `n=2438`） |
 | `ambiguity-audit` D9 | 数据太旧 → **拒绝添加** | ❌ 未实现（判定基准待定：末端 − 5 交易日） |
 | `ambiguity-audit` D3 | 口径可比性**验证**(A) + 标注(B) | ⚠️ 只做了 B |
-| `multi-portfolio` §六-1 | 标的库显示"**该标的被 N 个组合使用**" | ❌ 未实现 |
+| `multi-portfolio` §六-1 | 标的库显示"**该标的被 N 个组合使用**" | ✅ 已补（`used_by`/`used_by_count` + 「被组合使用」列，归档组合不计） |
 | `multi-portfolio` §0.2.4 | 端点 `POST /portfolios/{id}/duplicate` | ⚠️ 用 `POST /portfolios{from_id}` 实现，**形态不同、功能等价** |
-| `add-asset-ux` §一~§四 | 6 项（设添加日 / 确认卡类型描述·经理·源 / 状态列 / 失败重试 / D9 / 按钮置灰） | ⚠️ 见该文 `§八 实现复核` |
+| `add-asset-ux` §二第 3 步 | 确认卡含**类型描述 / 基金经理**，数据源出中文 | ✅ 已补（`fund_nav` 解析 `manager_name` → `confirmSubtitle`；`danjuan`→蛋卷） |
+| `add-asset-ux` §二第 2 步 | 候选行显示**该候选的数据区间** | ⚠️ 部分（已抓取给真实区间；未抓取只回显「成立/最新 …（待抓取）」—— 不编造） |
+| `add-asset-ux` §二第 4 步 · §四 | 编辑器**状态列**（同步中→就绪/失败）+ 失败**重试** | ✅ 已补（`rowStatusOf` 共用实现；重试只补该标的、不重跑回测） |
+| `add-asset-ux` §一 | 编辑态可设**添加日** | ❌ 未实现（需 PATCH 契约支持 `added_at`） |
 
-**结论**：本轮已补 **6 项**（导航分组、空态入口、单标的隐藏相关性、失败不清空、缓存刷新时机 ×2）；
-剩余 **10 项** 待做，其中 4 项需前后端联动（D9 / 添加日 / 契约命名 / `metrics` 字段）。
+**结论**：本轮（21:30~22:15）已补 **8 项**（导航分组、空态入口、单标的隐藏相关性、失败不清空、缓存刷新时机 ×2、状态列+重试、行标红、被 N 个组合使用、确认卡经理/类型描述）；
+剩余 **5 项** 待做，其中 3 项需前后端联动（D9 / 添加日 / 契约命名）。
 
 > ⚠️ **教训**：这份清单本应在 P3 收尾时就把每份文档逐条打勾产出，而不是等用户发现。
-> 根因是"按自己的理解推进"而不是"按文档的清单逐项验收"——**以后每个阶段收尾必须做一次本文式的交叉核对。**
+> 根因是"按自己的理解推进"而不是"按文档的清单逐项验收"——**以后每个阶段收尾必须做一次本文式的交叉核对**。
+>
+> ⚠️ **第二个教训（测试面）**：口径类模块此前**没有专门的纯函数测试**
+> （`services/fund_nav.py` 的链式复权、`utils/portfolioAssets.mjs` 的起点/状态口径都只有间接覆盖）。
+> 已补 `tests/test_fund_nav.py`（20 项）与 `src/utils/portfolioAssets.test.mjs`（9 项）——
+> **凡是"算口径"的模块，必须有自己的纯函数测试**，组件测试覆盖不到它们。
 
 ---
 

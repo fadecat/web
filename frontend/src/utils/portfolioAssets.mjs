@@ -22,6 +22,83 @@ export const SYNC_STATUS_LABELS = {
   failed: '失败',
 };
 
+// 数据源中文名(确认卡与候选行展示「数据源: 蛋卷」而不是 danjuan)
+export const SOURCE_LABELS = {
+  tencent: '腾讯',
+  danjuan: '蛋卷',
+};
+
+export const sourceLabel = (source) => {
+  const key = String(source || '').toLowerCase();
+  if (!key) return '—';
+  return SOURCE_LABELS[key] || String(source);
+};
+
+// 规范代码 → 六位码(确认卡副标题按设计示例显示 `161116 · QDII-商品 · 殷春涛`)
+export const bareCode = (symbol) => String(symbol || '').split('.')[0];
+
+/**
+ * 确认卡副标题: `代码 · 类型描述 · 基金经理`(add-asset-ux §二第 3 步的示例)。
+ * 类型描述与经理只有场外基金有; 股票/ETF 只显示代码, 不编造。
+ */
+export const confirmSubtitle = (item) => (
+  [
+    bareCode(item?.symbol),
+    item?.type_desc || null,
+    item?.manager ? `${item.manager}` : null,
+  ].filter(Boolean).join(' · ')
+);
+
+/**
+ * 候选的数据区间。
+ * ⚠ 未抓取时**不编造区间** —— 只回显已知的「成立日 / 最新日」, 并明说「待抓取」。
+ */
+export const candidateRangeText = (item) => {
+  const rows = Number(item?.row_count);
+  if (Number.isFinite(rows) && rows > 0) {
+    return `${item.first_date || '—'} ~ ${item.last_date || '—'}（${rows} 个交易日）`;
+  }
+  const known = [];
+  if (item?.found_date) known.push(`成立 ${item.found_date}`);
+  if (item?.latest_date) known.push(`最新 ${item.latest_date}`);
+  return known.length ? `${known.join(' · ')}（待抓取）` : '数据区间未知（待抓取）';
+};
+
+/**
+ * 成员行状态(add-asset-ux §二第 4 步「状态」列 + §四「失败可重试 / 无数据标红」)。
+ *
+ * `running` → 同步中(不可重试, 等它跑完); `failed` → 失败(可重试);
+ * 有行数 → 就绪; 其余(从没抓过 / 抓到 0 行) → 无数据(可重试) 且 `blocked=true`。
+ * `blocked` 就是页面"该行标红"的判据 —— 它是**真的用不了**, 不是样式偏好。
+ */
+export const rowStatusOf = (asset) => {
+  const status = asset?.last_sync_status || null;
+  const rows = Number(asset?.row_count);
+  if (status === 'running') {
+    return { key: 'running', label: '同步中', tone: 'wait', retry: false, blocked: false, detail: '' };
+  }
+  if (status === 'failed') {
+    return {
+      key: 'failed', label: '失败', tone: 'down', retry: true, blocked: true,
+      detail: asset?.last_sync_error || '抓取失败',
+    };
+  }
+  if (Number.isFinite(rows) && rows > 0) {
+    return { key: 'ready', label: '就绪', tone: 'up', retry: false, blocked: false, detail: '' };
+  }
+  return {
+    key: 'empty', label: '无数据', tone: 'down', retry: true, blocked: true,
+    detail: '尚未抓取到数据（可能是数据源未覆盖或代码有误）',
+  };
+};
+
+/** 标的库「该标的被 N 个组合使用」文案(multi-portfolio §六-1)。 */
+export const usedByText = (asset) => {
+  const names = Array.isArray(asset?.used_by) ? asset.used_by : [];
+  if (!names.length) return '—';
+  return `被 ${names.length} 个组合使用：${names.join('、')}`;
+};
+
 // 类型选择 chip: 值为后端 type 查询参数, auto 表示不传(交由后端判定)
 export const TYPE_HINT_OPTIONS = [
   { value: 'auto', label: '自动' },

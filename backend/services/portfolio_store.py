@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from backend.models.portfolio import Portfolio, PortfolioAsset
 from backend.models.research import ResearchSecurity
-from backend.services import series
+from backend.services import portfolio_assets, series
 
 ACTIVE = "active"
 ARCHIVED = "archived"
@@ -288,14 +288,26 @@ def list_assets(db: Session, portfolio_id: int) -> dict[str, Any]:
 
 def _asset_payload(db: Session, member: PortfolioAsset) -> dict[str, Any]:
     security = db.scalar(select(ResearchSecurity).where(ResearchSecurity.symbol == member.symbol))
+    _, row_count, first_date, last_date = portfolio_assets.local_stats(db, member.symbol)
     return {
         "id": member.id,
         "symbol": member.symbol,
         "name": security.name if security is not None else None,
         "security_type": security.security_type if security is not None else None,
+        "price_basis": (
+            portfolio_assets.PRICE_BASIS.get(security.security_type, "HFQ")
+            if security is not None else None
+        ),
         "target_weight": member.target_weight,
         "added_at": member.added_at.isoformat() if member.added_at else None,
         "sort_order": member.sort_order,
+        # 同步状态与本库区间: 编辑器「状态」列(同步中/就绪/失败 + 重试)与
+        # 「无数据 → 该行标红」都要它(add-asset-ux §二第 4 步 / §四)
+        "row_count": row_count,
+        "first_date": first_date,
+        "last_date": last_date,
+        "last_sync_status": security.last_sync_status if security is not None else None,
+        "last_sync_error": security.last_sync_error if security is not None else None,
         # ⚠ 「当前占比」是**不平衡持有至今的漂移权重**, 需要份额法账本 → P3 提供;
         #    这里显式给 None, 不用目标权重冒充(两者不是一回事)。
         "current_weight": None,

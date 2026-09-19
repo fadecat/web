@@ -566,3 +566,45 @@ class TestRoutes:
 def test_adjust_mode_used_by_sync_matches_provider_protocol() -> None:
     """sync_one 必须同时取 RAW 与 HFQ 两条(配对快照的前提)。"""
     assert {AdjustMode.RAW.name, AdjustMode.HFQ.name} == {"RAW", "HFQ"}
+
+
+# ---------------------------------------------------------------------------
+# 「被哪些组合使用」(multi-portfolio §六-1)
+# ---------------------------------------------------------------------------
+
+class TestUsedBy:
+    """`research_security` 是**全局注册表**: 停用/删除一个标的会影响所有用到它的组合。
+
+    所以标的库必须显示「被 N 个组合使用」—— 用户在动手之前要知道是谁在用。
+    """
+
+    def test_counts_active_portfolios(self, db) -> None:
+        from backend.services import portfolio_store
+
+        portfolio_assets.register("600900.SH", "STOCK", "长江电力", db=db)
+        first = portfolio_store.create_portfolio(db, "组合A")["id"]
+        second = portfolio_store.create_portfolio(db, "组合B")["id"]
+        portfolio_store.add_asset(db, first, "600900.SH")
+        portfolio_store.add_asset(db, second, "600900.SH")
+
+        row = next(r for r in portfolio_assets.list_assets(db) if r["symbol"] == "600900.SH")
+        assert row["used_by_count"] == 2
+        assert row["used_by"] == ["组合A", "组合B"]
+
+    def test_archived_portfolio_not_counted(self, db) -> None:
+        """归档(软删)的组合不算"在用" —— 否则删过的组合会让标的永远显示被占用。"""
+        from backend.services import portfolio_store
+
+        portfolio_assets.register("600900.SH", "STOCK", "长江电力", db=db)
+        pid = portfolio_store.create_portfolio(db, "组合A")["id"]
+        portfolio_store.add_asset(db, pid, "600900.SH")
+        portfolio_store.archive_portfolio(db, pid)
+
+        row = portfolio_assets.list_assets(db)[0]
+        assert (row["used_by"], row["used_by_count"]) == ([], 0)
+
+    def test_unused_asset_reports_empty_list(self, db) -> None:
+        portfolio_assets.register("600900.SH", "STOCK", "长江电力", db=db)
+        row = portfolio_assets.list_assets(db)[0]
+        assert (row["used_by"], row["used_by_count"]) == ([], 0)
+        assert portfolio_assets.get_asset(db, row["id"])["used_by_count"] == 0

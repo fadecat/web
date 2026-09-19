@@ -19,7 +19,7 @@ import CorrelationMatrix from '../components/portfolio/CorrelationMatrix.vue';
 import NavChart from '../components/portfolio/NavChart.vue';
 import ReturnBar from '../components/portfolio/ReturnBar.vue';
 import {
-  deletePortfolio, getPortfolio, listAssets, patchPortfolio, runBacktest,
+  deletePortfolio, getPortfolio, listAssets, patchPortfolio, refreshAsset, runBacktest,
 } from '../api/portfolio';
 import {
   buildBasisNotes, buildChartData, buildMetricCards, drawdownSummaryText,
@@ -29,6 +29,7 @@ import {
 import {
   EMPTY, formatDate, formatReturnPct, formatWeight, readinessText, trendOf, weightSummaryText,
 } from '../utils/portfolioList.mjs';
+import { rowStatusOf } from '../utils/portfolioAssets.mjs';
 
 const route = useRoute();
 const router = useRouter();
@@ -63,6 +64,18 @@ const form = reactive({
 
 const TYPE_LABEL = { STOCK: '股票', ETF: 'ETF', FUND: '场外基金' };
 const typeLabel = (t) => TYPE_LABEL[t] ?? EMPTY;
+
+// 单标的补抓的进行中标记(按 symbol, 避免整表转圈)
+const retrying = ref(null);
+
+// 成员行状态(add-asset-ux §二第 4 步 / §四): 同步中 / 就绪 / 失败(重试) / 无数据
+const statusOf = (row) => rowStatusOf(row);
+// 只读表的数据来自回测结果(不含同步字段) → 按 symbol 回落到组合详情的成员行;
+// 找不到时按「就绪」处理 —— 能出现在回测结果里就说明它有数据, 不该给它标红。
+const syncOf = (symbol) => rowStatusOf(
+  (detail.value?.assets ?? []).find((a) => a.symbol === symbol)
+    ?? { row_count: 1, last_sync_status: 'success' },
+);
 
 // ---------------------------------------------------------------------------
 // 派生视图
@@ -180,14 +193,62 @@ const selectable = computed(() => {
 const addRow = (symbol) => {
   const asset = registered.value.find((a) => a.symbol === symbol);
   if (!asset) return;
+  // 连同步状态一起带过来, 否则状态列会显示成「无数据」(字段缺失 ≠ 真的没数据)
   draft.value.push({
-    symbol: asset.symbol, name: asset.name,
-    security_type: asset.security_type, target_weight: null,
+    id: asset.id,
+    symbol: asset.symbol,
+    name: asset.name,
+    security_type: asset.security_type,
+    row_count: asset.row_count,
+    first_date: asset.first_date,
+    last_date: asset.last_date,
+    last_sync_status: asset.last_sync_status,
+    last_sync_error: asset.last_sync_error,
+    target_weight: null,
   });
+};
+
+/**
+ * 单标的补抓(add-asset-ux §四「抓取失败 → 该行标红 + 重试」)。
+ *
+ * 只刷新这一只标的状态, **不重跑回测**(重跑由用户点「组合回测」触发);
+ * 但会重新拉一次组合详情, 好让状态列与本库区间立刻更新。
+ */
+const retryRow = async (row) => {
+  if (!row?.id) {
+    ElMessage.warning('该标的还没注册完成，稍后再试');
+    return;
+  }
+  retrying.value = row.symbol;
+  try {
+    const outcome = await refreshAsset(row.id);
+    if (outcome?.status === 'failed') {
+      ElMessage.error(`重试仍失败：${outcome?.error || '未知原因'}`);
+    } else {
+      ElMessage.success(`${row.name || row.symbol} 已同步 ${outcome?.rows ?? 0} 行`);
+    }
+    detail.value = await getPortfolio(portfolioId);
+    // 保留用户已改的权重, 只覆盖同步状态类字段
+    draft.value = draft.value.map((item) => {
+      const fresh = (detail.value.assets ?? []).find((a) => a.symbol === item.symbol);
+      return fresh ? { ...item, ...fresh, target_weight: item.target_weight } : item;
+    });
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.detail || '重试失败');
+  } finally {
+    retrying.value = null;
+  }
 };
 
 const removeRow = (symbol) => {
   draft.value = draft.value.filter((a) => a.symbol !== symbol);
+};
+
+// 起点被推后时给一条退路: 直接撤掉刚加的那只标的(它往往就是起点后移的原因)
+const removeShiftAsset = () => {
+  const symbol = startShift.value?.asset?.symbol;
+  if (symbol) removeRow(symbol);
+  startShift.value = null;
 };
 
 /**
@@ -201,9 +262,16 @@ const onAssetAdded = async (asset) => {
   await loadRegistered(); // 让新标的进入 registered(下次可从下拉直接复用)
   if (asset?.symbol && !draft.value.some((a) => a.symbol === asset.symbol)) {
     draft.value.push({
+      id: asset.id,
       symbol: asset.symbol,
       name: asset.name || asset.symbol,
       security_type: asset.security_type,
+      // 注册返回体带 last_sync_status=running(后台异步首抓) → 状态列显示「同步中」
+      row_count: asset.row_count ?? null,
+      first_date: asset.first_date ?? null,
+      last_date: asset.last_date ?? null,
+      last_sync_status: asset.last_sync_status ?? 'running',
+      last_sync_error: asset.last_sync_error ?? null,
       target_weight: null, // 权重按 add-asset-ux 的裁决"添加后统一设"
     });
   }
@@ -216,6 +284,22 @@ const draftWeightSum = computed(() => {
     .filter((v) => v !== null && v !== undefined && v !== '');
   return assigned.reduce((acc, v) => acc + Number(v), 0);
 });
+
+// add-asset-ux §四: 权重合计 ≠ 100% → 「组合回测」按钮**置灰**(后端也会 422, 前端先拦住)。
+// 编辑态按草稿算(所见即所得), 否则按服务端成员状态。
+const weightsComplete = computed(() => {
+  const rows = editing.value ? draft.value : (detail.value?.assets ?? []);
+  if (!rows.length) return false; // 空组合不能回测
+  if (rows.some((a) => a.target_weight === null || a.target_weight === undefined || a.target_weight === '')) {
+    return false;
+  }
+  const sum = rows.reduce((acc, a) => acc + Number(a.target_weight), 0);
+  return Math.abs(sum - 100) < 0.01;
+});
+
+const weightsWarning = computed(
+  () => (weightsComplete.value ? '' : '权重合计须为 100%（且每个标的都已设权重）才能回测'),
+);
 
 const save = async () => {
   saving.value = true;
@@ -357,13 +441,15 @@ onMounted(load);
               type="primary"
               size="small"
               :loading="running"
-              :disabled="startOutOfRange"
+              :disabled="startOutOfRange || !weightsComplete"
               @click="runIt(true)"
             >
               组合回测
             </el-button>
             <span v-if="startNotice" class="notice">{{ startNotice }}</span>
             <span v-if="rangeWarning" class="notice warn">{{ rangeWarning }}</span>
+            <!-- add-asset-ux §四: 权重合计 ≠ 100% → 按钮置灰(后端也会 422, 前端先拦住) -->
+            <span v-else-if="!weightsComplete" class="notice warn">{{ weightsWarning }}</span>
           </div>
 
           <div class="control-tip">
@@ -465,9 +551,27 @@ onMounted(load);
             @close="startShift = null"
           >
             <template #title>{{ startShift.title }}</template>
-            <template #default>{{ startShift.detail }}</template>
+            <template #default>
+              <div>{{ startShift.detail }}</div>
+              <!-- add-asset-ux §二第 5 步给了两条出路: 知道就好, 或直接撤掉这只标的 -->
+              <el-button
+                v-if="startShift.asset?.symbol"
+                class="shift-remove"
+                link
+                type="warning"
+                size="small"
+                @click="removeShiftAsset"
+              >
+                移除该标的
+              </el-button>
+            </template>
           </el-alert>
-          <el-table :data="draft" size="small" style="width: 100%">
+          <el-table
+            :data="draft"
+            size="small"
+            style="width: 100%"
+            :row-class-name="({ row }) => (statusOf(row).blocked ? 'row-blocked' : '')"
+          >
             <el-table-column label="标的" min-width="180">
               <template #default="{ row }">
                 <div class="asset-name">{{ row.name || row.symbol }}</div>
@@ -488,6 +592,29 @@ onMounted(load);
                 />
               </template>
             </el-table-column>
+            <!-- 状态列(add-asset-ux §二第 4 步): 同步中 / 就绪 / 失败(可重试) / 无数据 -->
+            <el-table-column label="状态" width="150">
+              <template #default="{ row }">
+                <div class="row-status" :class="`is-${statusOf(row).tone}`">
+                  <span class="status-dot" />
+                  {{ statusOf(row).label }}
+                  <el-tooltip v-if="statusOf(row).detail" :content="statusOf(row).detail" placement="top">
+                    <span class="status-help">?</span>
+                  </el-tooltip>
+                </div>
+                <el-button
+                  v-if="statusOf(row).retry"
+                  class="status-retry"
+                  text
+                  type="primary"
+                  size="small"
+                  :loading="retrying === row.symbol"
+                  @click="retryRow(row)"
+                >
+                  重试
+                </el-button>
+              </template>
+            </el-table-column>
             <el-table-column label="操作" width="90">
               <template #default="{ row }">
                 <el-button text type="danger" size="small" @click="removeRow(row.symbol)">
@@ -504,13 +631,25 @@ onMounted(load);
           <el-empty v-if="!assetRows.length" :image-size="70" description="这个组合还没有标的">
             <el-button type="primary" @click="startEdit">添加标的</el-button>
           </el-empty>
-          <el-table v-else :data="assetRows" size="small" style="width: 100%">
+          <el-table
+            v-else
+            :data="assetRows"
+            size="small"
+            style="width: 100%"
+            :row-class-name="({ row }) => (syncOf(row.symbol).blocked ? 'row-blocked' : '')"
+          >
             <el-table-column label="标的" min-width="200">
               <template #default="{ row }">
                 <el-tag size="small" type="info" class="type-tag">
                   {{ typeLabel(row.security_type) }}
                 </el-tag>
-                <div class="asset-name">{{ row.name || row.symbol }}</div>
+                <div class="asset-name">
+                  {{ row.name || row.symbol }}
+                  <!-- 无数据/抓取失败的行**标红**(page-spec §四): 它不是样式问题, 是真的用不了 -->
+                  <span v-if="syncOf(row.symbol).blocked" class="row-status is-down is-inline">
+                    <span class="status-dot" />{{ syncOf(row.symbol).label }}
+                  </span>
+                </div>
                 <div class="asset-code">{{ row.symbol }}</div>
               </template>
             </el-table-column>
@@ -543,13 +682,13 @@ onMounted(load);
             <el-table-column label="基金经理" width="110">
               <template #default="{ row }">
                 <el-tooltip
-                  v-if="!row.fund_manager"
-                  content="基金经理待接入（蛋卷基金详情）"
+                  v-if="!row.manager"
+                  content="股票/ETF 无此概念；场外基金的经理名来自蛋卷详情"
                   placement="top"
                 >
                   <span class="muted">{{ EMPTY }}</span>
                 </el-tooltip>
-                <span v-else>{{ row.fund_manager }}</span>
+                <span v-else>{{ row.manager }}</span>
               </template>
             </el-table-column>
           </el-table>
@@ -667,6 +806,10 @@ onMounted(load);
 .notice {
   font-size: 12px;
   color: var(--el-color-warning);
+}
+
+.shift-remove {
+  margin-top: 4px;
 }
 
 /* 起点越界是"拦住不让提交", 与"已自动前移"的黄字提示不同量级 → 用红色 */
@@ -793,6 +936,69 @@ onMounted(load);
 
 .muted {
   color: var(--el-text-color-secondary);
+}
+
+/* 成员状态列(add-asset-ux §二第 4 步): 同步中 / 就绪 / 失败 / 无数据。
+   ⚠ 红/绿是**真实可用性**, 不是装饰 —— blocked 行同时整行标红。 */
+.row-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.row-status.is-inline {
+  margin-left: 6px;
+}
+
+.row-status.is-up {
+  color: var(--el-color-success);
+}
+
+.row-status.is-down {
+  color: var(--el-color-danger);
+}
+
+.row-status.is-wait {
+  color: var(--el-color-warning);
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.row-status.is-wait .status-dot {
+  animation: status-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+.status-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 10px;
+  cursor: help;
+}
+
+.status-retry {
+  margin-left: 4px;
+}
+
+/* 「无数据/抓取失败」的行标红(page-spec §四): 让用户一眼看出哪一行不能用 */
+:deep(.el-table .row-blocked) {
+  --el-table-tr-bg-color: var(--el-color-danger-light-9);
 }
 
 .table-foot {
