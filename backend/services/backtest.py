@@ -374,10 +374,31 @@ def _worst_month(ledger: Ledger) -> float | None:
 WINDOW_KEYS = ("d1", "w1", "m1", "ytd", "y1", "y3", "inception")
 
 
+def _days_in_month(year: int, month: int) -> int:
+    if month == 12:
+        return 31
+    return (date(year, month + 1, 1) - date(year, month, 1)).days
+
+
+def months_back(day: date, months: int) -> date:
+    """**自然月**回推(不是 N×30 天); 日号超出目标月天数时取该月最后一天。
+
+    ⚠ 韭圈儿的"近1月 / 近1年 / 近3年"都是**同日回推 N 个自然月**:
+      2026-09-18 回推 1 月 = 2026-08-18。
+      若按 30 天算会得到 2026-08-19 —— 差一个交易日, 实测让"近1月"偏 0.28pp
+      (真实数据上发现的, 见 docs/portfolio-lab-verification.md)。
+      闰日(2/29)由"取目标月最后一天"自然兜住, 不会抛异常。
+    """
+    total = day.year * 12 + (day.month - 1) - months
+    year, month = divmod(total, 12)
+    month += 1
+    return date(year, month, min(day.day, _days_in_month(year, month)))
+
+
 def resolve_window_start(key: str, end: date, *, inception: date | None) -> date | None:
     """区间键 → 起始参考日(由调用方把 end 定为"数据最新日")。
 
-    ⚠ 全部按**自然日回推**, 真正落到哪个交易日由 `window_return` 的向前对齐决定
+    ⚠ 全部按**自然日/自然月回推**, 真正落到哪个交易日由 `window_return` 的向前对齐决定
       (韭圈儿就是这么算的, 所以"近1月"的实际起点可能不是 30 天前那天)。
     """
     from datetime import timedelta
@@ -387,13 +408,15 @@ def resolve_window_start(key: str, end: date, *, inception: date | None) -> date
     if key == "w1":
         return end - timedelta(days=7)
     if key == "m1":
-        return end - timedelta(days=30)
+        return months_back(end, 1)
     if key == "ytd":
-        return date(end.year, 1, 1)
+        # 上年最后一天。与 `date(end.year, 1, 1)` 向前对齐后等价(1月1日恒为休市),
+        # 但写"上年最后一天"意图明确, 且与参考实现逐字一致。
+        return date(end.year - 1, 12, 31)
     if key == "y1":
-        return date(end.year - 1, end.month, end.day)
+        return months_back(end, 12)
     if key == "y3":
-        return date(end.year - 3, end.month, end.day)
+        return months_back(end, 36)
     if key == "inception":
         return inception
     raise BacktestError(f"未知区间键: {key!r}(支持 {', '.join(WINDOW_KEYS)})")

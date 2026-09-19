@@ -48,9 +48,11 @@ DEFAULT_WINDOW_YEARS = 10
 #
 # 版本历史:
 #   v1 初版
-#   v2 默认区间改为"整年回推"(原 365×10 天会少 2 天, 撞长假后起点晚 4 个交易日);
+#   v2 默认区间改为"自然年回推"(原 365×10 天会少 2 天, 撞长假后起点晚 4 个交易日);
 #      `window_return` 起点早于 T0 时退化为账本首点(原返回空 → 收益条空白)
-ENGINE_VERSION = 2
+#   v3 收益条区间起点改**自然月回推**(原"近1月"按 30 天算, 比自然月回推晚 1 个交易日,
+#      实测让近1月偏 0.28pp); 「今年来」显式取上年最后一天; y1/y3 闰日不再抛异常
+ENGINE_VERSION = 3
 # 与 portfolio_store 同一容差(权重合计 100% 判定)
 _WEIGHT_SUM_TOLERANCE = 0.01
 # 基准曲线最多保留的点数(超长区间按等间隔抽稀, 只为前端画图; 指标永远用全量)
@@ -304,20 +306,17 @@ def drawdown_detail(
 # ---------------------------------------------------------------------------
 
 def _reference_start(end: date, start: date | None) -> date:
-    """区间起点参考日: 用户给了就用用户的, 否则 = **末端整年回推 10 年**。
+    """区间起点参考日: 用户给了就用用户的, 否则 = **末端回推 10 个自然年**。
 
-    ⚠ 必须用"整年回推"(`date(year-10, month, day)`)而不是 `timedelta(days=365*10)` ——
+    ⚠ 必须用"自然月/年回推"(`backtest.months_back`)而不是 `timedelta(days=365*10)` ——
       后者 3650 天比真实的 10 年少 2 天(闰年), 起点会往后漂 2 天; 若这两天正好撞上
       长假, 向前对齐到交易日时就会**整整晚 4 个交易日**(实测 2026-09-18 回推:
-      整年 = 2016-09-18 → 对齐到 09-14; 3650 天 = 2016-09-20 → 对齐到 09-20)。
-      韭圈儿的"近10年"用的就是整年回推。
+      自然年 = 2016-09-18 → 对齐到 09-14; 3650 天 = 2016-09-20 → 对齐到 09-20)。
+      韭圈儿的"近10年"用的就是自然年回推。
     """
     if start is not None:
         return start
-    try:
-        return date(end.year - DEFAULT_WINDOW_YEARS, end.month, end.day)
-    except ValueError:  # 2 月 29 日回推到平年
-        return date(end.year - DEFAULT_WINDOW_YEARS, end.month, 28)
+    return backtest.months_back(end, DEFAULT_WINDOW_YEARS * 12)
 
 
 def _correlation_start(all_days: list[date], ref_start: date) -> date | None:

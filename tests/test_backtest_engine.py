@@ -252,10 +252,29 @@ class TestMetricsAndWindows:
 
     def test_resolve_window_start_keys(self) -> None:
         end = D(2026, 9, 18)
-        assert backtest.resolve_window_start("m1", end, inception=D(2013, 4, 26)) == D(2026, 8, 19)
-        assert backtest.resolve_window_start("ytd", end, inception=None) == D(2026, 1, 1)
+        assert backtest.resolve_window_start("w1", end, inception=None) == D(2026, 9, 11)
+        assert backtest.resolve_window_start("m1", end, inception=None) == D(2026, 8, 18)
+        assert backtest.resolve_window_start("ytd", end, inception=None) == D(2025, 12, 31)
         assert backtest.resolve_window_start("y1", end, inception=None) == D(2025, 9, 18)
+        assert backtest.resolve_window_start("y3", end, inception=None) == D(2023, 9, 18)
         assert backtest.resolve_window_start("inception", end, inception=D(2013, 4, 26)) == D(2013, 4, 26)
+
+    def test_month_windows_use_calendar_months_not_30_days(self) -> None:
+        """⭐ 「近1月」= 同日回推 **1 个自然月**, 不是 30 天。
+
+        真实数据上发现的差异: 2026-09-18 按 30 天算是 08-19(交易日), 按自然月是 08-18,
+        差一个交易日 → 实测"近1月"偏 0.28pp(韭圈儿 -0.62% vs 我们 -0.90%)。
+        月末溢出取目标月最后一天(3/31 回推 1 月 → 2/28)。
+        """
+        assert backtest.months_back(D(2026, 9, 18), 1) == D(2026, 8, 18)
+        assert backtest.months_back(D(2026, 3, 31), 1) == D(2026, 2, 28)
+        assert backtest.months_back(D(2026, 1, 15), 1) == D(2025, 12, 15)
+        assert backtest.months_back(D(2026, 9, 18), 120) == D(2016, 9, 18)
+
+    def test_year_windows_survive_leap_day(self) -> None:
+        """y1/y3 撞上 2/29 时必须回退到平年 2/28, 不能抛异常(旧实现会直接崩)。"""
+        assert backtest.resolve_window_start("y1", D(2024, 2, 29), inception=None) == D(2023, 2, 28)
+        assert backtest.resolve_window_start("y3", D(2024, 2, 29), inception=None) == D(2021, 2, 28)
 
     def test_resolve_windows_marks_d1_as_composite(self) -> None:
         ledger = self._ledger()
