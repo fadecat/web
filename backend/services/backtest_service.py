@@ -33,7 +33,14 @@ from sqlalchemy.orm import Session
 from backend.models.portfolio import BacktestRun, Portfolio, PortfolioAsset
 from backend.models.research import FundNavDaily, ResearchDailyBarRaw, ResearchSecurity
 from backend.models.valuation import IndexDailyQuote, IndexValuationSnapshot
-from backend.services import backtest, portfolio_assets, portfolio_store, series
+from backend.services import (
+    backtest,
+    index_universe,
+    portfolio_assets,
+    portfolio_store,
+    series,
+)
+from backend.utils import INDEX_DISPLAY_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +60,14 @@ DEFAULT_WINDOW_YEARS = 10
 #   v3 收益条区间起点改**自然月回推**(原"近1月"按 30 天算, 比自然月回推晚 1 个交易日,
 #      实测让近1月偏 0.28pp); 「今年来」显式取上年最后一天; y1/y3 闰日不再抛异常
 #   v4 `metrics` 补 `worst_year` 与 `turnover`(累计换手 = Σ|Δw|, 只算所选区间内的调仓)
-ENGINE_VERSION = 4
+#   v5 `benchmark` 补 `drawdown`(基准自己的区间最大回撤, 与组合**同口径同函数**);
+#      回撤明细上移到 `backtest.drawdown_detail`(接受纯序列, 组合与基准共用)。
+#      ⚠ 必须换版本: 旧 Run 的 result_json 里没有该字段, 否则回撤模式下基准那格
+#      会一直读旧 Run 显示空 —— "改了却看不到"的老毛病。
+#   v6 `result` 补 `effective_start`(实际生效的**意图**起点, 未做交易日对齐)。
+#      不传区间时 `start_date` 是 null, 前端只能退回 `actual_start`(对齐后, 早 1~4 天),
+#      导致"日期选择器填不出值、快捷条不高亮"。同样必须换版本, 否则旧 Run 缺字段。
+ENGINE_VERSION = 6
 # 与 portfolio_store 同一容差(权重合计 100% 判定)
 _WEIGHT_SUM_TOLERANCE = 0.01
 # 基准曲线最多保留的点数(超长区间按等间隔抽稀, 只为前端画图; 指标永远用全量)
@@ -119,22 +133,65 @@ def _contracts(db: Session, members: Sequence[PortfolioAsset]) -> dict[str, seri
     return out
 
 
-def _index_name(db: Session, code: str) -> str | None:
-    """指数名称: 取估值快照里该代码最近一次的 `index_name`。
+def _resolve_index_names(db: Session, codes: Sequence[str]) -> dict[str, str]:
+    """指数**展示名**批量解析: 三级来源逐级兜底, 全落空则该代码不出现(调用方退回代码)。
 
-    ⚠ 名称**不在** `index_daily_quote` 里(那张表只有 OHLCV) —— 之前基准名一直空着、
-      前端只好退回显示代码 `000300`, 就是因为这里没查。名称缺失时返回 None, 由调用方
-      决定是否退回代码(不编造)。
+    1. `index_valuation_snapshot.index_name` —— 数据源返回的官方名, 最权威。
+       ⚠ 该表按 **storage_code**(历史存储键)落库, 与 `index_daily_quote`(日线)的真实
+       指数代码**不是同一套键**: 中证价值100 = 快照 `512040` / 日线 `931052`;
+       国证价值100 = 快照 `159263` / 日线 `980081`。必须经 `index_universe` 映射,
+       拿日线代码直查快照表**必然落空** —— 这正是基准下拉里 931052 / 980081
+       只剩下代码的原因。
+    2. `index_universe` 统一名单里的配置名 —— 覆盖**只有日线、没有估值快照**的指数:
+       399373 国证大盘价值 / 399376 国证小盘成长走腾讯源, 快照表里根本没有这两行。
+    3. `INDEX_DISPLAY_NAMES` 全局展示简称(单点维护, 路由/数据状态页共用)。
+
+    名称缺失**不编造**: 返回的 dict 里没有该 code, 由调用方决定退回代码展示。
     """
-    return db.scalar(
-        select(IndexValuationSnapshot.index_name)
+    wanted = [code for code in dict.fromkeys(codes) if code]
+    if not wanted:
+        return {}
+
+    by_code = {idx.get("code"): idx for idx in index_universe.load_universe()}
+
+    # 日线代码 → 估值表的存储键(未绑定 valuation dataset 时恒等)
+    storage_of: dict[str, str] = {}
+    for code in wanted:
+        datasets = (by_code.get(code) or {}).get("datasets") or {}
+        ds = datasets.get(index_universe.DATASET_VALUATION) or {}
+        storage_of[code] = ds.get("storage_code") or code
+
+    probes = set(storage_of.values()) | set(wanted)
+    # 同一 code 的 index_name 恒为该指数名(distinct 只为压缩行数); 真出现多值时
+    # 以查询结果先到者为准, 不做"猜哪个更新"的处理。
+    official: dict[str, str] = {}
+    for code, name in db.execute(
+        select(IndexValuationSnapshot.index_code, IndexValuationSnapshot.index_name)
         .where(
-            IndexValuationSnapshot.index_code == code,
+            IndexValuationSnapshot.index_code.in_(probes),
             IndexValuationSnapshot.index_name.isnot(None),
         )
-        .order_by(IndexValuationSnapshot.trade_date.desc())
-        .limit(1)
-    )
+        .distinct()
+    ).all():
+        if name:
+            official.setdefault(code, name)
+
+    out: dict[str, str] = {}
+    for code in wanted:
+        name = (
+            official.get(storage_of[code])
+            or official.get(code)
+            or (by_code.get(code) or {}).get("name")
+            or INDEX_DISPLAY_NAMES.get(code)
+        )
+        if name:
+            out[code] = name
+    return out
+
+
+def _index_name(db: Session, code: str) -> str | None:
+    """单只指数的展示名; 取不到返回 None(调用方退回代码, 不编造)。"""
+    return _resolve_index_names(db, [code]).get(code)
 
 
 def list_benchmark_options(db: Session) -> list[dict[str, Any]]:
@@ -157,9 +214,7 @@ def list_benchmark_options(db: Session) -> list[dict[str, Any]]:
         .group_by(IndexDailyQuote.index_code)
         .order_by(func.count(IndexDailyQuote.id).desc())
     ).all()
-    names = {
-        code: _index_name(db, code) for code, *_ in index_rows
-    }
+    names = _resolve_index_names(db, [code for code, *_ in index_rows])
     for code, rows, first, last in index_rows:
         options.append({
             "symbol": code,
@@ -271,6 +326,11 @@ def _finish_benchmark(
         "actual_start": normalized[0][0].isoformat(),
         "actual_end": normalized[-1][0].isoformat(),
         "total_return": round((last / first - 1.0) * 100.0, 4),
+        # 基准自己的区间最大回撤 —— 与组合**同口径、同函数**(峰从窗口首值起算)。
+        # 为什么必须给: 回撤模式下头部要把两者并列, 而这里原先只有 `total_return`,
+        # 前端在回撤模式下也照搬它 → "组合 -16.50%" 旁边并列 "基准 +36.45%"(还是涨红),
+        # 与图上蓝线最低点(-28.63%)完全对不上。
+        "drawdown": backtest.drawdown_detail(normalized, normalized[0][0], normalized[-1][0]),
         "points": normalized,
     }
 
@@ -356,44 +416,8 @@ def _asset_rows(
     return rows
 
 
-def drawdown_detail(
-    ledger: backtest.Ledger, start: date, end: date,
-) -> dict[str, Any] | None:
-    """最大回撤明细: 峰值日 / 谷值日 / 修复日 / 修复所需交易日数。
-
-    与 `max_drawdown` 同口径(峰从**窗口首值**起算), 只是多带出了日期。
-    """
-    window = [(d, v) for d, v in ledger.series if start <= d <= end]
-    if len(window) < 2:
-        return None
-
-    peak_value, peak_day = window[0][1], window[0][0]
-    worst = 0.0
-    worst_peak_value, worst_peak_day, worst_trough_day = peak_value, peak_day, peak_day
-    for day, value in window:
-        if value > peak_value:
-            peak_value, peak_day = value, day
-        drop = value / peak_value - 1.0
-        if drop < worst:
-            worst = drop
-            worst_peak_value, worst_peak_day, worst_trough_day = peak_value, peak_day, day
-
-    recovery_day: date | None = None
-    recovery_days: int | None = None
-    if worst < 0:
-        after = [(d, v) for d, v in window if d > worst_trough_day]
-        for day, value in after:
-            if value >= worst_peak_value:
-                recovery_day = day
-                recovery_days = sum(1 for d, _ in after if worst_trough_day < d <= day)
-                break
-    return {
-        "value": round(worst * 100.0, 4),
-        "peak_date": worst_peak_day.isoformat(),
-        "trough_date": worst_trough_day.isoformat(),
-        "recovery_date": recovery_day.isoformat() if recovery_day else None,
-        "recovery_days": recovery_days,   # None = 至区间末端仍未修复
-    }
+# ⚠ 回撤明细(`drawdown_detail`)已上移到算法层 `backtest.drawdown_detail`(接受纯序列),
+# 组合账本与基准曲线共用同一份实现 —— 别在这里再写一份。
 
 
 # ---------------------------------------------------------------------------
@@ -471,7 +495,9 @@ def compute(
     # 3) 曲线 + 指标 + 回撤: 基于**所选再平衡**的区间账本(起点归一)
     sliced = _slice_ledger(selected_ledger, actual_start, actual_end)
     metrics = backtest.performance_metrics(sliced)
-    drawdown = drawdown_detail(selected_ledger, actual_start, actual_end)
+    # 回撤口径在算法层(`backtest.drawdown_detail`), 与基准曲线**共用同一个函数** ——
+    # 回撤模式下头部要把组合与基准的回撤并列显示, 各算一套必然对不上。
+    drawdown = backtest.drawdown_detail(selected_ledger.series, actual_start, actual_end)
 
     # 4) 收益条: 固定七格, 恒用不平衡账本(不随再平衡变化)
     windows = backtest.resolve_windows(base_ledger, contracts, end=actual_end)
@@ -496,8 +522,17 @@ def compute(
         "portfolio_id": portfolio_id,
         "portfolio_name": portfolio.name,
         "rebalance": rebalance,
+        # ⚠ `start_date/end_date` = **用户传的原值**(None = "没选, 用默认"), 前端据此判断
+        #   "这是不是默认区间"。
         "start_date": start.isoformat() if start else None,
         "end_date": end.isoformat() if end else None,
+        # ⭐ `effective_start` = **实际生效的意图起点** = `max(用户所选 或 默认的"末端整年回推10年", T0)`。
+        # 为什么必须有它: 不传区间时上面的 `start_date` 是 None, 前端只拿得到 `actual_start` ——
+        # 而那是**向前对齐到交易日之后**的值(节假日/周末会早 1~4 天), 于是"日期选择器该填什么、
+        # 快捷条该不该高亮"全对不上(用户实测: 打开任意组合, 头部已经显示出起点日期, 前端日期
+        # 选择器却还是空的)。它**未做交易日对齐**, 所以与「近10年」等候选严格可比;
+        # 同时如实保留 T0 顶升的痕迹(数据不足 10 年的组合会得到 2022-04-21 这种起点)。
+        "effective_start": ref_start.isoformat(),
         "actual_start": actual_start.isoformat(),
         "actual_end": actual_end.isoformat(),
         "t0_date": t0.isoformat(),

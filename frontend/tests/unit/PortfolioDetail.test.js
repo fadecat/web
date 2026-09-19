@@ -338,11 +338,19 @@ describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () =
       // 「近10年」= 2026-09-18 自然月回推 120 个月(头部据此显示区间名)
       start_date: '2016-09-18',
       end_date: null,
+      // 实际生效的**意图**起点(未做交易日对齐, 与候选区间可比)
+      effective_start: '2016-09-18',
+      actual_start: '2016-09-14',
       actual_end: '2026-09-18',
       selected_return: 211.22,
       selected_drawdown: -16.15,
       benchmark: {
         symbol: '000300', name: '沪深300指数', price_basis: 'PRICE', total_return: 39.17,
+        // 基准**自己**的回撤(与组合同口径同函数) —— 回撤模式下头部要显示它
+        drawdown: {
+          value: -45.6, peak_date: '2021-02-10', trough_date: '2024-09-13',
+          recovery_date: null, recovery_days: null,
+        },
       },
     },
   };
@@ -367,6 +375,37 @@ describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () =
     expect(head.text()).toContain('-16.15%');
   });
 
+  it('⭐ 回撤模式: 头部也要带区间名(否则看不出这段回撤属于哪几年)', async () => {
+    // 收益模式是「近10年: 211.22%」, 回撤模式原来只剩「区间最大回撤 -16.15%」 —— 数字旁边
+    // 没有时间参照, 用户不知道这是哪一段的回撤(用户实测提出)。
+    const wrapper = await mountPage({ assets: MEMBERS, runResult: RUN_OK });
+    const tab = wrapper.findAll('.el-tabs__item').find((t) => t.text() === '组合回撤');
+    await tab.trigger('click');
+    await flushPromises();
+
+    const head = wrapper.find('.chart-headline');
+    expect(head.text()).toContain('近10年');
+    expect(head.text()).toContain('区间最大回撤');
+    expect(head.text()).toContain('-16.15%');
+  });
+
+  it('⭐ 进页面默认回测: 日期框回填生效起点, 快捷条高亮「近10年」', async () => {
+    // 一进页面就自动跑了一次默认区间(表单为空 → 后端"末端回推 10 年"), 但表单原本是空的:
+    // 日期框空着、底部一条都不高亮, 用户根本看不出这一屏数字属于哪段区间(用户实测提出)。
+    const wrapper = await mountPage({ assets: MEMBERS, runResult: RUN_OK });
+
+    const pickers = wrapper.findAllComponents({ name: 'ElDatePicker' });
+    expect(pickers.length).toBe(2);
+    expect(pickers[0].props('modelValue')).toBe('2016-09-18'); // 回填的是 start_date(意图口径)
+    expect(pickers[1].props('modelValue')).toBe('');           // 结束日留空 = 到最新
+
+    const active = wrapper
+      .findAll('.range-strip button')
+      .filter((btn) => btn.classes().includes('el-button--primary'))
+      .map((btn) => btn.text());
+    expect(active).toContain('近10年');
+  });
+
   it('基准下拉: 显示名称而不是代码, 并带上基准区间收益', async () => {
     const wrapper = await mountPage({ assets: MEMBERS, runResult: RUN_OK, benchmarks: BENCHMARKS });
     const select = wrapper.findComponent('.bench-select');
@@ -374,6 +413,71 @@ describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () =
     expect(select.props('modelValue')).toBe('000300');
     expect(wrapper.find('.control-bench').text()).toBe('沪深300指数');
     expect(wrapper.find('.chart-benchmark').text()).toContain('39.17%');
+  });
+
+  it('⭐ 回撤模式: 基准那格换成「基准区间最大回撤」, 不再拿收益冒充', async () => {
+    // 用户实测: 回撤模式下头部是「组合 区间最大回撤 -16.50%」并列「基准 +36.45%」(涨红),
+    // 一个回撤一个收益, 且与图上蓝线最低点对不上 —— 基准那格没有跟着模式换指标。
+    const wrapper = await mountPage({ assets: MEMBERS, runResult: RUN_OK, benchmarks: BENCHMARKS });
+    const tab = wrapper.findAll('.el-tabs__item').find((t) => t.text() === '组合回撤');
+    await tab.trigger('click');
+    await flushPromises();
+
+    const bench = wrapper.find('.chart-benchmark');
+    expect(bench.text()).toContain('-45.60%'); // 基准自己的最大回撤
+    expect(bench.text()).not.toContain('39.17%'); // 收益不能再出现在回撤模式
+    expect(bench.find('b').classes()).toContain('trend-down'); // 回撤是"跌" → 绿, 不是涨红
+  });
+
+  it('回撤模式: 旧 Run 没有基准回撤字段时显示占位符, 不崩', async () => {
+    // Run 是"跑那一次的快照", 引擎 v5 之前生成的旧 Run 里没有 benchmark.drawdown
+    const legacy = JSON.parse(JSON.stringify(RUN_OK));
+    delete legacy.result.benchmark.drawdown;
+    const wrapper = await mountPage({ assets: MEMBERS, runResult: legacy, benchmarks: BENCHMARKS });
+    const tab = wrapper.findAll('.el-tabs__item').find((t) => t.text() === '组合回撤');
+    await tab.trigger('click');
+    await flushPromises();
+
+    const bench = wrapper.find('.chart-benchmark');
+    expect(bench.text()).toContain('—');
+    expect(bench.text()).not.toContain('39.17%');
+  });
+
+  it('⭐ 曲线头部: 第一格显示**回测区间起止**, 不是只有一个截止日', async () => {
+    // 用户实测: 选了「成立以来」这格仍只写 2026-09-18, 看不出这段 335% 从哪年起算。
+    // 起点取 `effective_start`(意图口径) → 与「自定义」输入框一致; 终点 end_date 为空 = 到最新。
+    const wrapper = await mountPage({ assets: MEMBERS, runResult: RUN_OK });
+    expect(wrapper.find('.chart-asof').text()).toBe('2016-09-18 ~ 2026-09-18');
+
+    // 头部读的是**结果**里的区间(旁边是实数, 标签必须跟着实数走), 所以按结果分别验证
+    const inception = JSON.parse(JSON.stringify(RUN_OK));
+    inception.result.start_date = '2013-04-26';
+    inception.result.effective_start = '2013-04-26';
+    const w1 = await mountPage({ assets: MEMBERS, runResult: inception });
+    expect(w1.find('.chart-asof').text()).toBe('2013-04-26 ~ 2026-09-18');
+
+    // 用户填了结束日时用 end_date, 不再回落到 actual_end
+    const bounded = JSON.parse(JSON.stringify(RUN_OK));
+    bounded.result.start_date = '2018-01-01';
+    bounded.result.effective_start = '2018-01-01';
+    bounded.result.end_date = '2024-12-31';
+    const w2 = await mountPage({ assets: MEMBERS, runResult: bounded });
+    expect(w2.find('.chart-asof').text()).toBe('2018-01-01 ~ 2024-12-31');
+  });
+
+  it('⭐ 没选区间时(打开任意组合): 日期框也要填出生效起点', async () => {
+    // 用户实测: 打开「我的组合5」头部已显示 2022-04-21, 而前端日期选择器还是空的。
+    // 根因: 不传区间时后端 `start_date` 是 null, 前端只拿得到 `actual_start`。
+    // 现在后端给 `effective_start` = max(用户所选或默认区间起点, T0), 且**未做交易日对齐**。
+    const noRange = JSON.parse(JSON.stringify(RUN_OK));
+    noRange.result.start_date = null;               // 用户没选 → 走默认"末端整年回推10年"
+    noRange.result.effective_start = '2022-04-21';  // 被 T0 顶上来的意图起点(数据不足10年)
+    noRange.result.actual_start = '2022-04-21';
+
+    const wrapper = await mountPage({ assets: MEMBERS, runResult: noRange });
+    const pickers = wrapper.findAllComponents({ name: 'ElDatePicker' });
+    expect(pickers[0].props('modelValue')).toBe('2022-04-21');
+    expect(wrapper.find('.chart-asof').text()).toBe('2022-04-21 ~ 2026-09-18');
   });
 
   it('基准下拉: 选「无基准」时把 benchmarkSymbol 传成 null', async () => {
@@ -454,5 +558,25 @@ describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () =
     await flushPromises();
     expect(buttonByText('近5年').classes()).toContain('el-button--primary');
     expect(buttonByText('近1月').classes()).not.toContain('el-button--primary');
+  });
+
+  it('⭐ 底部「请选择」下拉: 相对区间不得把裸 key 显示出来(span-10y)', async () => {
+    // 相对区间已由左侧那排按钮承担, 这个下拉只管固定日期项(成立以来/事件锚点/按年份)。
+    // 若把统一 key 直接绑给它, el-select 在选项里找不到 `span-*` → **把裸 key 原样回显**
+    // (用户实测截图里出现过 `span-10y`)。这是 el-select 的通用陷阱: 值不在选项里就显示原始值。
+    const wrapper = await mountPage({ assets: MEMBERS, runResult: RUN_OK });
+    const select = wrapper.findComponent('.range-preset');
+    expect(select.exists()).toBe(true);
+    expect(select.props('modelValue')).toBe(''); // 默认区间 = 近10年(span-10y) → 下拉留空
+
+    const btn = wrapper.findAll('.range-strip button').find((b) => b.text() === '近3月');
+    await btn.trigger('click');
+    await flushPromises();
+    expect(select.props('modelValue')).toBe(''); // 相对区间一律不进这个下拉
+
+    // 固定日期项仍要正常回显(别把功能一起修没了)
+    select.vm.$emit('change', 'inception');
+    await flushPromises();
+    expect(wrapper.findComponent('.range-preset').props('modelValue')).toBe('inception');
   });
 });

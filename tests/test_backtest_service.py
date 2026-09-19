@@ -305,13 +305,72 @@ class TestCompute:
         result = backtest_service.compute(db, pid, benchmark_symbol="000300")["result"]
         assert result["benchmark"]["name"] == "沪深300指数"
 
-        # 名称缺失的指数: 退回代码, **不编名字**
+        # 名称的多级兜底(用户实测: 下拉里 399373 / 931052 只剩代码):
+        # 399373 只走腾讯日线, **估值快照表里没有这一行**, 名字来自统一名单的配置名
         for day, close in ((D[0], 1.0), (D[1], 1.1)):
             db.add(IndexDailyQuote(index_code="399373", trade_date=day, close=close))
+            db.add(IndexDailyQuote(index_code="999998", trade_date=day, close=close))
         db.commit()
-        nameless = backtest_service.compute(db, pid, benchmark_symbol="399373")["result"]
+        fallback = backtest_service.compute(db, pid, benchmark_symbol="399373")["result"]
+        assert fallback["benchmark"]["name"] == "国证大盘价值"
+
+        # 三处来源全落空 → 退回代码, **不编名字**
+        nameless = backtest_service.compute(db, pid, benchmark_symbol="999998")["result"]
         assert nameless["benchmark"]["name"] is None
-        assert nameless["benchmark"]["symbol"] == "399373"
+        assert nameless["benchmark"]["symbol"] == "999998"
+
+    def test_benchmark_carries_its_own_drawdown(self, db) -> None:
+        """⭐ 回撤模式下头部要把「组合回撤」与「基准回撤」并列 —— 基准必须带自己的回撤。
+
+        原来 `_finish_benchmark` 只给 `total_return`, 前端在回撤模式下也照搬它 →
+        页面出现「组合 区间最大回撤 -16.50%」旁边并列「基准 +36.45%」(还是涨红),
+        同一格两个数一个回撤一个收益, 且与图上蓝线最低点完全对不上(用户实测)。
+        """
+        from backend.models.valuation import IndexDailyQuote
+        _register(db, "100005.OF", "测试基金C")
+        _nav(db, "100005.OF", {D[0]: 1.0, D[1]: 1.1, D[2]: 1.2, D[3]: 1.3, D[4]: 1.4})
+        pid = _portfolio(db, {"100005.OF": 100.0})
+        # 基准: 3000 → 3300(峰) → 2310(谷, -30%) → 3300(修复)
+        for day, close in ((D[0], 3000.0), (D[1], 3300.0), (D[2], 2310.0), (D[3], 3300.0)):
+            db.add(IndexDailyQuote(index_code="000300", trade_date=day, close=close))
+        db.commit()
+
+        base = backtest_service.compute(db, pid)["result"]
+        assert base["benchmark"] is None          # 不选基准 → 没有基准字段, 前端不显示
+
+        bench = backtest_service.compute(db, pid, benchmark_symbol="000300")["result"]["benchmark"]
+        assert bench["total_return"] == pytest.approx((3300 / 3000 - 1) * 100, abs=1e-6)
+        # ⚠ 与组合**同口径同函数**: 峰从窗口首值起算, 不是"窗口之前的真实高点"
+        assert bench["drawdown"]["value"] == pytest.approx(-30.0, abs=1e-6)
+        assert bench["drawdown"]["peak_date"] == D[1].isoformat()
+        assert bench["drawdown"]["trough_date"] == D[2].isoformat()
+        assert bench["drawdown"]["recovery_date"] == D[3].isoformat()
+        assert bench["drawdown"]["recovery_days"] == 1
+
+    def test_result_carries_effective_start(self, db) -> None:
+        """⭐ `effective_start` = 实际生效的**意图**起点 = `max(用户所选 或 默认, T0)`, 未交易日对齐。
+
+        为什么单独要有它(用户实测): 不传区间时 `start_date` 是 None, 而 `actual_start` 又
+        向前对齐到交易日(可能早 1~4 天) —— 前端"日期选择器填什么、快捷条高不高亮"两边都够不着,
+        于是打开任意组合都是"头部有起点日期、日期框却空着"。
+        """
+        _register(db, "100006.OF", "测试基金D")
+        _nav(db, "100006.OF", {D[0]: 1.0, D[1]: 1.1, D[2]: 1.2})
+        pid = _portfolio(db, {"100006.OF": 100.0})
+
+        # ① 不传区间 → 默认"末端整年回推10年"被 **T0 顶上去** → 生效起点就是 T0
+        auto = backtest_service.compute(db, pid)["result"]
+        assert auto["start_date"] is None
+        assert auto["effective_start"] == auto["t0_date"] == D[0].isoformat()
+
+        # ② 用户选了更早的日期 → 原值照记, 生效值被 T0 修正(如实留痕, 不假装用了 2000 年)
+        early = backtest_service.compute(db, pid, start=date(2000, 1, 1))["result"]
+        assert early["start_date"] == "2000-01-01"
+        assert early["effective_start"] == D[0].isoformat()
+
+        # ③ 选在数据区间内 → 原样生效
+        inside = backtest_service.compute(db, pid, start=D[1])["result"]
+        assert inside["effective_start"] == D[1].isoformat()
 
     def test_list_benchmark_options_covers_indices_and_assets(self, db) -> None:
         """对照下拉的候选 = **我们真能算出曲线**的那些(指数 + 已注册且有数据的标的)。"""
@@ -330,10 +389,37 @@ class TestCompute:
         assert by_symbol["000300"]["kind"] == "index"
         assert by_symbol["000300"]["price_basis"] == "PRICE"  # 指数是价格指数, 不含股息
         assert by_symbol["000300"]["row_count"] == 2
-        assert by_symbol["999999"]["name"] == "999999"        # 无名 → 退回代码
+        assert by_symbol["999999"]["name"] == "999999"        # 三处都无名 → 退回代码
         # 已注册且已有数据的标的也能当对照(走统一序列层, 口径 NAV_ADJ/HFQ)
         assert by_symbol["100001.OF"]["kind"] == "asset"
         assert by_symbol["100001.OF"]["price_basis"] == "NAV_ADJ"
+
+    def test_index_name_falls_back_to_storage_code_and_universe(self, db) -> None:
+        """⭐ 估值表按 **storage_code** 落库, 与日线表的真实指数代码**不是同一套键**。
+
+        中证价值100 = 快照 `512040` / 日线 `931052`; 拿日线代码直查快照表必然落空,
+        于是基准下拉里 931052 只剩代码(用户实测)。映射 + 统一名单兜底后必须都有名字。
+        """
+        from backend.models.valuation import IndexDailyQuote, IndexValuationSnapshot
+        for code in ("931052", "980081", "399373", "399376"):
+            db.add(IndexDailyQuote(index_code=code, trade_date=D[0], close=1.0))
+            db.add(IndexDailyQuote(index_code=code, trade_date=D[1], close=1.1))
+        # 快照表里存的是 ETF 存储键, 不是日线用的真实指数代码
+        db.add(IndexValuationSnapshot(
+            index_code="512040", index_name="中证国信价值指数", trade_date=D[1],
+        ))
+        db.add(IndexValuationSnapshot(
+            index_code="159263", index_name="国证价值100指数", trade_date=D[1],
+        ))
+        db.commit()
+
+        by_symbol = {item["symbol"]: item for item in backtest_service.list_benchmark_options(db)}
+        # ① 经 storage_code 映射拿到估值表的官方名(不是"无名字")
+        assert by_symbol["931052"]["name"] == "中证国信价值指数"
+        assert by_symbol["980081"]["name"] == "国证价值100指数"
+        # ② 没有估值快照的腾讯源指数, 名字来自统一名单配置
+        assert by_symbol["399373"]["name"] == "国证大盘价值"
+        assert by_symbol["399376"]["name"] == "国证小盘成长"
 
     def test_nav_curve_is_normalized_at_window_start(self, db) -> None:
         """曲线在区间起点归一为 1.0(页面纵轴"以区间起点为 0%"), 长度 = 区间交易日数。"""

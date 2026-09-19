@@ -10,6 +10,7 @@ import * as echarts from 'echarts';
 
 import { useThemeStore } from '../../stores/theme';
 import { chartTheme } from '../../utils/chartTheme';
+import { buildTimeAxisTicks } from '../../utils/chartTimeAxis.mjs';
 
 const props = defineProps({
   // buildChartData() 的结果: { dates, portfolio, benchmark }
@@ -34,9 +35,21 @@ const toDrawdown = (returns) => {
 
 const seriesOf = (values) => (props.mode === 'drawdown' ? toDrawdown(values) : values);
 
+// X 轴刻度: 按区间跨度自适应粒度(近1月按日 / 近1年按月 / 3年按季 / 5年按半年 /
+// 10年按年)。原实现写死 `slice(0, 4)` 只留年份, 近 3 年图上就成了一排重复的
+// "2025 2025 … 2026 2026"。
+// 上限由**画布实际宽度**决定 —— 刻度密度是版面问题: 窄屏少画几个, 不是固定值。
+const GRID_LEFT = 56;
+const GRID_RIGHT = 20;
+const PER_TICK_WIDTH = 68; // 最长的刻度文本 "2025-10" 约 43px + 间隙
+
 const buildOption = () => {
   const t = chartTheme(theme.isDark);
   if (!props.data?.dates?.length) return null;
+
+  const width = chart?.getWidth?.() || 900;
+  const maxTicks = Math.max(3, Math.min(12, Math.floor((width - GRID_LEFT - GRID_RIGHT) / PER_TICK_WIDTH)));
+  const timeAxis = buildTimeAxisTicks(props.data.dates, maxTicks);
 
   const primary = seriesOf(props.data.portfolio);
   const series = [
@@ -76,13 +89,19 @@ const buildOption = () => {
       textStyle: { color: t.labelLegend, fontSize: 12 },
       data: series.map((s) => s.name),
     },
-    grid: { left: 56, right: 20, top: 16, bottom: 44 },
+    grid: { left: GRID_LEFT, right: GRID_RIGHT, top: 16, bottom: 44 },
     xAxis: {
       type: 'category',
       data: props.data.dates,
       boundaryGap: false,
       axisLine: { lineStyle: { color: t.axisLine } },
-      axisLabel: { ...axisText, formatter: (value) => String(value).slice(0, 4) },
+      axisLabel: {
+        ...axisText,
+        // interval 由我们完全接管: 自己挑刻度就**不能**再让 ECharts 自动跳标签,
+        // 否则"跳过重复年份"会变成缺刻度(两套规则互相打架)。
+        formatter: timeAxis.format,
+        interval: timeAxis.interval,
+      },
     },
     yAxis: {
       type: 'value',
@@ -104,7 +123,18 @@ const render = () => {
 watch(() => [props.data, props.mode], () => nextTick(render), { deep: true });
 watch(() => theme.isDark, () => nextTick(render));
 
-const resize = () => chart && chart.resize();
+// 宽度变化 → 刻度上限也要跟着变, 所以不能只 chart.resize(), 还得重算 option。
+// 用 rAF 合帧, 免得拖窗口时每移动一像素就 setOption 一次。
+let resizeFrame = 0;
+const resize = () => {
+  if (!chart) return;
+  chart.resize();
+  if (resizeFrame) cancelAnimationFrame(resizeFrame);
+  resizeFrame = requestAnimationFrame(() => {
+    resizeFrame = 0;
+    render();
+  });
+};
 
 onMounted(() => {
   nextTick(render);
@@ -113,6 +143,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resize);
+  if (resizeFrame) cancelAnimationFrame(resizeFrame);
   if (chart) {
     chart.dispose();
     chart = null;

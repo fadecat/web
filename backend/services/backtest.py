@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import date
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from backend.services.series import SeriesContract
 
@@ -234,17 +234,52 @@ def window_return(ledger: Ledger, start_ref: date, end_ref: date) -> WindowRetur
     )
 
 
-def max_drawdown(ledger: Ledger, start_ref: date, end_ref: date) -> float | None:
-    """区间最大回撤(%); 峰从**窗口首值**起算。"""
-    window = [(d, v) for d, v in ledger.series if start_ref <= d <= end_ref]
+def drawdown_detail(
+    points: Sequence[tuple[date, float]], start: date, end: date,
+) -> dict[str, Any] | None:
+    """区间最大回撤明细: 值(%) / 峰值日 / 谷值日 / 修复日 / 修复所需交易日数。
+
+    **峰从窗口首值起算**(不是从窗口之前的真实历史高点) —— 与韭圈儿口径一致, 已验收核对。
+    入参是纯 `(日期, 值)` 序列, 于是**组合账本与基准曲线共用同一套口径** ——
+    这正是抽它出来的原因: 回撤模式下头部要把两者的回撤并列显示, 各算一套必然对不上。
+    """
+    window = [(d, v) for d, v in points if start <= d <= end]
     if len(window) < 2:
         return None
-    peak = window[0][1]
-    mdd = 0.0
-    for _, value in window:
-        peak = max(peak, value)
-        mdd = min(mdd, value / peak - 1.0)
-    return mdd * 100.0
+
+    peak_value, peak_day = window[0][1], window[0][0]
+    worst = 0.0
+    worst_peak_value, worst_peak_day, worst_trough_day = peak_value, peak_day, peak_day
+    for day, value in window:
+        if value > peak_value:
+            peak_value, peak_day = value, day
+        drop = value / peak_value - 1.0
+        if drop < worst:
+            worst = drop
+            worst_peak_value, worst_peak_day, worst_trough_day = peak_value, peak_day, day
+
+    recovery_day: date | None = None
+    recovery_days: int | None = None
+    if worst < 0:
+        after = [(d, v) for d, v in window if d > worst_trough_day]
+        for day, value in after:
+            if value >= worst_peak_value:
+                recovery_day = day
+                recovery_days = sum(1 for d, _ in after if worst_trough_day < d <= day)
+                break
+    return {
+        "value": round(worst * 100.0, 4),
+        "peak_date": worst_peak_day.isoformat(),
+        "trough_date": worst_trough_day.isoformat(),
+        "recovery_date": recovery_day.isoformat() if recovery_day else None,
+        "recovery_days": recovery_days,   # None = 至区间末端仍未修复
+    }
+
+
+def max_drawdown(ledger: Ledger, start_ref: date, end_ref: date) -> float | None:
+    """区间最大回撤(%); 峰从**窗口首值**起算。`drawdown_detail` 的取值版。"""
+    detail = drawdown_detail(ledger.series, start_ref, end_ref)
+    return detail["value"] if detail else None
 
 
 def latest_day_composite(

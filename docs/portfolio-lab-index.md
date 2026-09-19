@@ -157,7 +157,7 @@
 | `page-spec` §四 | 无数据/代码无效 → 该行标红 | ✅ 已补（编辑器「状态」列 + `row-blocked` 整行标红） |
 | `page-spec` §三-3 | **资产类型徽标**（详情表 + **曲线图例**） | ✅ 已补（详情表原有徽标；图例加「口径：后复权价 3 只 · 分红再投净值 1 只」） |
 | `page-spec` §五 | 视觉：首格 **34px** · 表格行高 ≥48px · 数值右对齐 · 斑马纹 · **断点 1280/960** | ✅ 已补（主色/跌色沿用全局 `trend-up/down`，与规格的 `#E63946`/`#2A9D8F` 同族但取值不同 —— **全站统一优先于单页规格**） |
-| `page-spec` §八 | 契约命名：`effective_start`（现 `actual_start`）· `asset_class`（现 `security_type`）· `manager`（现 `fund_manager`）· `nav_series`（现 `nav.{dates,nav}`） | ⚠️ 语义一致、**命名不一致**（`manager` 已改正，其余待统一） |
+| `page-spec` §八 | 契约命名：`effective_start` ✅ **已新增**（2026-09-19 引擎 v6，与 `actual_start` 并存：前者=意图起点未对齐、后者=账本首个交易日）· `asset_class`（现 `security_type`）· `manager`（已改正）· `nav_series`（现 `nav.{dates,nav}`） | 🟡 部分完成：`effective_start`/`manager` 已对齐，其余待统一 |
 | `page-spec` §八 | `metrics` 应含 `worst_year` / `turnover` / `recovery_days` | ✅ `worst_year`+`turnover` 已补（`recovery_days` 仍在 `drawdown` 里） |
 | `page-spec` §9.6 | 新建/复制组合 → **立即**算三格 | ✅ 已补 |
 | `page-spec` §9.6 | 成员/权重变更 → 重算 | ✅ 已补 |

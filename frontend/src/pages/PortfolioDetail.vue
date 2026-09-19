@@ -93,6 +93,40 @@ const basisNotes = computed(() => buildBasisNotes(result.value));
 const basisComposition = computed(() => basisCompositionText(detail.value?.assets ?? []));
 const drawdownText = computed(() => drawdownSummaryText(result.value?.drawdown));
 
+// 曲线头部「基准」那一格必须**跟着模式换指标**:
+//   收益模式 → 基准区间收益;  回撤模式 → 基准自己的区间最大回撤(负值)。
+// ⚠ 原来两处都写死 `benchmark.total_return`, 于是在回撤模式下变成
+//   「组合 区间最大回撤 -16.50%」旁边并列「基准 +36.45%」(还按涨红显示) ——
+//   同一格左右两个数一个回撤一个收益, 而且与图上蓝线最低点(-28.63%)完全对不上。
+// 基准回撤由后端同口径同函数算出(`backtest.drawdown_detail`); 旧 Run 没有该字段 → 显示 —
+const benchmarkHeadValue = computed(() => {
+  const bench = result.value?.benchmark;
+  if (!bench) return null;
+  if (chartTab.value === 'drawdown') return bench.drawdown?.value ?? null;
+  return bench.total_return ?? null;
+});
+
+const benchmarkHeadHint = computed(() =>
+  chartTab.value === 'drawdown'
+    ? '基准的区间最大回撤（峰从区间首值起算，与组合同口径）'
+    : '基准的区间收益',
+);
+
+// 曲线头部第一格 = **回测区间起止**，不是只有截止日。
+// 用户实测：选了「成立以来」这格仍只写 2026-09-18，看不出这段 335% 是从哪年起算的 ——
+// 旁边摆着实数，标签就得回答"这是哪一段"。
+// ⚠ 起点用 `effectiveStart`（**意图口径**，未做交易日对齐）而不是 `actual_start`（对齐之后），
+//   这样与「自定义」输入框、「近10年」等候选**完全一致**；实际起算的交易日另有「已应用」交代。
+//   终点：`end_date` 为空表示"到最新" → 取 `actual_end`。
+const appliedRangeText = computed(() => {
+  const res = result.value;
+  if (!res) return EMPTY;
+  const start = effectiveStart.value;
+  const end = res.end_date || res.actual_end;
+  if (!start || !end) return res.actual_end || EMPTY;
+  return `${start} ~ ${end}`;
+});
+
 const assetRows = computed(() => result.value?.assets ?? detail.value?.assets ?? []);
 
 const weightState = computed(() => ({
@@ -144,9 +178,34 @@ const rangeSpans = computed(() => RANGE_SPAN_PRESETS.map((preset) => ({
   ...preset,
   disabled: !isDate(lastDataDate.value),
 })));
-// 选中项由表单**反推**(不另存状态): 用户手动改日期时会自动取消高亮, 不会撒谎
-const rangePresetKey = computed(() => activeRangeKey(
-  form.start, form.end, { t0: t0Date.value, lastDataDate: lastDataDate.value },
+// ⭐ 实际生效的**意图**起点 = 后端 `effective_start`
+//   = `max(用户所选 或 默认的"末端整年回推10年", T0)`, **未做交易日对齐**。
+// 为什么不能直接用 `start_date`: 不传区间时它是 null(那字段记的是"用户传了什么");
+// 为什么不能直接用 `actual_start`: 它向前对齐到交易日, 会早 1~4 天, 于是"日期框填什么、
+// 快捷条高不高亮"全对不上(用户实测: 打开任意组合, 头部已有起点日期, 日期选择器却是空的)。
+// 回落链覆盖引擎 v6 之前生成的旧 Run。
+const effectiveStart = computed(() => (
+  result.value?.effective_start
+  || result.value?.start_date
+  || result.value?.actual_start
+  || ''
+));
+
+// 选中项由表单**反推**(不另存状态): 用户手动改日期时会自动取消高亮, 不会撒谎。
+// ⚠ 表单为空时**回落到结果**反推: 进页面会自动跑一次默认区间, 那一刻表单还是空的,
+//   只看表单就会"底部一条都不高亮、用户看不出这一屏属于哪个区间"(用户实测提出)。
+//   标签也遵循同一原则 —— 跟着**结果**走, 因为旁边是实数。
+const rangePresetKey = computed(() => (
+  activeRangeKey(form.start, form.end, { t0: t0Date.value, lastDataDate: lastDataDate.value })
+  || activeRangeKey(effectiveStart.value, result.value?.end_date,
+    { t0: t0Date.value, lastDataDate: lastDataDate.value })
+));
+
+// 「请选择」下拉只管**固定日期项**(成立以来 / 事件锚点 / 按年份), 相对区间已有左侧那排按钮。
+// ⚠ 相对区间的 key(`span-*`)绝不能传给这个下拉: el-select 在自己的选项列表里找不到该值,
+//   会把**裸 key 原样回显**(用户实测在底部看到过 `span-10y`)。
+const fixedRangeKey = computed(() => (
+  String(rangePresetKey.value || '').startsWith('span-') ? '' : (rangePresetKey.value || '')
 ));
 
 const applyRangePreset = async (key) => {
@@ -163,7 +222,7 @@ const applyRangePreset = async (key) => {
 /** 「已应用」区间的名字: 由**结果**里的起止日反推(不是表单), 才能与旁边的收益数字对得上。 */
 const appliedRangeLabel = computed(() => {
   const key = activeRangeKey(
-    result.value?.start_date, result.value?.end_date,
+    effectiveStart.value, result.value?.end_date,
     { t0: t0Date.value, lastDataDate: lastDataDate.value },
   );
   if (!key) return '自定义区间';
@@ -188,12 +247,18 @@ const benchmarkGroups = computed(() => {
   return groups.filter((group) => group.options.length);
 });
 
-const benchmarkLabel = computed(() => {
-  const symbol = String(form.benchmark || '').trim();
-  if (!symbol) return '';
-  const hit = benchmarks.value.find((item) => item.symbol === symbol);
-  return hit?.name || symbol; // 列表里没有(如手输/旧 Run)就退回代码, 不编名字
-});
+// 基准展示名: 优先用下拉列表里的名字(后端已做了 storage_code 映射 + 名单兜底)。
+// ⚠ 为什么不能只信 Run 里的 `benchmark.name`: Run 是"跑那一次的快照", 早于名字修复
+//   生成的旧 Run 里该字段是 null, 直接渲染就会在图上显示成一串代码。
+//   列表里查不到(手输代码 / 列表读取失败)才退回代码, **不编名字**。
+const benchmarkNameOf = (symbol) => {
+  const code = String(symbol || '').trim();
+  if (!code) return '';
+  const hit = benchmarks.value.find((item) => item.symbol === code);
+  return hit?.name || code;
+};
+
+const benchmarkLabel = computed(() => benchmarkNameOf(form.benchmark));
 
 const loadBenchmarks = async () => {
   try {
@@ -238,6 +303,13 @@ const runIt = async (reuse = true) => {
       end: form.end || null,
       reuse,
     });
+    // 跑完把生效起点回填到「起始日」框 —— 否则日期框空着、快捷条也不高亮, 用户看不出
+    // 这一屏数字属于哪段区间(用户实测提出)。用后端的 `effective_start`(意图口径),
+    // 不用 `actual_start`(向前对齐后早 1~4 天, 与候选区间对不上); 旧 Run 无该字段则回落。
+    // `end` 保持空 = "到最新"。
+    if (!form.start && !form.end && effectiveStart.value) {
+      form.start = effectiveStart.value;
+    }
   } catch (err) {
     // ⚠ page-spec §四: 回测失败**不清空已有结果**（避免页面闪烁成空白）
     ElMessage.error(err?.response?.data?.detail || '回测失败');
@@ -542,11 +614,12 @@ onMounted(loadBenchmarks);
         <!-- 区域④ 曲线 / 回撤 -->
         <div v-loading="running" class="chart-area">
           <!-- 曲线头部(照韭圈儿 §二-④): 截止日 · 选中区间名 + 区间收益 · 基准下拉 + 基准收益
-               ⚠ 回撤模式下中间那格换成「区间最大回撤」(韭圈儿同款) -->
+               ⚠ **两格都要随模式切换**: 回撤模式下左边换成「区间最大回撤」、右边换成
+                 「基准的区间最大回撤」。只换左边不换右边, 就成了回撤与收益并列。 -->
           <div class="chart-head">
-            <span class="chart-asof">{{ result?.actual_end || EMPTY }}</span>
+            <span class="chart-asof" title="回测区间（起点为你所选口径；实际起算的交易日见下方「已应用」）">{{ appliedRangeText }}</span>
             <span v-if="chartTab === 'drawdown'" class="chart-headline">
-              区间最大回撤
+              {{ appliedRangeLabel }} 区间最大回撤
               <b class="trend-down">{{ formatReturnPct(result?.selected_drawdown) }}</b>
             </span>
             <span v-else class="chart-headline">
@@ -586,9 +659,10 @@ onMounted(loadBenchmarks);
               </el-select>
               <b
                 v-if="result?.benchmark"
-                :class="`trend-${trendOf(result.benchmark.total_return)}`"
+                :class="`trend-${trendOf(benchmarkHeadValue)}`"
+                :title="benchmarkHeadHint"
               >
-                {{ formatReturnPct(result.benchmark.total_return) }}
+                {{ formatReturnPct(benchmarkHeadValue) }}
               </b>
             </span>
             <el-tooltip
@@ -605,7 +679,7 @@ onMounted(loadBenchmarks);
           <div v-else-if="chartData?.portfolio" class="benchmark-note">
             ■ 本组合（红）<template v-if="basisComposition">，口径：{{ basisComposition }}</template>
             <template v-if="chartData?.benchmark">
-              &nbsp;&nbsp;vs ■ {{ chartData.benchmark.name }}（蓝，{{ priceBasisLabel(chartData.benchmark.priceBasis) }}）
+              &nbsp;&nbsp;vs ■ {{ benchmarkNameOf(chartData.benchmark.symbol) }}（蓝，{{ priceBasisLabel(chartData.benchmark.priceBasis) }}）
             </template>
           </div>
 
@@ -624,8 +698,12 @@ onMounted(loadBenchmarks);
               </el-button>
             </el-button-group>
             <!-- 固定日期项(成立以来 / 事件锚点 / 按年份) -->
+            <!-- ⚠ 绑定的是 `fixedRangeKey` 而不是 `rangePresetKey`: 这个下拉的选项里**只有**
+                 固定日期项, 相对区间已经由左侧那排按钮承担。若把 `span-*` 的 key 也传进来,
+                 el-select 在自己的选项列表里找不到该值, 会把**裸 key 原样显示**(用户实测看到
+                 过 `span-10y`) —— 这是 el-select 的通用陷阱: 值不在选项里就回显原始值。 -->
             <el-select
-              :model-value="rangePresetKey"
+              :model-value="fixedRangeKey"
               class="range-preset"
               size="small"
               placeholder="请选择"
@@ -1028,6 +1106,8 @@ onMounted(loadBenchmarks);
 .chart-asof {
   font-variant-numeric: tabular-nums;
   color: var(--el-text-color-regular);
+  /* 区间是「起 ~ 止」整体, 别在中间折行 */
+  white-space: nowrap;
 }
 
 .chart-headline {
