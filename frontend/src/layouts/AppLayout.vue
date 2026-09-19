@@ -36,6 +36,8 @@ const menus = [
   {
     group: '研究',
     items: [
+      { path: '/portfolios', title: '组合回测', icon: '🧪' },
+      { path: '/portfolio-assets', title: '标的库', icon: '📦' },
       { path: '/research', title: '信号回放', icon: '🔬' },
     ],
   },
