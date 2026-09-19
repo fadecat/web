@@ -152,6 +152,19 @@ class TestCompute:
         assert result["actual_start"] == D[0].isoformat()
         assert result["start_date"] == "2000-01-01"  # 用户选择原样回显
 
+    def test_default_window_is_whole_years_not_fixed_days(self, db) -> None:
+        """⭐ 默认区间 = 末端**整年**回推 10 年, 不是 `365×10` 天。
+
+        3650 天比真实 10 年短 2 天(闰年), 起点会漂后 2 天; 一旦撞上长假, 向前对齐到
+        交易日时就会整整晚 4 个交易日 —— 直接改变区间收益。
+        实测: 2026-09-18 回推 → 整年给 2016-09-18(对齐到 09-14), 3650 天给
+        2016-09-20(对齐到 09-20)。
+        """
+        assert backtest_service._reference_start(date(2026, 9, 18), None) == date(2016, 9, 18)
+        assert backtest_service._reference_start(date(2024, 2, 29), None) == date(2014, 2, 28)
+        # 用户给了起点就原样用, 不做任何加工
+        assert backtest_service._reference_start(date(2026, 9, 18), date(2020, 1, 1)) == date(2020, 1, 1)
+
     def test_windows_seven_cells_with_composite_d1(self, db) -> None:
         """收益条七格齐全; 「近1日」是合成口径(composite=True), 不是账本末两日之比。"""
         pid = _seed_two_funds(db)
@@ -328,6 +341,22 @@ class TestRunPersistence:
         assert a["id"] != b["id"]
         # 旧 Run 仍保留旧快照, 仍可复现
         assert [m["target_weight"] for m in a["members"]] == [50.0, 50.0]
+
+    def test_engine_version_bump_invalidates_reuse(self, db, monkeypatch) -> None:
+        """⭐ 引擎版本变了 → 同一输入必须**重算**, 不能复用旧 Run。
+
+        否则会出现最糟的一种情况: 修好了算法, 用户重跑却命中旧 Run, 页面上还是旧数字。
+        """
+        pid = _seed_two_funds(db)
+        first = backtest_service.run_backtest(db, pid)
+        assert backtest_service.run_backtest(db, pid)["id"] == first["id"]  # 同版本 → 复用
+
+        monkeypatch.setattr(
+            backtest_service, "ENGINE_VERSION", backtest_service.ENGINE_VERSION + 1,
+        )
+        bumped = backtest_service.run_backtest(db, pid)
+        assert bumped["id"] != first["id"]
+        assert len(backtest_service.list_runs(db, portfolio_id=pid)) == 2
 
     def test_get_unknown_run_raises(self, db) -> None:
         with pytest.raises(backtest_service.BacktestServiceError, match="未知回测"):

@@ -24,7 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import date, timedelta
+from datetime import date
 from typing import Any, Sequence
 
 from sqlalchemy import select
@@ -37,8 +37,20 @@ from backend.services import backtest, portfolio_store, series
 
 logger = logging.getLogger(__name__)
 
-# 默认区间 = 末端自然日回推 10 年(与韭圈儿页面一致); 真正生效的起点由向前对齐决定
+# 默认区间 = 末端整年回推 10 年(与韭圈儿页面一致); 真正生效的起点由向前对齐决定
 DEFAULT_WINDOW_YEARS = 10
+
+# ⚙ **算法版本**: 任何会改变计算结果的改动都必须 +1。
+#
+# 为什么需要它: Run 靠 `input_hash` 复用(幂等)。如果只改算法而不改 hash, 同一组合再次
+# 回测会命中**旧 Run** —— 用户以为"修好了", 页面上却还是旧数字。把版本号纳入 hash 后,
+# 算法升级会让旧 Run 自然失配、重新计算, 旧 Run 本身仍保留可查。
+#
+# 版本历史:
+#   v1 初版
+#   v2 默认区间改为"整年回推"(原 365×10 天会少 2 天, 撞长假后起点晚 4 个交易日);
+#      `window_return` 起点早于 T0 时退化为账本首点(原返回空 → 收益条空白)
+ENGINE_VERSION = 2
 # 与 portfolio_store 同一容差(权重合计 100% 判定)
 _WEIGHT_SUM_TOLERANCE = 0.01
 # 基准曲线最多保留的点数(超长区间按等间隔抽稀, 只为前端画图; 指标永远用全量)
@@ -292,7 +304,20 @@ def drawdown_detail(
 # ---------------------------------------------------------------------------
 
 def _reference_start(end: date, start: date | None) -> date:
-    return start if start is not None else end - timedelta(days=365 * DEFAULT_WINDOW_YEARS)
+    """区间起点参考日: 用户给了就用用户的, 否则 = **末端整年回推 10 年**。
+
+    ⚠ 必须用"整年回推"(`date(year-10, month, day)`)而不是 `timedelta(days=365*10)` ——
+      后者 3650 天比真实的 10 年少 2 天(闰年), 起点会往后漂 2 天; 若这两天正好撞上
+      长假, 向前对齐到交易日时就会**整整晚 4 个交易日**(实测 2026-09-18 回推:
+      整年 = 2016-09-18 → 对齐到 09-14; 3650 天 = 2016-09-20 → 对齐到 09-20)。
+      韭圈儿的"近10年"用的就是整年回推。
+    """
+    if start is not None:
+        return start
+    try:
+        return date(end.year - DEFAULT_WINDOW_YEARS, end.month, end.day)
+    except ValueError:  # 2 月 29 日回推到平年
+        return date(end.year - DEFAULT_WINDOW_YEARS, end.month, 28)
 
 
 def _correlation_start(all_days: list[date], ref_start: date) -> date | None:
@@ -430,13 +455,23 @@ def _price_basis_note(
 def _input_hash(
     members_snapshot: list[dict[str, Any]], *,
     rebalance: str, benchmark_symbol: str | None, start: date | None, end: date | None,
+    actual_start: str, actual_end: str,
 ) -> str:
+    """输入指纹 = 组合快照 + 参数 + **实际生效区间** + **引擎版本**。
+
+    纳入 `actual_start/actual_end` 而不是只存用户输入: 用户输入的起点是"参考日",
+    真正生效的是向前对齐后的交易日 —— 区间解析逻辑一变, 实际区间就变, hash 必须跟着变。
+    再叠加 `ENGINE_VERSION` 兜住"算法本身改了但区间没变"的情况(如指标公式修正)。
+    """
     payload = {
+        "engine": ENGINE_VERSION,
         "members": members_snapshot,
         "rebalance": rebalance,
         "benchmark": benchmark_symbol or "",
         "start": start.isoformat() if start else "",
         "end": end.isoformat() if end else "",
+        "actual_start": actual_start,
+        "actual_end": actual_end,
     }
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
@@ -459,6 +494,7 @@ def run_backtest(
     digest = _input_hash(
         bundled["members_snapshot"], rebalance=rebalance,
         benchmark_symbol=benchmark_symbol, start=start, end=end,
+        actual_start=result["actual_start"], actual_end=result["actual_end"],
     )
     if reuse:
         existing = db.scalar(

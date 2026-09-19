@@ -51,12 +51,13 @@ def _register_and_sync(items, *, do_fetch: bool) -> list[int]:
     with SessionLocal() as db:
         for symbol, security_type, name in items:
             try:
-                row = portfolio_assets.register(symbol, security_type, name, db=db)
+                # ⚠ `--symbols` 自定义时没有名称 → 用代码兜底, 不能让 UI 显示空白
+                row = portfolio_assets.register(symbol, security_type, name or symbol, db=db)
             except Exception as exc:  # noqa: BLE001 单标的注册失败不中断其余
                 logger.error("注册失败 %s: %s", symbol, exc)
                 continue
             ids.append(row["id"])
-            print(f"  注册 {symbol}  {name}  ({'已存在' if not row['created'] else '新建'})")
+            print(f"  注册 {symbol}  {name or symbol}  ({'已存在' if not row['created'] else '新建'})")
 
     if not do_fetch:
         print("  跳过抓取(--no-fetch)")
