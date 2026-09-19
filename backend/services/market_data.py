@@ -14,7 +14,6 @@ import json
 import logging
 import math
 import numbers
-import re
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -399,8 +398,8 @@ class AkShareEastmoneyProvider:
 # r_t 阶跃降级为宽容差 sanity 兜底。证据: data/research/poc/ + 换源验证探针报告。
 #
 # ⚠ 更正(2026-09-20): "ETF 也统一覆盖"这句**不成立** —— 159915 的 2011-11-30 份额折算
-# 在新浪侧查不到(只回哨兵行)。事件日历仍可用于它原本的用途(检测除权除息日), 但凡是
-# 要判定"某标的有没有复权事件"的地方, 一律走东财「分红送配」, 不要用新浪。
+# 在新浪侧查不到(只回哨兵行)。事件日历仍可用于它原本的用途(检测除权除息日), 但不要拿它
+# 判断"某标的有没有复权事件" —— 该判定直接用腾讯 `hfqday` 的有无(24/24 实测一致)。
 # ---------------------------------------------------------------------------
 
 TencentKlineFetchFn = Callable[..., list]
@@ -433,9 +432,9 @@ def _tencent_extract_rows(payload: dict[str, Any], code: str, fq: str) -> list:
     例外: 窗口内无交易日时腾讯对 hfq 请求也回 'day' 键的空列表(实测 2021-01-01..2021-01-03),
     空列表不存在口径歧义, 视为空页返回。
 
-    抛 `AdjustedSeriesUnavailable` 而非裸 `ResearchSourceError`: 这类失败**可能**被安全降级
-    (见 `TencentFqklineProvider._resolve_adjusted_fallback`), 调用方需要能把它与其他源错误
-    区分开。本函数本身仍不降级 —— 判定口径等价需要额外的第三方证据。
+    抛 `AdjustedSeriesUnavailable` 而非裸 `ResearchSourceError`: 这一种失败**可以**被安全降级
+    (复权键缺失 = 该标的无复权事件, 见模块内 «复权序列缺失…» 注释块), 调用方需要能把它与
+    其他源错误区分开。本函数本身不降级 —— 换口径是调用方的决定。
     """
     data = (payload or {}).get("data", {}).get(code) or {}
     key = f"{fq}day" if fq else "day"
@@ -506,91 +505,28 @@ def _default_sina_events_fetch(code: str) -> list:
 
 
 # ---------------------------------------------------------------------------
-# 东财「分红送配」核验 —— 仅在腾讯无复权序列、需要判定能否降级时使用
+# 复权序列缺失 = 该标的没有复权事件(直接用源端字段判定, 不引第三方源)
 #
-# 背景(2026-09-20 线上实测): 腾讯 fqkline 只为**存在复权事件**的标的生产 `hfqday`,
-# 12/12 样本一致 —— 159915(2011 折算) / 159937(2014 折算) / 159941(2022 分拆)
-# / 513100(2022 分拆) / 510300(分红) 都有 hfqday; 而 159985 / 159980 / 159981 /
-# 159766 / 159611 / 159892 / 159509 无任何分红折算 → 都没有 hfqday。
-# 所以"取不到复权序列"**不等于"口径会错"**: 无复权事件时 raw ≡ hfq(复权因子恒为 1),
-# 降级到未复权在数学上等价。但守卫本身不能删(它拦的是 513100 那种 -80% 折算跳空)。
-# 折中做法 = **拿到第三方证据才降级**: 用东财记录证明该标的确实没有任何复权事件,
-# 拿不到证据就维持拒绝(fail-safe)。
+# 规律(2026-09-20 ECS 实测, 24/24 样本一致): 腾讯 fqkline **只为存在复权事件的标的
+# 生产 `hfqday`**。有事件 → 有键; 无任何分红/折算/分拆 → 请求 hfq 也只回 `day`。
+#   有 hfqday: 513100(2022 分拆 1:5) / 159941(2022 分拆 1:4) / 159937(2014 折算) /
+#              159915(2011 折算) / 510300 与 510050(多次分红) / 510500 / 512690 /
+#              588000 / 159928 / 159938 …
+#   无 hfqday: 159985 豆粕ETF / 159980 / 159981 / 159766 / 159611 / 159892 / 159509 /
+#              512880 / 515030 / 159949 / 159869 / 159865 / 159755 …
+# 这不是统计巧合, 而是它的数据形态: hfq 序列由复权因子表派生, 没有因子就没有这条序列。
+# 而且**命中面很宽** —— 抽样的 12 只 ETF 里有 6 只没有 hfqday, 所以这是**主路径**,
+# 不该在它上面挂一个会改版的 HTML 抓取。
 #
-# ⚠ 本页**只对基金代码有效**: 传股票代码时天天基金照回 HTTP 200 且显示"暂无分红"
-#   (实测 601899 有 24 次分红却显示"暂无") —— 故用标题里的「名称(代码)」判定,
-#   认不出基金名就返回 None(= 核验不可用), **绝不**当成"无事件"。
+# 故降级判据 = 字段本身。这一步是**安全的**而非"将就":
+#   无复权事件 ⇒ 复权因子恒为 1 ⇒ raw ≡ hfq, 降级零口径损失
+#   (已实证: 159985.SZ 落库后 raw 与 hfq 逐日比对 1648 天 / 0 天不一致 / 最大差 0.0)。
+#
+# 已知残余暴露(接受, 记录在此以免后人误判): 若某标的**刚发生**折算/分拆而腾讯尚未生成
+# hfqday, 该次同步会按未复权写入(序列上表现为一根假跳空)。它**不是永久性的** —— 腾讯
+# 补齐 hfqday 后, 下一次同步经 `publish_paired_snapshot` 的 upsert 会把复权侧改写回来
+# (每日 17:30 任务会同步所有 enabled 标的), 即最迟一天内自愈。日志会打印 WARNING。
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class FundAdjustmentEvent:
-    """基金复权事件(东财「分红送配」页的一行)。
-
-    仅用于回答"有没有事件", 不参与任何数值计算 —— 复权因子仍由源端的复权序列提供。
-    """
-
-    event_date: date
-    kind: str
-    detail: str
-
-
-EastmoneyAdjustmentFetchFn = Callable[[str], "list[FundAdjustmentEvent] | None"]
-
-
-def _parse_eastmoney_adjustments(html: str) -> list[FundAdjustmentEvent] | None:
-    """东财「分红送配」页 → 复权事件列表; **核验不可用时返回 None**(不是空列表)。
-
-    空列表 = "确认无事件"(可降级); None = "无法核验"(必须维持拒绝)。两者语义相反,
-    是最容易写错的地方, 故在类型上就用 `| None` 表达。
-
-    表格行形如 `['2011年', '2011-11-30', '份额折算', '1:1.1456']`。以首列「YYYY年」
-    定位数据行, 避开页面里其它含日期的表格。
-    """
-    text = html or ""
-    title_match = re.search(r"<title>(.*?)</title>", text, re.S)
-    if not title_match:
-        return None
-    # 基金页: 「豆粕ETF华夏(159985)基金分红送配 …」; 非基金代码: 「(601899)基金分红送配 …」
-    name_match = re.match(r"^(.*?)\(\d{6}\)基金分红送配", title_match.group(1).strip())
-    if not name_match or not name_match.group(1).strip():
-        return None
-
-    events: list[FundAdjustmentEvent] = []
-    for row_html in re.findall(r"<tr[^>]*>(.*?)</tr>", text, re.S):
-        cells = [
-            re.sub(r"\s+", "", re.sub(r"<[^>]+>", "", cell))
-            for cell in re.findall(r"<td[^>]*>(.*?)</td>", row_html, re.S)
-        ]
-        if len(cells) < 3 or not re.match(r"^\d{4}年$", cells[0]):
-            continue
-        raw_date = next((c for c in cells[1:] if re.match(r"^\d{4}-\d{2}-\d{2}$", c)), None)
-        if raw_date is None:
-            continue
-        # 首个非日期单元格是类型说明(份额折算/份额分拆/每份派现金…)
-        kind = next((c for c in cells[1:] if not re.match(r"^\d", c)), "分红")
-        events.append(FundAdjustmentEvent(
-            event_date=date.fromisoformat(raw_date), kind=kind, detail=cells[-1],
-        ))
-    return events
-
-
-def _default_eastmoney_adjustment_fetch(code: str) -> list[FundAdjustmentEvent] | None:
-    """抓东财「分红送配」页并解析; 网络/解析异常一律返回 None(核验不可用), **不抛**。
-
-    核验是"可选增强": 失败时调用方维持原来的拒绝行为, 与加这个功能之前完全一致,
-    所以不该因为核验失败而把一个原本能正常拒绝的流程变成报错。
-    """
-    import requests  # noqa: PLC0415
-
-    url = f"https://fundf10.eastmoney.com/fhsp_{code}.html"
-    try:
-        response = requests.get(url, timeout=20, headers=_HEADERS)
-        response.raise_for_status()
-        return _parse_eastmoney_adjustments(response.text)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("东财分红送配核验不可用(%s): %s", code, exc)
-        return None
 
 
 class TencentFqklineProvider:
@@ -602,12 +538,12 @@ class TencentFqklineProvider:
     - 日历: 复用新浪 tool_trade_date_hist_sina(与 akshare 适配器同源);
     - 事件: 新浪 hfq.js(股票与 ETF 同一接口), 作为权益事件主检测来源。
       ⚠ 实测更正(2026-09-20): 新浪对 **ETF** 的覆盖**不完整** —— 159915 存在 2011-11-30
-      份额折算, 新浪只回 `1900-01-01` 哨兵行。故它**不能**单独用来判定"ETF 有无复权事件",
-      需要该判定时改用东财「分红送配」(见 `_verified_no_adjustment_events`)。
-    - 复权序列缺失时的降级: 腾讯只对有复权事件的标的生产 `hfqday`, 无事件的标的
-      (如 159985) 请求 hfq 会只回 `day`。此时**不直接拒绝**, 而是先经东财「分红送配」
-      核验"确无复权事件", 核验通过才按未复权取值(因子恒 1、口径等价并记 WARNING);
-      核验不通过或不可用则维持拒绝。见 `_verified_no_adjustment_events`。
+      份额折算, 新浪只回 `1900-01-01` 哨兵行。故不要拿它判断"某 ETF 有没有复权事件";
+      该判定直接用腾讯 `hfqday` 的有无(见下条)。
+    - 复权序列缺失时的降级: 腾讯只对**有复权事件**的标的生产 `hfqday`, 无事件的标的
+      (如 159985, 抽样里约占 ETF 一半) 请求 hfq 只会拿到 `day`。此时按**字段本身**判定
+      并降级取未复权 —— 无事件则因子恒为 1、`raw ≡ hfq`, 口径等价, 记 WARNING。
+      详细依据与已知残余暴露见本模块 «复权序列缺失 = 该标的没有复权事件» 注释块。
     构造器注入 fetch 函数供测试隔离; 默认实现内部延迟 import requests。
     """
 
@@ -617,7 +553,6 @@ class TencentFqklineProvider:
         kline_fetch_fn: TencentKlineFetchFn | None = None,
         events_fetch_fn: CorporateEventsFetchFn | None = None,
         calendar_fetch_fn: CalendarFetchFn | None = None,
-        adjustment_fetch_fn: EastmoneyAdjustmentFetchFn | None = None,
         sleep: Callable[[float], None] = time.sleep,
         page_size: int = TENCENT_KLINE_PAGE,
         page_gap: float = 0.5,
@@ -630,7 +565,6 @@ class TencentFqklineProvider:
         self._kline_fetch_fn = kline_fetch_fn or _default_tencent_kline_fetch
         self._events_fetch_fn = events_fetch_fn or _default_sina_events_fetch
         self._calendar_fetch_fn = calendar_fetch_fn or _default_calendar_fetch
-        self._adjustment_fetch_fn = adjustment_fetch_fn or _default_eastmoney_adjustment_fetch
         self._sleep = sleep
         self._page_size = int(page_size)
         self._page_gap = float(page_gap)
@@ -664,30 +598,6 @@ class TencentFqklineProvider:
             self._sleep(self._page_gap)
         return rows_by_date
 
-    def _verified_no_adjustment_events(self, code: str) -> bool:
-        """用东财记录核验该标的**确实没有任何复权事件**; 核验不了就返回 False。
-
-        `None`(核验不可用: 非基金代码 / 页面改版 / 网络异常) 与 `[]`(确认无事件)
-        必须分开 —— 前者不得被当成"无事件", 否则核验形同虚设。
-        """
-        try:
-            events = self._adjustment_fetch_fn(code)
-        except Exception as exc:  # noqa: BLE001 核验是可选增强: 异常一律视为"核验不可用"
-            logger.warning("复权事件核验异常(%s): %s → 维持拒绝", code, exc)
-            return False
-        if events is None:
-            logger.warning(
-                "无复权序列且无法核验复权事件(东财不可用或非基金代码): %s → 维持拒绝", code,
-            )
-            return False
-        if events:
-            logger.warning(
-                "无复权序列但**存在复权事件**(%s: %s) → 拒绝降级, 口径会错",
-                code, ", ".join(f"{e.event_date} {e.kind}" for e in events[:3]),
-            )
-            return False
-        return True
-
     def get_daily_bars(
         self, symbol: str, start: date, end: date, adjust_mode: AdjustMode,
         *, security_type: str = "STOCK",
@@ -703,14 +613,13 @@ class TencentFqklineProvider:
         except AdjustedSeriesUnavailable as exc:
             if adjust_mode is AdjustMode.RAW:
                 raise
-            # 腾讯只为**有复权事件**的标的生产 hfqday(12/12 实测一致), 故 159985 这类
-            # 从未分红/折算的 ETF 根本没有复权序列。取不到 ≠ 口径会错: 无事件时复权因子
-            # 恒为 1, raw ≡ hfq。但降级必须有据可依, 所以先核验再降, 核验不过就照旧拒绝。
-            if not self._verified_no_adjustment_events(tencent_code[2:]):
-                raise
+            # 腾讯只为**有复权事件**的标的生产 hfqday(24/24 实测一致), 故 159985 这类
+            # 无分红/无折算的标的没有复权序列, 请求 hfq 只回 'day'。取不到 ≠ 口径会错:
+            # 无事件时复权因子恒为 1, raw ≡ hfq。判据就用这个字段本身 —— 不额外引第三方源
+            # (这类标的约占 ETF 一半, 是主路径, 不适合挂一个会改版的 HTML 抓取)。
             logger.warning(
-                "腾讯无 %s 的复权序列(%s); 已核验该标的无分红/折算/分拆 → "
-                "按未复权取值(复权因子恒为 1, 与复权口径等价)", symbol, exc,
+                "腾讯无 %s 的复权序列(%s) → 该标的无分红/折算/分拆, 按未复权取值"
+                "(复权因子恒为 1, 与复权口径等价)", symbol, exc,
             )
             fq = ""
             rows_by_date = self._collect_pages(tencent_code, fq, start, end)
