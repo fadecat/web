@@ -123,6 +123,20 @@ def thread_safe_engine():
     engine.dispose()
 
 
+@pytest.fixture()
+def thread_db(thread_safe_engine):
+    """与 contract_client **同一个内存库**的独立会话(供测试预置数据/直接断言)。
+
+    必须与 contract_client 一起用: 两边的建表都由 contract_client 触发
+    (它对 thread_safe_engine 调 Base.metadata.create_all), 单独用本 fixture 时表可能还没建。
+    """
+    session = sessionmaker(bind=thread_safe_engine)()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
 # ---------------------------------------------------------------------------
 # 测试资源状态(R4-03): 请求级 Session 生命周期可观测
 # ---------------------------------------------------------------------------

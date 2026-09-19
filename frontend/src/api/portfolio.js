@@ -26,3 +26,33 @@ export const refreshAsset = (assetId) =>
   api
     .post(`/portfolio/assets/${assetId}/refresh`, null, { timeout: 60000 })
     .then((response) => response.data);
+
+// ---------------------------------------------------------------------------
+// 组合(P2)
+// 注意: 再平衡 / 基准 / 区间**不在这些读写字段里** —— 它们属于 backtest_run(P3)。
+//       `default_rebalance` 只是新建 Run 的预填值。
+// ---------------------------------------------------------------------------
+
+// L1 组合列表: 每行含 成立时间(created_at) / 收益时间(cached_asof_date) / 三格收益(cached_*)
+export const listPortfolios = (includeArchived = false) =>
+  api
+    .get('/portfolio/portfolios', { params: { include_archived: includeArchived }, timeout: 15000 })
+    .then((response) => response.data);
+
+// 新建组合; name 缺省时后端给 我的组合N。传 fromId 即复制现有组合(含成员与权重)。
+export const createPortfolio = ({ name = null, note = null, fromId = null } = {}) =>
+  api
+    .post('/portfolio/portfolios', { name, note, from_id: fromId }, { timeout: 15000 })
+    .then((response) => response.data);
+
+// L2 详情: 成员(含「添加后的收益」) + 权重状态(weight_sum/ready) + 数据就绪(含共同起点)
+export const getPortfolio = (portfolioId) =>
+  api.get(`/portfolio/portfolios/${portfolioId}`, { timeout: 30000 }).then((r) => r.data);
+
+// 部分更新: name / note / default_rebalance / assets(传了就全量替换成员与权重)
+export const patchPortfolio = (portfolioId, payload) =>
+  api.patch(`/portfolio/portfolios/${portfolioId}`, payload, { timeout: 30000 }).then((r) => r.data);
+
+// 软删(归档, 可恢复; 不级联删标的与 Run)
+export const deletePortfolio = (portfolioId) =>
+  api.delete(`/portfolio/portfolios/${portfolioId}`, { timeout: 15000 }).then((r) => r.data);

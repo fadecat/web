@@ -296,6 +296,38 @@ def _asset_payload(db: Session, member: PortfolioAsset) -> dict[str, Any]:
         "target_weight": member.target_weight,
         "added_at": member.added_at.isoformat() if member.added_at else None,
         "sort_order": member.sort_order,
+        # ⚠ 「当前占比」是**不平衡持有至今的漂移权重**, 需要份额法账本 → P3 提供;
+        #    这里显式给 None, 不用目标权重冒充(两者不是一回事)。
+        "current_weight": None,
+        "since_added_return": since_added_return(db, member),
+    }
+
+
+def since_added_return(db: Session, member: PortfolioAsset) -> dict[str, Any] | None:
+    """「添加后的收益」: **该标的自身自其添加日的收益, 与权重无关**。
+
+    口径(docs/portfolio-lab-verification.md §二-E): 纯展示列, **对回测零影响**。
+    股票/ETF 用 HFQ 后复权价、场外基金用 NAV_ADJ 分红再投净值(均由序列层判定),
+    所以这个数字与详情页的组合收益不是同一套口径, 不能相互推导。
+    """
+    if member.added_at is None:
+        return None
+    start = member.added_at.date()
+    try:
+        contract = series.get_series(db, member.symbol, start=start)
+    except series.SeriesError:
+        return None
+    if contract.row_count < 2:
+        return None
+    first, last = contract.prices[0], contract.prices[-1]
+    if not first:
+        return None
+    return {
+        "symbol": member.symbol,
+        "price_basis": contract.price_basis,
+        "actual_start": contract.first_date.isoformat(),
+        "end_date": contract.last_date.isoformat(),
+        "value": round((last / first - 1.0) * 100.0, 4),  # 百分比数值
     }
 
 

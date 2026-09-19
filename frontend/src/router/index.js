@@ -74,6 +74,20 @@ const routes = [
         component: () => import('../pages/PortfolioAssets.vue'),
         meta: { title: '标的库', group: '研究' },
       },
+      // 组合列表(L1): 两列卡片网格, 照韭圈儿实拍截图还原
+      {
+        path: 'portfolios',
+        name: 'portfolio-list',
+        component: () => import('../pages/PortfolioList.vue'),
+        meta: { title: '组合回测', group: '研究' },
+      },
+      // 组合详情(L2): 点卡片本体进入; 回测/净值曲线/相关性属 P3
+      {
+        path: 'portfolios/:id',
+        name: 'portfolio-detail',
+        component: () => import('../pages/PortfolioDetail.vue'),
+        meta: { title: '组合详情', group: '研究' },
+      },
       {
         path: 'status',
         name: 'status',
