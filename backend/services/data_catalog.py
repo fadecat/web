@@ -4,7 +4,7 @@ Legacy configuration stays authoritative for instruments; no historical key rewr
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
-from backend.utils import is_trading_day, latest_trading_day, load_valuation_targets, load_index_eod_targets, load_research_targets
+from backend.utils import is_trading_day, latest_trading_day, load_valuation_targets, load_index_eod_targets, load_research_targets, load_research_settings
 
 @dataclass(frozen=True)
 class Policy:
@@ -44,6 +44,7 @@ def catalog():
     dy = Policy("efunds", "valuation_daily", 12, trading_day_offset=1)
     close = Policy("efunds", "index_eod_daily", 23)
     tx = Policy("tencent", "style_rotation_daily", 16, 30)
+    research_source = str(load_research_settings().get("data_source", "akshare"))
     return {
         "指数估值(PE/PB)": {c: (n, pe) for c, n in valuation.items()},
         "指数股息率": {c: (n, dy) for c, n in valuation.items()},
@@ -56,7 +57,7 @@ def catalog():
         # 商品由 get_dataset_freshness 按品种动态展开；此条目提供统一来源/任务/计划契约。
         "商品价格与分位": {"*": ("商品价格与分位", Policy("akshare", "commodity_daily", 15, 50))},
         "研究行情日线": {
-            str(t["symbol"]): (str(t["name"]), Policy("akshare", "research_daily_sync", 17, 30))
+            str(t["symbol"]): (str(t["name"]), Policy(research_source, "research_daily_sync", 17, 30))
             for t in load_research_targets()
         },
     }

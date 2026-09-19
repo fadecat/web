@@ -275,8 +275,13 @@ _SUFFIX_EXCHANGE = {".SH": "SSE", ".SZ": "SZSE"}
 
 
 def _symbol_exchange(symbol: str) -> str:
-    """从规范代码取交易所(仅用于后缀一致性断言, 不做品种推断)。"""
+    """从规范代码取交易所(仅用于后缀一致性断言, 不做品种推断)。
+
+    场外基金形态(.OF)无交易所归属, 显式抛错, 不允许静默返回空串。
+    """
     upper = str(symbol).strip().upper()
+    if upper.endswith(".OF"):
+        raise ResearchSourceError(f"场外基金(.OF)无交易所后缀可用: {symbol!r}")
     for suffix, exchange in _SUFFIX_EXCHANGE.items():
         if upper.endswith(suffix):
             return exchange
@@ -286,6 +291,11 @@ def _symbol_exchange(symbol: str) -> str:
 def _assert_symbol_type(symbol: str, code: str, security_type: str) -> str:
     """后缀与证券类型一致性断言(不靠首位猜品种, 只拒绝明显矛盾); 返回规范化类型。"""
     normalized_type = str(security_type).strip().upper()
+    if normalized_type == "FUND":
+        # 场外基金: 不查交易所后缀, 只校验六位纯数字代码
+        if not (len(code) == 6 and code.isdigit()):
+            raise ResearchSourceError(f"FUND 代码应为 6 位纯数字: {symbol!r}")
+        return "FUND"
     exchange = _symbol_exchange(symbol)
     if exchange == "SSE" and normalized_type == "ETF" and not code.startswith("5"):
         raise ResearchSourceError(f"symbol {symbol} 与 ETF 类型矛盾(沪市 ETF 应 5 开头)")
@@ -396,6 +406,8 @@ def _tencent_code(symbol: str) -> str:
         return f"sh{code}"
     if upper.endswith(".SZ"):
         return f"sz{code}"
+    if upper.endswith(".OF"):
+        raise ResearchSourceError(f"场外基金(.OF)不支持腾讯代码转换: {symbol!r}")
     raise ResearchSourceError(f"invalid symbol (expect 600900.SH form): {symbol!r}")
 
 

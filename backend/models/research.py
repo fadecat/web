@@ -45,13 +45,18 @@ class ResearchSecurity(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
     name: Mapped[str] = mapped_column(String(64), nullable=False)
-    security_type: Mapped[str] = mapped_column(String(8), nullable=False)  # STOCK | ETF
-    exchange: Mapped[str] = mapped_column(String(8), nullable=False)  # SSE | SZSE
+    security_type: Mapped[str] = mapped_column(String(8), nullable=False)  # STOCK | ETF | FUND
+    exchange: Mapped[str] = mapped_column(String(8), nullable=False)  # SSE | SZSE | OTC
     # 数据来源(标的级声明, 驱动 Provider 路由; 未知来源报错, 不静默换源)
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="akshare")
     # 选样名单(纯标注: 高股息 | 转债正股 | 手动ETF), 不参与逻辑
     selection_list: Mapped[str] = mapped_column(String(32), nullable=False, default="手动ETF")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # 单标的最近一次同步状态(仅记录最近一次, 不保留历史)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_sync_status: Mapped[str | None] = mapped_column(String(16), nullable=True)  # success | failed | running
+    last_sync_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_sync_rows: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
 
