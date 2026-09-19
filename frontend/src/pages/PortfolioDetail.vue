@@ -19,7 +19,8 @@ import CorrelationMatrix from '../components/portfolio/CorrelationMatrix.vue';
 import NavChart from '../components/portfolio/NavChart.vue';
 import ReturnBar from '../components/portfolio/ReturnBar.vue';
 import {
-  deletePortfolio, getPortfolio, listAssets, patchPortfolio, refreshAsset, runBacktest,
+  deletePortfolio, getPortfolio, listAssets, listBenchmarks, patchPortfolio, refreshAsset,
+  runBacktest,
 } from '../api/portfolio';
 import {
   activeRangeKey, basisCompositionText, buildBasisNotes, buildChartData, buildMetricCards,
@@ -157,6 +158,49 @@ const applyRangePreset = async (key) => {
   form.end = preset.end || '';
   // 韭圈儿点选即刷新; 权重不全时只填表单(此时「组合回测」按钮本来也是灰的)
   if (weightsComplete.value) await runIt(false);
+};
+
+/** 「已应用」区间的名字: 由**结果**里的起止日反推(不是表单), 才能与旁边的收益数字对得上。 */
+const appliedRangeLabel = computed(() => {
+  const key = activeRangeKey(
+    result.value?.start_date, result.value?.end_date,
+    { t0: t0Date.value, lastDataDate: lastDataDate.value },
+  );
+  if (!key) return '自定义区间';
+  for (const group of [...rangePresetGroups.value, { options: rangeSpans.value }]) {
+    const hit = group.options.find((option) => option.key === key);
+    if (hit) return hit.label;
+  }
+  return '自定义区间';
+});
+
+// ---------------------------------------------------------------------------
+// 对照基准: 下拉(带名称) —— 列表来自后端"真能算出曲线"的那些
+// ---------------------------------------------------------------------------
+
+const benchmarks = ref([]);
+
+const benchmarkGroups = computed(() => {
+  const groups = [
+    { label: '指数（价格指数，不含股息）', options: benchmarks.value.filter((b) => b.kind === 'index') },
+    { label: '已注册标的（后复权 / 分红再投）', options: benchmarks.value.filter((b) => b.kind === 'asset') },
+  ];
+  return groups.filter((group) => group.options.length);
+});
+
+const benchmarkLabel = computed(() => {
+  const symbol = String(form.benchmark || '').trim();
+  if (!symbol) return '';
+  const hit = benchmarks.value.find((item) => item.symbol === symbol);
+  return hit?.name || symbol; // 列表里没有(如手输/旧 Run)就退回代码, 不编名字
+});
+
+const loadBenchmarks = async () => {
+  try {
+    benchmarks.value = await listBenchmarks();
+  } catch {
+    benchmarks.value = []; // 基准列表读取失败不阻塞页面
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -374,6 +418,8 @@ const confirmDelete = async () => {
 };
 
 onMounted(load);
+// 基准下拉候选与组合详情并行加载(失败不阻塞页面)
+onMounted(loadBenchmarks);
 </script>
 
 <template>
@@ -467,12 +513,9 @@ onMounted(load);
               style="width: 150px"
             />
             <span class="control-label baseline">对照：</span>
-            <el-input
-              v-model="form.benchmark"
-              size="small"
-              placeholder="如 000300 / 510300.SH"
-              style="width: 180px"
-            />
+            <!-- ⚠ 对照基准已挪到**曲线头部**的下拉里(带名称, 与韭圈儿同位置);
+                 这里只回显当前选择, 不让人手打代码。 -->
+            <span class="control-bench">{{ benchmarkLabel || '无基准' }}</span>
             <el-button
               type="primary"
               size="small"
@@ -488,9 +531,86 @@ onMounted(load);
             <span v-else-if="!weightsComplete" class="notice warn">{{ weightsWarning }}</span>
           </div>
 
-          <!-- 区间快捷条(照韭圈儿底部那一条搬运): 相对区间按钮 + 「请选择」下拉 -->
-          <div class="control-line range-strip">
-            <span class="control-label">区间：</span>
+          <div class="control-tip">
+            {{ EXEC_PRICE_TIP }}
+            <span v-if="result" class="applied">
+              已应用：{{ rebalanceLabel(result.rebalance) }} · {{ result.actual_start }} ~ {{ result.actual_end }}
+            </span>
+          </div>
+        </div>
+
+        <!-- 区域④ 曲线 / 回撤 -->
+        <div v-loading="running" class="chart-area">
+          <!-- 曲线头部(照韭圈儿 §二-④): 截止日 · 选中区间名 + 区间收益 · 基准下拉 + 基准收益
+               ⚠ 回撤模式下中间那格换成「区间最大回撤」(韭圈儿同款) -->
+          <div class="chart-head">
+            <span class="chart-asof">{{ result?.actual_end || EMPTY }}</span>
+            <span v-if="chartTab === 'drawdown'" class="chart-headline">
+              区间最大回撤
+              <b class="trend-down">{{ formatReturnPct(result?.selected_drawdown) }}</b>
+            </span>
+            <span v-else class="chart-headline">
+              {{ appliedRangeLabel }}:
+              <b :class="`trend-${trendOf(result?.selected_return)}`">
+                {{ formatReturnPct(result?.selected_return) }}
+              </b>
+            </span>
+            <!-- 基准: 带名称的下拉(韭圈儿在头部就有 ▼), 不是让人手打代码 -->
+            <span class="chart-benchmark">
+              <span class="bench-dot">●</span>
+              <el-select
+                v-model="form.benchmark"
+                class="bench-select"
+                size="small"
+                placeholder="无基准"
+                clearable
+                filterable
+                @change="runIt(false)"
+              >
+                <el-option label="无基准" :value="''" />
+                <el-option-group
+                  v-for="group in benchmarkGroups"
+                  :key="group.label"
+                  :label="group.label"
+                >
+                  <el-option
+                    v-for="item in group.options"
+                    :key="item.symbol"
+                    :label="item.name"
+                    :value="item.symbol"
+                  >
+                    <span>{{ item.name }}</span>
+                    <span class="bench-option-code">{{ item.symbol }}</span>
+                  </el-option>
+                </el-option-group>
+              </el-select>
+              <b
+                v-if="result?.benchmark"
+                :class="`trend-${trendOf(result.benchmark.total_return)}`"
+              >
+                {{ formatReturnPct(result.benchmark.total_return) }}
+              </b>
+            </span>
+            <el-tooltip
+              content="该模式起点为「成立最久的标的」、未成立者按空仓 —— 与「共同起点」规则互斥，v1 不实现"
+              placement="top"
+            >
+              <el-button size="small" disabled>查看完整曲线</el-button>
+            </el-tooltip>
+          </div>
+          <NavChart :data="chartData" :mode="chartTab === 'drawdown' ? 'drawdown' : 'return'" />
+          <div v-if="chartTab === 'drawdown' && result?.drawdown" class="drawdown-note">
+            {{ drawdownText }}
+          </div>
+          <div v-else-if="chartData?.portfolio" class="benchmark-note">
+            ■ 本组合（红）<template v-if="basisComposition">，口径：{{ basisComposition }}</template>
+            <template v-if="chartData?.benchmark">
+              &nbsp;&nbsp;vs ■ {{ chartData.benchmark.name }}（蓝，{{ priceBasisLabel(chartData.benchmark.priceBasis) }}）
+            </template>
+          </div>
+
+          <!-- 区间快捷条(照韭圈儿的位置: 曲线**下方**, 图例之后) -->
+          <div class="range-strip">
             <el-button-group>
               <el-button
                 v-for="preset in rangeSpans"
@@ -525,44 +645,6 @@ onMounted(load);
                 />
               </el-option-group>
             </el-select>
-          </div>
-
-          <div class="control-tip">
-            {{ EXEC_PRICE_TIP }}
-            <span v-if="result" class="applied">
-              已应用：{{ rebalanceLabel(result.rebalance) }} · {{ result.actual_start }} ~ {{ result.actual_end }}
-            </span>
-          </div>
-        </div>
-
-        <!-- 区域④ 曲线 / 回撤 -->
-        <div v-loading="running" class="chart-area">
-          <!-- 曲线头部(规格 §二-④): 数据截止日 · 基准名 + 基准区间收益 · 「查看完整曲线」 -->
-          <div class="chart-head">
-            <span class="chart-asof">{{ result?.actual_end || EMPTY }}</span>
-            <span v-if="result?.benchmark" class="chart-benchmark">
-              ● {{ result.benchmark.name || result.benchmark.symbol }}
-              <b :class="`trend-${trendOf(result.benchmark.total_return)}`">
-                {{ formatReturnPct(result.benchmark.total_return) }}
-              </b>
-              <span class="muted">（{{ priceBasisLabel(result.benchmark.price_basis) }}）</span>
-            </span>
-            <el-tooltip
-              content="该模式起点为「成立最久的标的」、未成立者按空仓 —— 与「共同起点」规则互斥，v1 不实现"
-              placement="top"
-            >
-              <el-button size="small" disabled>查看完整曲线</el-button>
-            </el-tooltip>
-          </div>
-          <NavChart :data="chartData" :mode="chartTab === 'drawdown' ? 'drawdown' : 'return'" />
-          <div v-if="chartTab === 'drawdown' && result?.drawdown" class="drawdown-note">
-            {{ drawdownText }}
-          </div>
-          <div v-else-if="chartData?.portfolio" class="benchmark-note">
-            ■ 本组合（红）<template v-if="basisComposition">，口径：{{ basisComposition }}</template>
-            <template v-if="chartData?.benchmark">
-              &nbsp;&nbsp;vs ■ {{ chartData.benchmark.name }}（蓝，{{ priceBasisLabel(chartData.benchmark.priceBasis) }}）
-            </template>
           </div>
         </div>
       </section>
@@ -874,9 +956,16 @@ onMounted(load);
   margin-left: 8px;
 }
 
-/* 区间快捷条: 相对区间按钮组 + 「请选择」下拉(韭圈儿底部那一条的等价物) */
+/* 区间快捷条: 照韭圈儿放在**曲线下方**、居中对齐; 相对区间按钮组 + 「请选择」下拉 */
 .range-strip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
   gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--el-border-color-lighter);
 }
 
 .range-strip .range-preset {
@@ -938,6 +1027,48 @@ onMounted(load);
 
 .chart-asof {
   font-variant-numeric: tabular-nums;
+  color: var(--el-text-color-regular);
+}
+
+.chart-headline {
+  color: var(--el-text-color-regular);
+}
+
+.chart-headline b,
+.chart-benchmark b {
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-benchmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--el-text-color-regular);
+}
+
+.bench-dot {
+  color: var(--el-color-primary);
+  font-size: 10px;
+}
+
+.bench-select {
+  width: 168px;
+}
+
+.bench-select :deep(.el-select__wrapper) {
+  box-shadow: none; /* 视觉上贴近韭圈儿的"名字 + ▼"纯文本, 不要输入框边框 */
+  padding-left: 0;
+}
+
+.bench-option-code {
+  float: right;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  margin-left: 12px;
+}
+
+.control-bench {
+  font-size: 13px;
   color: var(--el-text-color-regular);
 }
 

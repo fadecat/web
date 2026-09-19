@@ -27,13 +27,13 @@ import logging
 from datetime import date
 from typing import Any, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.models.portfolio import BacktestRun, Portfolio, PortfolioAsset
-from backend.models.research import ResearchSecurity
-from backend.models.valuation import IndexDailyQuote
-from backend.services import backtest, portfolio_store, series
+from backend.models.research import FundNavDaily, ResearchDailyBarRaw, ResearchSecurity
+from backend.models.valuation import IndexDailyQuote, IndexValuationSnapshot
+from backend.services import backtest, portfolio_assets, portfolio_store, series
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +119,97 @@ def _contracts(db: Session, members: Sequence[PortfolioAsset]) -> dict[str, seri
     return out
 
 
+def _index_name(db: Session, code: str) -> str | None:
+    """指数名称: 取估值快照里该代码最近一次的 `index_name`。
+
+    ⚠ 名称**不在** `index_daily_quote` 里(那张表只有 OHLCV) —— 之前基准名一直空着、
+      前端只好退回显示代码 `000300`, 就是因为这里没查。名称缺失时返回 None, 由调用方
+      决定是否退回代码(不编造)。
+    """
+    return db.scalar(
+        select(IndexValuationSnapshot.index_name)
+        .where(
+            IndexValuationSnapshot.index_code == code,
+            IndexValuationSnapshot.index_name.isnot(None),
+        )
+        .order_by(IndexValuationSnapshot.trade_date.desc())
+        .limit(1)
+    )
+
+
+def list_benchmark_options(db: Session) -> list[dict[str, Any]]:
+    """对照基准的**可选列表**: 库内指数 + 已注册且已有数据的标的。
+
+    只列"我们真能算出曲线"的 —— `load_benchmark` 只认这两类来源, 列了别的选了也是空。
+    ⚠ 与韭圈儿的下拉不同: 他们的清单里有很多我们库里没有的指数(上证50/中证800/偏股混合型基金指数…),
+      这里**不照抄**, 有几个列几个, 名称缺失就退回代码。
+    """
+    options: list[dict[str, Any]] = []
+
+    index_rows = db.execute(
+        select(
+            IndexDailyQuote.index_code,
+            func.count(IndexDailyQuote.id),
+            func.min(IndexDailyQuote.trade_date),
+            func.max(IndexDailyQuote.trade_date),
+        )
+        .where(IndexDailyQuote.close.isnot(None))
+        .group_by(IndexDailyQuote.index_code)
+        .order_by(func.count(IndexDailyQuote.id).desc())
+    ).all()
+    names = {
+        code: _index_name(db, code) for code, *_ in index_rows
+    }
+    for code, rows, first, last in index_rows:
+        options.append({
+            "symbol": code,
+            "name": names.get(code) or code,   # 名称缺失就用代码, 不编
+            "kind": "index",
+            "price_basis": "PRICE",            # 指数是价格指数, 不含股息
+            "row_count": int(rows or 0),
+            "first_date": first.isoformat() if first else None,
+            "last_date": last.isoformat() if last else None,
+        })
+
+    # 已注册的股票/ETF/场外基金也能当对照(走统一序列层, 口径 HFQ / NAV_ADJ)
+    series_rows = db.execute(
+        select(
+            ResearchDailyBarRaw.symbol,
+            func.count(ResearchDailyBarRaw.id),
+            func.min(ResearchDailyBarRaw.trade_date),
+            func.max(ResearchDailyBarRaw.trade_date),
+        )
+        .group_by(ResearchDailyBarRaw.symbol)
+    ).all()
+    fund_rows = db.execute(
+        select(
+            FundNavDaily.symbol,
+            func.count(FundNavDaily.id),
+            func.min(FundNavDaily.nav_date),
+            func.max(FundNavDaily.nav_date),
+        )
+        .group_by(FundNavDaily.symbol)
+    ).all()
+    meta = {
+        symbol: (name, security_type)
+        for symbol, name, security_type in db.execute(
+            select(ResearchSecurity.symbol, ResearchSecurity.name, ResearchSecurity.security_type)
+        ).all()
+    }
+    for symbol, rows, first, last in [*series_rows, *fund_rows]:
+        name, security_type = meta.get(symbol, (None, None))
+        options.append({
+            "symbol": symbol,
+            "name": name or symbol,
+            "kind": "asset",
+            "price_basis": portfolio_assets.PRICE_BASIS.get(security_type, "HFQ"),
+            "row_count": int(rows or 0),
+            "first_date": first.isoformat() if first else None,
+            "last_date": last.isoformat() if last else None,
+        })
+    return options
+
+
 def load_benchmark(
     db: Session, symbol: str, *, t0: date, end: date,
 ) -> dict[str, Any] | None:
@@ -143,7 +234,8 @@ def load_benchmark(
     ).all()
     if rows:
         return _finish_benchmark(
-            code, None, "PRICE", [(d, float(v)) for d, v in rows], t0=t0, end=end,
+            code, _index_name(db, code), "PRICE", [(d, float(v)) for d, v in rows],
+            t0=t0, end=end,
         )
 
     try:

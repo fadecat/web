@@ -113,3 +113,9 @@ export const refreshCachedMetrics = (portfolioId) =>
   api
     .post(`/portfolio/portfolios/${portfolioId}/cached-metrics`, null, { timeout: 60000 })
     .then((r) => r.data);
+
+// 对照基准的可选列表(库内指数 + 已注册且有数据的标的)
+// ⚠ 只列后端真能算出曲线的: 韭圈儿下拉里的 上证50 / 中证800 / 偏股混合型基金指数 等
+//    我们库里没有, 所以不出现 —— 选了也是空线, 不如不给。
+export const listBenchmarks = () =>
+  api.get('/portfolio/benchmarks', { timeout: 15000 }).then((r) => r.data);

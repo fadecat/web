@@ -323,6 +323,16 @@ def compare_backtests(ids: str = Query(..., description="逗号分隔的 run id,
         raise _backtest_error(exc) from None
 
 
+@router.get("/benchmarks")
+def list_benchmarks(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    """对照基准的可选列表(库内指数 + 已注册且有数据的标的)。
+
+    前端「对照」下拉用它 —— ⚠ 与韭圈儿的清单不同: 我们只列**真能算出曲线**的, 不照抄
+    他们的指数名单(上证50/中证800/偏股混合型基金指数… 库里没有, 列了也是空)。
+    """
+    return backtest_service.list_benchmark_options(db)
+
+
 @router.post("/backtests", status_code=201)
 def create_backtest(request: BacktestRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
     """跑一次回测并落库, 返回完整 Run(含收益条/指标/回撤/相关性/详情表/曲线)。

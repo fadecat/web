@@ -288,6 +288,53 @@ class TestCompute:
         missing = backtest_service.compute(db, pid, benchmark_symbol="999999.SH")["result"]
         assert missing["benchmark"] is None
 
+    def test_benchmark_index_carries_name_from_valuation_table(self, db) -> None:
+        """⭐ 指数名**不在** `index_daily_quote` 里(那张表只有 OHLCV) → 从估值快照取。
+
+        之前基准名一直是空的, 前端只好退回显示代码 `000300`(用户实测提出的问题)。
+        """
+        from backend.models.valuation import IndexDailyQuote, IndexValuationSnapshot
+        pid = _seed_two_funds(db)
+        for day, close in ((D[0], 3000.0), (D[1], 3300.0)):
+            db.add(IndexDailyQuote(index_code="000300", trade_date=day, close=close))
+        db.add(IndexValuationSnapshot(
+            index_code="000300", index_name="沪深300指数", trade_date=D[1],
+        ))
+        db.commit()
+
+        result = backtest_service.compute(db, pid, benchmark_symbol="000300")["result"]
+        assert result["benchmark"]["name"] == "沪深300指数"
+
+        # 名称缺失的指数: 退回代码, **不编名字**
+        for day, close in ((D[0], 1.0), (D[1], 1.1)):
+            db.add(IndexDailyQuote(index_code="399373", trade_date=day, close=close))
+        db.commit()
+        nameless = backtest_service.compute(db, pid, benchmark_symbol="399373")["result"]
+        assert nameless["benchmark"]["name"] is None
+        assert nameless["benchmark"]["symbol"] == "399373"
+
+    def test_list_benchmark_options_covers_indices_and_assets(self, db) -> None:
+        """对照下拉的候选 = **我们真能算出曲线**的那些(指数 + 已注册且有数据的标的)。"""
+        from backend.models.valuation import IndexDailyQuote, IndexValuationSnapshot
+        _seed_two_funds(db)  # 注册两只基金并灌净值
+        for day, close in ((D[0], 3000.0), (D[1], 3300.0)):
+            db.add(IndexDailyQuote(index_code="000300", trade_date=day, close=close))
+            db.add(IndexDailyQuote(index_code="999999", trade_date=day, close=close))
+        db.add(IndexValuationSnapshot(
+            index_code="000300", index_name="沪深300指数", trade_date=D[1],
+        ))
+        db.commit()
+
+        by_symbol = {item["symbol"]: item for item in backtest_service.list_benchmark_options(db)}
+        assert by_symbol["000300"]["name"] == "沪深300指数"
+        assert by_symbol["000300"]["kind"] == "index"
+        assert by_symbol["000300"]["price_basis"] == "PRICE"  # 指数是价格指数, 不含股息
+        assert by_symbol["000300"]["row_count"] == 2
+        assert by_symbol["999999"]["name"] == "999999"        # 无名 → 退回代码
+        # 已注册且已有数据的标的也能当对照(走统一序列层, 口径 NAV_ADJ/HFQ)
+        assert by_symbol["100001.OF"]["kind"] == "asset"
+        assert by_symbol["100001.OF"]["price_basis"] == "NAV_ADJ"
+
     def test_nav_curve_is_normalized_at_window_start(self, db) -> None:
         """曲线在区间起点归一为 1.0(页面纵轴"以区间起点为 0%"), 长度 = 区间交易日数。"""
         pid = _seed_two_funds(db)
@@ -483,6 +530,13 @@ class TestBacktestEndpoints:
         assert body["status"] == "success"
         assert body["points"] == 3
         assert body["result"]["windows"]["d1"]["composite"] is True
+
+    def test_benchmarks_endpoint_lists_what_we_can_serve(self, contract_client, seeded) -> None:
+        """前端「对照」下拉的数据源: 只列真能算出曲线的(空库时就是已注册标的)。"""
+        r = contract_client.get(f"{BASE}/benchmarks")
+        assert r.status_code == 200
+        rows = r.json()
+        assert any(item["symbol"] == "100001.OF" and item["kind"] == "asset" for item in rows)
 
     def test_create_run_bad_rebalance_returns_422(self, contract_client, seeded) -> None:
         r = contract_client.post(

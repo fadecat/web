@@ -18,10 +18,11 @@ const api = vi.hoisted(() => ({
   patchPortfolio: vi.fn(),
   deletePortfolio: vi.fn(),
   runBacktest: vi.fn(),
-  // 详情页会用到的其余端点(AddAssetDialog 的注册/解析、成员行重试)
+  // 详情页会用到的其余端点(AddAssetDialog 的注册/解析、成员行重试、基准下拉)
   probeAsset: vi.fn(),
   createAsset: vi.fn(),
   refreshAsset: vi.fn(),
+  listBenchmarks: vi.fn(),
 }));
 vi.mock('../../src/api/portfolio', () => api);
 vi.mock('vue-router', () => ({
@@ -142,7 +143,9 @@ describe('CorrelationMatrix(区域⑥ 相关性矩阵)', () => {
 describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () => {
   // 背景: 详情页最初只做了"从已注册标的里挑", 而标的库里的标的都已在本组合中
   //       → 下拉恒为空, 用户完全没法往组合里加东西。这里把"入口必须存在"锁死。
-  const mountPage = async ({ assets = [], listAssetsResult = [], runResult = null } = {}) => {
+  const mountPage = async ({
+    assets = [], listAssetsResult = [], runResult = null, benchmarks = [],
+  } = {}) => {
     api.getPortfolio.mockResolvedValue({
       id: 1,
       name: '空组合',
@@ -155,6 +158,7 @@ describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () =
       data_readiness: { assets: [], all_ready: false, common_start: null },
     });
     api.listAssets.mockResolvedValue(listAssetsResult);
+    api.listBenchmarks.mockResolvedValue(benchmarks);
     if (runResult) {
       api.runBacktest.mockResolvedValue(runResult);
     } else {
@@ -310,7 +314,18 @@ describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () =
     expect(wrapper.text()).not.toContain('纳指ETF国泰'); // 该标的已撤出草稿
   });
 
-  // 区间快捷选择(控制条「请选择」下拉, 韭圈儿同款: 成立以来 / 事件锚点 / 按年份)
+  // 区间快捷选择(韭圈儿「请选择」+ 相对区间条) 与曲线头部 / 基准下拉
+  const BENCHMARKS = [
+    {
+      symbol: '000300', name: '沪深300指数', kind: 'index', price_basis: 'PRICE',
+      row_count: 5996, first_date: '2002-01-04', last_date: '2026-09-18',
+    },
+    {
+      symbol: '510300.SH', name: '沪深300ETF', kind: 'asset', price_basis: 'HFQ',
+      row_count: 1200, first_date: '2021-01-04', last_date: '2026-09-18',
+    },
+  ];
+
   const RUN_OK = {
     id: 1,
     result: {
@@ -320,12 +335,64 @@ describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () =
       drawdown: null,
       data_range: { start: '2013-04-26', last: '2026-09-18' },
       assets: MEMBERS,
+      // 「近10年」= 2026-09-18 自然月回推 120 个月(头部据此显示区间名)
+      start_date: '2016-09-18',
+      end_date: null,
+      actual_end: '2026-09-18',
+      selected_return: 211.22,
+      selected_drawdown: -16.15,
+      benchmark: {
+        symbol: '000300', name: '沪深300指数', price_basis: 'PRICE', total_return: 39.17,
+      },
     },
   };
 
+  const rangeSelect = (wrapper) => wrapper.findComponent('.range-preset');
+
+  it('曲线头部: 收益模式显示「选中区间名 + 区间收益」', async () => {
+    const wrapper = await mountPage({ assets: MEMBERS, runResult: RUN_OK });
+    const head = wrapper.find('.chart-headline');
+    expect(head.text()).toContain('近10年'); // 由 result 的起止日反推出来的区间名
+    expect(head.text()).toContain('211.22%');
+  });
+
+  it('曲线头部: 回撤模式把中间那格换成「区间最大回撤」', async () => {
+    const wrapper = await mountPage({ assets: MEMBERS, runResult: RUN_OK });
+    const tab = wrapper.findAll('.el-tabs__item').find((t) => t.text() === '组合回撤');
+    await tab.trigger('click');
+    await flushPromises();
+
+    const head = wrapper.find('.chart-headline');
+    expect(head.text()).toContain('区间最大回撤');
+    expect(head.text()).toContain('-16.15%');
+  });
+
+  it('基准下拉: 显示名称而不是代码, 并带上基准区间收益', async () => {
+    const wrapper = await mountPage({ assets: MEMBERS, runResult: RUN_OK, benchmarks: BENCHMARKS });
+    const select = wrapper.findComponent('.bench-select');
+    expect(select.exists()).toBe(true);
+    expect(select.props('modelValue')).toBe('000300');
+    expect(wrapper.find('.control-bench').text()).toBe('沪深300指数');
+    expect(wrapper.find('.chart-benchmark').text()).toContain('39.17%');
+  });
+
+  it('基准下拉: 选「无基准」时把 benchmarkSymbol 传成 null', async () => {
+    const wrapper = await mountPage({ assets: MEMBERS, runResult: RUN_OK, benchmarks: BENCHMARKS });
+    api.runBacktest.mockClear();
+
+    const select = wrapper.findComponent('.bench-select');
+    // el-select 的真实顺序是先 update:modelValue(v-model 落值) 再 change(触发重跑)
+    select.vm.$emit('update:modelValue', '');
+    await flushPromises();
+    select.vm.$emit('change', '');
+    await flushPromises();
+
+    expect(api.runBacktest.mock.calls.at(-1)[0].benchmarkSymbol).toBeNull();
+  });
+
   it('控制条有「请选择」区间快捷下拉', async () => {
     const wrapper = await mountPage({ assets: MEMBERS });
-    const select = wrapper.findComponent(ElSelect);
+    const select = rangeSelect(wrapper);
     expect(select.exists()).toBe(true);
     expect(select.props('placeholder')).toBe('请选择');
   });
@@ -334,7 +401,7 @@ describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () =
     const wrapper = await mountPage({ assets: MEMBERS, runResult: RUN_OK });
     api.runBacktest.mockClear();
 
-    wrapper.findComponent(ElSelect).vm.$emit('change', 'inception');
+    rangeSelect(wrapper).vm.$emit('change', 'inception');
     await flushPromises();
 
     expect(api.runBacktest).toHaveBeenCalledTimes(1);
@@ -348,7 +415,7 @@ describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () =
     const wrapper = await mountPage({ assets: MEMBERS }); // runBacktest 被拒 → 无 result
     api.runBacktest.mockClear();
 
-    wrapper.findComponent(ElSelect).vm.$emit('change', 'inception');
+    rangeSelect(wrapper).vm.$emit('change', 'inception');
     await flushPromises();
 
     expect(api.runBacktest).not.toHaveBeenCalled();
@@ -357,11 +424,13 @@ describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () =
   // 快捷区间条(照韭圈儿底部那一条): 相对区间按钮 + 「请选择」下拉
   const STRIP_LABELS = ['今年以来', '近1月', '近3月', '近6月', '近1年', '近3年', '近5年', '近10年'];
 
-  it('快捷区间条渲染 8 个相对区间 + 请选择下拉', async () => {
+  it('快捷区间条渲染 8 个相对区间 + 请选择下拉, 且位置在曲线下方', async () => {
     const wrapper = await mountPage({ assets: MEMBERS, runResult: RUN_OK });
     const labels = wrapper.findAll('.range-strip button').map((btn) => btn.text());
     expect(labels).toEqual(STRIP_LABELS);
-    expect(wrapper.find('.range-strip').findComponent(ElSelect).exists()).toBe(true);
+    expect(wrapper.find('.range-strip').findComponent('.range-preset').exists()).toBe(true);
+    // 位置: 必须落在曲线容器里(韭圈儿把这条放在图下方, 不在控制条那一行)
+    expect(wrapper.find('.chart-area').find('.range-strip').exists()).toBe(true);
   });
 
   it('快捷区间条: 点「近3月」按自然月回推设起始日并立即重跑', async () => {
