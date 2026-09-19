@@ -14,6 +14,7 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 
+import AddAssetDialog from '../components/portfolio/AddAssetDialog.vue';
 import CorrelationMatrix from '../components/portfolio/CorrelationMatrix.vue';
 import NavChart from '../components/portfolio/NavChart.vue';
 import ReturnBar from '../components/portfolio/ReturnBar.vue';
@@ -46,6 +47,9 @@ const editing = ref(false);
 const saving = ref(false);
 const draft = ref([]);
 const chartTab = ref('return'); // return | drawdown
+const showAddDialog = ref(false);
+// 「新增标的可能把组合起点往后推」的警示条(规格 add-asset-ux 第 5 步)
+const startShift = ref(null);
 
 // 控制条 = 表单 draft; 点「组合回测」才落到 run 上(表单/结果分离)
 const form = reactive({
@@ -170,6 +174,26 @@ const addRow = (symbol) => {
 
 const removeRow = (symbol) => {
   draft.value = draft.value.filter((a) => a.symbol !== symbol);
+};
+
+/**
+ * 「+ 新标的」回填: 组合里要加一只**尚未注册过**的股票/ETF/场外基金时,
+ * 走 AddAssetDialog 的"注册 + 后台抓取"链路(P0 就做好了, P3 忘接到这里)。
+ *
+ * ⚠ 只从"已注册标的"里挑是不够的 —— 标的库为空、或想要的标的没注册过时,
+ *    用户就完全没法往组合里加东西(创建空组合后尤其明显)。
+ */
+const onAssetAdded = async (asset) => {
+  await loadRegistered(); // 让新标的进入 registered(下次可从下拉直接复用)
+  if (asset?.symbol && !draft.value.some((a) => a.symbol === asset.symbol)) {
+    draft.value.push({
+      symbol: asset.symbol,
+      name: asset.name || asset.symbol,
+      security_type: asset.security_type,
+      target_weight: null, // 权重按 add-asset-ux 的裁决"添加后统一设"
+    });
+  }
+  ElMessage.success(`${asset?.name || asset?.symbol} 已加入，设好权重后保存即可`);
 };
 
 const draftWeightSum = computed(() => {
@@ -368,9 +392,10 @@ onMounted(load);
         <template v-if="editing">
           <div class="edit-bar">
             <el-select
-              placeholder="从标的库添加标的"
+              placeholder="从已注册标的里挑"
               size="small"
-              style="width: 260px"
+              style="width: 240px"
+              no-data-text="标的库里的标的都已在本组合中，点右侧「+ 新标的」"
               :model-value="''"
               @change="addRow"
             >
@@ -381,10 +406,26 @@ onMounted(load);
                 :value="asset.symbol"
               />
             </el-select>
+            <el-button size="small" type="primary" plain @click="showAddDialog = true">
+              + 新标的
+            </el-button>
             <span class="edit-sum" :class="Math.abs(draftWeightSum - 100) > 0.01 ? 'trend-down' : ''">
               权重合计 {{ draftWeightSum.toFixed(2) }}%
             </span>
           </div>
+
+          <!-- 起点前移警示(规格 add-asset-ux 第 5 步): 新标的可能把组合的可回测起点往后推 -->
+          <el-alert
+            v-if="startShift"
+            class="gap"
+            type="warning"
+            show-icon
+            :closable="true"
+            @close="startShift = null"
+          >
+            <template #title>{{ startShift.title }}</template>
+            <template #default>{{ startShift.detail }}</template>
+          </el-alert>
           <el-table :data="draft" size="small" style="width: 100%">
             <el-table-column label="标的" min-width="180">
               <template #default="{ row }">
@@ -418,7 +459,11 @@ onMounted(load);
 
         <!-- 只读态: 与韭圈儿同列 + 「添加后的收益」纯展示列 -->
         <template v-else>
-          <el-table :data="assetRows" size="small" style="width: 100%">
+          <!-- 空组合必须有明确入口: 创建完就是空的, 用户不该被"两个下拉都点不动"卡住 -->
+          <el-empty v-if="!assetRows.length" :image-size="70" description="这个组合还没有标的">
+            <el-button type="primary" @click="startEdit">添加标的</el-button>
+          </el-empty>
+          <el-table v-else :data="assetRows" size="small" style="width: 100%">
             <el-table-column label="标的" min-width="200">
               <template #default="{ row }">
                 <el-tag size="small" type="info" class="type-tag">
@@ -484,6 +529,15 @@ onMounted(load);
           <div v-for="(note, i) in basisNotes" :key="i">· {{ note }}</div>
         </div>
       </section>
+
+      <!-- 「+ 新标的」: 走 P0 的注册 + 后台抓取链路, 成功后回填到编辑草稿(不落库) -->
+      <AddAssetDialog
+        v-model="showAddDialog"
+        :current-start="detail.data_readiness?.common_start || null"
+        :existing-symbols="draft.map((a) => a.symbol)"
+        @added="onAssetAdded"
+        @start-change="(payload) => (startShift = payload)"
+      />
     </template>
   </div>
 </template>

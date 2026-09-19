@@ -3,12 +3,30 @@
 // 覆盖区域①(收益条)与区域⑥(相关性矩阵)这两块"规则写在模板里、最容易被改错"的地方。
 // 曲线(NavChart)不在此测: 它依赖 echarts 的 canvas 渲染, jsdom 下不可靠 ——
 // 数值换算逻辑已由 src/utils/backtestView.test.mjs 覆盖。
-import { describe, expect, it } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { describe, expect, it, vi } from 'vitest';
+import { flushPromises, mount } from '@vue/test-utils';
 import ElementPlus from 'element-plus';
 
+import AddAssetDialog from '../../src/components/portfolio/AddAssetDialog.vue';
 import CorrelationMatrix from '../../src/components/portfolio/CorrelationMatrix.vue';
 import ReturnBar from '../../src/components/portfolio/ReturnBar.vue';
+
+// 页面级用例需要打桩路由与 API(jsdom 下没有真实后端)
+const api = vi.hoisted(() => ({
+  getPortfolio: vi.fn(),
+  listAssets: vi.fn(),
+  patchPortfolio: vi.fn(),
+  deletePortfolio: vi.fn(),
+  runBacktest: vi.fn(),
+}));
+vi.mock('../../src/api/portfolio', () => api);
+vi.mock('vue-router', () => ({
+  useRoute: () => ({ params: { id: '1' } }),
+  useRouter: () => ({ push: vi.fn() }),
+}));
+
+// ⚠ 必须在 vi.mock 之后导入(否则拿到的是未打桩的模块)
+import PortfolioDetail from '../../src/pages/PortfolioDetail.vue';
 
 const WINDOWS = {
   d1: { value: 1.08, actual_start: null, actual_end: '2026-09-18', composite: true },
@@ -114,5 +132,76 @@ describe('CorrelationMatrix(区域⑥ 相关性矩阵)', () => {
   it('无相关性数据时不渲染表格', () => {
     const wrapper = mountWith(CorrelationMatrix, { correlation: null, assets: [] });
     expect(wrapper.find('table').exists()).toBe(false);
+  });
+});
+
+describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () => {
+  // 背景: 详情页最初只做了"从已注册标的里挑", 而标的库里的标的都已在本组合中
+  //       → 下拉恒为空, 用户完全没法往组合里加东西。这里把"入口必须存在"锁死。
+  const mountPage = async ({ assets = [], listAssetsResult = [] } = {}) => {
+    api.getPortfolio.mockResolvedValue({
+      id: 1,
+      name: '空组合',
+      created_at: '2026-09-19T00:00:00',
+      status: 'active',
+      default_rebalance: null,
+      assets,
+      weight_sum: 0,
+      ready: false,
+      data_readiness: { assets: [], all_ready: false, common_start: null },
+    });
+    api.listAssets.mockResolvedValue(listAssetsResult);
+    api.runBacktest.mockRejectedValue({
+      response: { status: 422, data: { detail: '组合还没有成员' } },
+    });
+    const wrapper = mount(PortfolioDetail, {
+      global: {
+        plugins: [ElementPlus],
+        // 这几个子组件与本用例无关(曲线依赖 canvas, 相关性/收益条需要完整数据)
+        stubs: { NavChart: true, CorrelationMatrix: true, ReturnBar: true },
+      },
+    });
+    await flushPromises();
+    await flushPromises();
+    return wrapper;
+  };
+
+  it('空组合显示「还没有标的」并给出添加按钮', async () => {
+    const wrapper = await mountPage();
+    expect(wrapper.text()).toContain('这个组合还没有标的');
+    const buttons = wrapper.findAll('button').map((b) => b.text());
+    expect(buttons.some((t) => t.includes('添加标的'))).toBe(true);
+  });
+
+  it('编辑态提供「+ 新标的」入口(而不只是"从已注册里挑")', async () => {
+    const wrapper = await mountPage();
+    // 进入编辑态
+    const editBtn = wrapper.findAll('button').find((b) => b.text() === '编辑');
+    expect(editBtn).toBeTruthy();
+    await editBtn.trigger('click');
+    await flushPromises();
+
+    const labels = wrapper.findAll('button').map((b) => b.text());
+    expect(labels.some((t) => t.includes('新标的'))).toBe(true);
+  });
+
+  it('AddAssetDialog 已挂载且初始关闭', async () => {
+    const wrapper = await mountPage();
+    const dialog = wrapper.findComponent(AddAssetDialog);
+    expect(dialog.exists()).toBe(true);
+    expect(dialog.props('modelValue')).toBe(false);
+  });
+
+  it('点「+ 新标的」打开注册对话框(可注册库外新标的)', async () => {
+    const wrapper = await mountPage();
+    const editBtn = wrapper.findAll('button').find((b) => b.text() === '编辑');
+    await editBtn.trigger('click');
+    await flushPromises();
+
+    const addBtn = wrapper.findAll('button').find((b) => b.text().includes('新标的'));
+    await addBtn.trigger('click');
+    await flushPromises();
+
+    expect(wrapper.findComponent(AddAssetDialog).props('modelValue')).toBe(true);
   });
 });
