@@ -26,6 +26,53 @@ export const RANGE_EVENT_PRESETS = [
 export const RANGE_INCEPTION_KEY = 'inception';
 
 /**
+ * 快捷区间条(照韭圈儿底部那一条搬运): 今年以来 / 近1月 / 近3月 / 近6月 / 近1年 / 近3年 / 近5年 / 近10年。
+ * ⚠ 它们是**相对区间**(以数据最新日为末端回推), 与「事件锚点」那种固定历史日期不同:
+ *    - 前端只算出起止日, 起点仍由后端"起点前移"规则夹到 T0(组合成立晚于该日时)。
+ */
+export const RANGE_SPAN_PRESETS = [
+  { key: 'span-ytd', label: '今年以来' },
+  { key: 'span-1m', label: '近1月', months: 1 },
+  { key: 'span-3m', label: '近3月', months: 3 },
+  { key: 'span-6m', label: '近6月', months: 6 },
+  { key: 'span-1y', label: '近1年', months: 12 },
+  { key: 'span-3y', label: '近3年', months: 36 },
+  { key: 'span-5y', label: '近5年', months: 60 },
+  { key: 'span-10y', label: '近10年', months: 120 },
+];
+
+/**
+ * 自然月回推 → ISO 日期(与后端 `backtest.months_back` **同规则**: 日号溢出取目标月最后一天)。
+ *
+ * ⚠ 不能用 `date - 30×n 天`: 2026-09-18 按 30 天回推出 08-19、按自然月是 08-18, 差一个
+ *    交易日, 实测会让「近1月」偏 0.28pp(后端已修过一次, 前端必须同规则)。
+ */
+export const monthsBack = (isoDate, months) => {
+  if (!isDate(isoDate)) return null;
+  const offset = Number(months);
+  if (!Number.isFinite(offset)) return null;
+  const [year, month, day] = isoDate.split('-').map(Number);
+  const total = year * 12 + (month - 1) - offset;
+  const targetYear = Math.floor(total / 12);
+  const targetMonth = ((total % 12) + 12) % 12 + 1;
+  const lastDay = new Date(Date.UTC(targetYear, targetMonth, 0)).getUTCDate();
+  const targetDay = Math.min(day, lastDay);
+  return `${String(targetYear).padStart(4, '0')}-${String(targetMonth).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
+};
+
+/** 快捷区间 key → 起止日; 拿不到数据最新日(还没跑成过回测)返回 null。 */
+export const resolveRangeSpan = (key, lastDataDate) => {
+  if (!isDate(lastDataDate)) return null;
+  const hit = RANGE_SPAN_PRESETS.find((preset) => preset.key === key);
+  if (!hit) return null;
+  if (!hit.months) {
+    return { key: hit.key, start: `${lastDataDate.slice(0, 4)}-01-01`, end: null };
+  }
+  const start = monthsBack(lastDataDate, hit.months);
+  return start ? { key: hit.key, start, end: null } : null;
+};
+
+/**
  * 按年份的区间: 从 T0 那年到数据最新日那年, **倒序**。
  * 当年/跨年的年末日期夹到 `lastDataDate`(未来日期没有意义, 后端也会前移)。
  */
@@ -75,6 +122,36 @@ export const resolveRangePreset = (key, { t0, lastDataDate } = {}) => {
   }
   return null;
 };
+
+/**
+ * 快捷区间的**全部候选**(strip 上的相对区间 + 下拉里的固定日期项)。
+ * 用于两件事: ① 反推"当前选中的是哪一个" ② 保持 strip 与下拉的分工可见。
+ */
+export const buildRangeCandidates = ({ t0, lastDataDate } = {}) => {
+  const spans = RANGE_SPAN_PRESETS
+    .map((preset) => ({ ...preset, ...(resolveRangeSpan(preset.key, lastDataDate) ?? {}) }))
+    .filter((preset) => Boolean(preset.start));
+  const fixed = buildRangePresetGroups({ t0, lastDataDate }).flatMap((group) => group.options);
+  return [...spans, ...fixed];
+};
+
+/**
+ * 由表单里的起止日反推选中的快捷项。
+ *
+ * ⚠ 刻意**不另存"当前选中项"状态**: 用户手改日期时要自动取消高亮, 否则下拉/按钮
+ *    显示"今年以来"、输入框却是别的区间 —— 两处数字打架比没高亮更糟。
+ */
+export const activeRangeKey = (start, end, ctx = {}) => {
+  const hit = buildRangeCandidates(ctx).find(
+    (option) => (option.start || '') === (start || '') && (option.end || '') === (end || ''),
+  );
+  return hit ? hit.key : '';
+};
+
+/** 一个入口解析所有快捷项(相对区间 + 固定日期), 避免调用方分别判断。 */
+export const resolveRangeSelection = (key, { t0, lastDataDate } = {}) => (
+  resolveRangeSpan(key, lastDataDate) ?? resolveRangePreset(key, { t0, lastDataDate })
+);
 
 // ---------------------------------------------------------------------------
 // 收益条(区域①)

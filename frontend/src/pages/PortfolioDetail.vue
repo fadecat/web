@@ -22,14 +22,15 @@ import {
   deletePortfolio, getPortfolio, listAssets, patchPortfolio, refreshAsset, runBacktest,
 } from '../api/portfolio';
 import {
-  basisCompositionText, buildBasisNotes, buildChartData, buildMetricCards,
+  activeRangeKey, basisCompositionText, buildBasisNotes, buildChartData, buildMetricCards,
   buildRangePresetGroups, drawdownSummaryText, EXEC_PRICE_TIP, priceBasisLabel,
-  QDII_FOOTNOTE, REBALANCE_OPTIONS, REBALANCE_TIP, rebalanceLabel, resolveRangePreset,
+  QDII_FOOTNOTE, RANGE_SPAN_PRESETS, REBALANCE_OPTIONS, REBALANCE_TIP, rebalanceLabel,
+  resolveRangeSelection,
 } from '../utils/backtestView.mjs';
 import {
   EMPTY, formatDate, formatReturnPct, formatWeight, readinessText, trendOf, weightSummaryText,
 } from '../utils/portfolioList.mjs';
-import { rowStatusOf } from '../utils/portfolioAssets.mjs';
+import { isDate, rowStatusOf } from '../utils/portfolioAssets.mjs';
 
 const route = useRoute();
 const router = useRouter();
@@ -126,7 +127,8 @@ const rangeWarning = computed(() => (
 ));
 
 // ---------------------------------------------------------------------------
-// 区间快捷选择(控制条「请选择」下拉): 成立以来 / 事件锚点 / 按年份
+// 区间快捷选择: ① 快捷条(今年以来 / 近1月 / 近3月 / 近6月 / 近1年 / 近3年 / 近5年 / 近10年)
+//              ② 「请选择」下拉(成立以来 / 事件锚点 / 按年份) —— 与韭圈儿底部那一条同构
 // ---------------------------------------------------------------------------
 
 // T0 = 回测给出的建仓日(共同起点), 无 result 时用组合的数据就绪摘要
@@ -136,20 +138,21 @@ const t0Date = computed(
 const rangePresetGroups = computed(
   () => buildRangePresetGroups({ t0: t0Date.value, lastDataDate: lastDataDate.value }),
 );
-// 选中项由表单**反推**(不另存一份状态): 用户手动改日期时会自动取消高亮, 不会撒谎
-const rangePresetKey = computed(() => {
-  for (const group of rangePresetGroups.value) {
-    const hit = group.options.find(
-      (option) => (option.start || '') === form.start && (option.end || '') === (form.end || ''),
-    );
-    if (hit) return hit.key;
-  }
-  return '';
-});
+// 相对区间以"数据最新日"为末端回推 —— 还没跑成过一次回测时算不出来, 按钮置灰而非隐藏
+const rangeSpans = computed(() => RANGE_SPAN_PRESETS.map((preset) => ({
+  ...preset,
+  disabled: !isDate(lastDataDate.value),
+})));
+// 选中项由表单**反推**(不另存状态): 用户手动改日期时会自动取消高亮, 不会撒谎
+const rangePresetKey = computed(() => activeRangeKey(
+  form.start, form.end, { t0: t0Date.value, lastDataDate: lastDataDate.value },
+));
 
 const applyRangePreset = async (key) => {
-  const preset = resolveRangePreset(key, { t0: t0Date.value, lastDataDate: lastDataDate.value });
-  if (!preset) return; // 拿不到 T0(还没跑成过一次回测) → 什么都不做, 不猜日期
+  const preset = resolveRangeSelection(key, {
+    t0: t0Date.value, lastDataDate: lastDataDate.value,
+  });
+  if (!preset) return; // 拿不到 T0 / 数据末端(还没跑成过一次回测) → 什么都不做, 不猜日期
   form.start = preset.start || '';
   form.end = preset.end || '';
   // 韭圈儿点选即刷新; 权重不全时只填表单(此时「组合回测」按钮本来也是灰的)
@@ -446,28 +449,6 @@ onMounted(load);
 
           <div class="control-line">
             <span class="control-label">自定义：</span>
-            <!-- 区间快捷选择: 成立以来 / 事件锚点 / 按年份(韭圈儿「请选择」下拉) -->
-            <el-select
-              :model-value="rangePresetKey"
-              class="range-preset"
-              size="small"
-              placeholder="请选择"
-              style="width: 196px"
-              @change="applyRangePreset"
-            >
-              <el-option-group
-                v-for="group in rangePresetGroups"
-                :key="group.label"
-                :label="group.label"
-              >
-                <el-option
-                  v-for="option in group.options"
-                  :key="option.key"
-                  :label="option.label"
-                  :value="option.key"
-                />
-              </el-option-group>
-            </el-select>
             <el-date-picker
               v-model="form.start"
               type="date"
@@ -505,6 +486,45 @@ onMounted(load);
             <span v-if="rangeWarning" class="notice warn">{{ rangeWarning }}</span>
             <!-- add-asset-ux §四: 权重合计 ≠ 100% → 按钮置灰(后端也会 422, 前端先拦住) -->
             <span v-else-if="!weightsComplete" class="notice warn">{{ weightsWarning }}</span>
+          </div>
+
+          <!-- 区间快捷条(照韭圈儿底部那一条搬运): 相对区间按钮 + 「请选择」下拉 -->
+          <div class="control-line range-strip">
+            <span class="control-label">区间：</span>
+            <el-button-group>
+              <el-button
+                v-for="preset in rangeSpans"
+                :key="preset.key"
+                size="small"
+                :type="rangePresetKey === preset.key ? 'primary' : 'default'"
+                :disabled="preset.disabled"
+                @click="applyRangePreset(preset.key)"
+              >
+                {{ preset.label }}
+              </el-button>
+            </el-button-group>
+            <!-- 固定日期项(成立以来 / 事件锚点 / 按年份) -->
+            <el-select
+              :model-value="rangePresetKey"
+              class="range-preset"
+              size="small"
+              placeholder="请选择"
+              style="width: 176px"
+              @change="applyRangePreset"
+            >
+              <el-option-group
+                v-for="group in rangePresetGroups"
+                :key="group.label"
+                :label="group.label"
+              >
+                <el-option
+                  v-for="option in group.options"
+                  :key="option.key"
+                  :label="option.label"
+                  :value="option.key"
+                />
+              </el-option-group>
+            </el-select>
           </div>
 
           <div class="control-tip">
@@ -852,6 +872,15 @@ onMounted(load);
 
 .control-label.baseline {
   margin-left: 8px;
+}
+
+/* 区间快捷条: 相对区间按钮组 + 「请选择」下拉(韭圈儿底部那一条的等价物) */
+.range-strip {
+  gap: 8px;
+}
+
+.range-strip .range-preset {
+  margin-left: 4px;
 }
 
 .hint-icon {

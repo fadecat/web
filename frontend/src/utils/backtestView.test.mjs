@@ -5,6 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  activeRangeKey,
   basisCompositionText,
   buildBasisNotes,
   buildChartData,
@@ -15,11 +16,15 @@ import {
   buildYearRangePresets,
   correlationCellStyle,
   drawdownSummaryText,
+  monthsBack,
   normalizeToReturnPct,
   priceBasisLabel,
   RANGE_INCEPTION_KEY,
+  RANGE_SPAN_PRESETS,
   rebalanceLabel,
   resolveRangePreset,
+  resolveRangeSelection,
+  resolveRangeSpan,
 } from './backtestView.mjs';
 
 const WINDOWS = {
@@ -314,4 +319,61 @@ test('区间快捷: 分组固定为 区间/事件锚点/按年份', () => {
   // 拿不到 T0 时"按年份"整组不出现(不给一组点不动的空选项)
   const bare = buildRangePresetGroups({ t0: null, lastDataDate: null });
   assert.deepEqual(bare.map((g) => g.label), ['区间', '事件锚点']);
+});
+
+// ---------------------------------------------------------------------------
+// 快捷区间条(韭圈儿底部那一条: 今年以来 / 近1月 / … / 近10年 / 请选择)
+// ---------------------------------------------------------------------------
+
+test('monthsBack: 自然月回推(与后端 months_back 同规则)', () => {
+  assert.equal(monthsBack('2026-09-18', 1), '2026-08-18');
+  assert.equal(monthsBack('2026-09-18', 12), '2025-09-18');
+  assert.equal(monthsBack('2026-09-18', 36), '2023-09-18');
+  // 日号溢出取目标月最后一天
+  assert.equal(monthsBack('2026-03-31', 1), '2026-02-28');
+  assert.equal(monthsBack('2024-03-31', 1), '2024-02-29'); // 闰年
+  assert.equal(monthsBack('2026-05-31', 3), '2026-02-28');
+  // ⚠ 不能用 30×n 天: 2026-09-18 按 30 天是 08-19, 按自然月是 08-18(差一个交易日)
+  assert.notEqual(monthsBack('2026-09-18', 1), '2026-08-19');
+  assert.equal(monthsBack('bad', 1), null);
+});
+
+test('快捷区间条: 8 个相对区间, 末端都是"数据最新日"', () => {
+  assert.deepEqual(
+    RANGE_SPAN_PRESETS.map((preset) => preset.label),
+    ['今年以来', '近1月', '近3月', '近6月', '近1年', '近3年', '近5年', '近10年'],
+  );
+  assert.deepEqual(
+    resolveRangeSpan('span-ytd', '2026-09-18'),
+    { key: 'span-ytd', start: '2026-01-01', end: null },
+  );
+  assert.deepEqual(
+    resolveRangeSpan('span-3m', '2026-09-18'),
+    { key: 'span-3m', start: '2026-06-18', end: null },
+  );
+  assert.deepEqual(
+    resolveRangeSpan('span-10y', '2026-09-18'),
+    { key: 'span-10y', start: '2016-09-18', end: null },
+  );
+  // 还没跑成过一次回测 → 算不出来, 给 null(页面据此把按钮置灰, 不是算个错的)
+  assert.equal(resolveRangeSpan('span-1m', null), null);
+  assert.equal(resolveRangeSpan('nope', '2026-09-18'), null);
+});
+
+test('activeRangeKey: 由起止日反推选中项(手改日期就不高亮)', () => {
+  const ctx = { t0: '2013-04-26', lastDataDate: '2026-09-18' };
+  assert.equal(activeRangeKey('2026-06-18', '', ctx), 'span-3m');
+  assert.equal(activeRangeKey('2013-04-26', '', ctx), 'inception');
+  assert.equal(activeRangeKey('2024-01-01', '2024-12-31', ctx), 'year-2024');
+  assert.equal(activeRangeKey('2020-03-05', '', ctx), ''); // 手改的区间 → 不高亮
+  assert.equal(activeRangeKey('', '', ctx), ''); // 默认(不传区间)也不该误高亮
+});
+
+test('resolveRangeSelection: 相对区间与固定日期走同一个入口', () => {
+  const ctx = { t0: '2013-04-26', lastDataDate: '2026-09-18' };
+  assert.equal(resolveRangeSelection('span-1y', ctx).start, '2025-09-18');
+  assert.equal(resolveRangeSelection('inception', ctx).start, '2013-04-26');
+  assert.equal(resolveRangeSelection('evt-2020-covid', ctx).start, '2020-01-17');
+  assert.equal(resolveRangeSelection('year-2024', ctx).end, '2024-12-31');
+  assert.equal(resolveRangeSelection('nope', ctx), null);
 });

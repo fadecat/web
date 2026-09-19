@@ -353,4 +353,37 @@ describe('PortfolioDetail 页面结构(空组合必须有加标的入口)', () =
 
     expect(api.runBacktest).not.toHaveBeenCalled();
   });
+
+  // 快捷区间条(照韭圈儿底部那一条): 相对区间按钮 + 「请选择」下拉
+  const STRIP_LABELS = ['今年以来', '近1月', '近3月', '近6月', '近1年', '近3年', '近5年', '近10年'];
+
+  it('快捷区间条渲染 8 个相对区间 + 请选择下拉', async () => {
+    const wrapper = await mountPage({ assets: MEMBERS, runResult: RUN_OK });
+    const labels = wrapper.findAll('.range-strip button').map((btn) => btn.text());
+    expect(labels).toEqual(STRIP_LABELS);
+    expect(wrapper.find('.range-strip').findComponent(ElSelect).exists()).toBe(true);
+  });
+
+  it('快捷区间条: 点「近3月」按自然月回推设起始日并立即重跑', async () => {
+    const wrapper = await mountPage({ assets: MEMBERS, runResult: RUN_OK });
+    api.runBacktest.mockClear();
+
+    const btn = wrapper.findAll('.range-strip button').find((b) => b.text() === '近3月');
+    await btn.trigger('click');
+    await flushPromises();
+
+    const payload = api.runBacktest.mock.calls[0][0];
+    expect(payload.start).toBe('2026-06-18'); // 2026-09-18 自然月回推 3 个月
+    expect(payload.end).toBeNull();
+  });
+
+  it('快捷区间条: 选中项高亮由表单反推(手改日期后不高亮)', async () => {
+    const wrapper = await mountPage({ assets: MEMBERS, runResult: RUN_OK });
+    const buttonByText = (text) => wrapper.findAll('.range-strip button').find((b) => b.text() === text);
+
+    await buttonByText('近5年').trigger('click');
+    await flushPromises();
+    expect(buttonByText('近5年').classes()).toContain('el-button--primary');
+    expect(buttonByText('近1月').classes()).not.toContain('el-button--primary');
+  });
 });
