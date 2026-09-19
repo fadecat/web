@@ -22,8 +22,9 @@ const CANDIDATE_STOCK = {
 };
 const CANDIDATE_FUND = {
   symbol: '000001.OF', name: '华夏成长混合', security_type: 'FUND', price_basis: 'NAV_ADJ',
-  source: 'tencent', resolved: false, latest_date: null, registered: false,
-  row_count: null, first_date: null, last_date: null, note: '场外基金 P0 不抓取',
+  source: 'danjuan', resolved: false, latest_date: null, registered: false,
+  row_count: null, first_date: null, last_date: null,
+  note: '蛋卷详情暂不可用（场内 ETF 常见），不影响净值同步',
 };
 const CANDIDATE_INDEX = {
   symbol: '000001.SH', name: '上证指数', security_type: 'STOCK', price_basis: 'PRICE',
@@ -115,8 +116,8 @@ describe('AddAssetDialog 解析候选', () => {
     await typeCode(wrapper, '999999');
 
     expect(wrapper.text()).toContain('未找到该代码');
-    expect(wrapper.text()).toContain('该数据源不覆盖');
-    expect(wrapper.text()).toContain('场外基金本期未开通');
+    expect(wrapper.text()).toContain('数据源不覆盖');
+    expect(wrapper.text()).toContain('场外基金用 6 位代码');
     wrapper.unmount();
 
     probeAsset.mockResolvedValue([]);
@@ -200,6 +201,21 @@ describe('AddAssetDialog 添加', () => {
     await buttonByText(wrapper, '添加').trigger('click');
     await flushPromises();
     expect(createAsset).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it('未解析到但是场外基金(显式 .OF)仍可添加: 详情不可用 ≠ 净值不可同步', async () => {
+    probeAsset.mockResolvedValue([CANDIDATE_FUND]);
+    createAsset.mockResolvedValue({ id: 9, symbol: '000001.OF' });
+    const wrapper = await mountDialog();
+    await typeCode(wrapper, '000001.OF');
+
+    expect(wrapper.text()).toContain('不影响净值同步');
+    const addBtn = buttonByText(wrapper, '添加');
+    expect(addBtn.attributes('disabled')).toBeUndefined();
+    await addBtn.trigger('click');
+    await flushPromises();
+    expect(createAsset).toHaveBeenCalledTimes(1);
     wrapper.unmount();
   });
 

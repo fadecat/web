@@ -69,6 +69,14 @@ _PRIMARY_TYPE: dict[str, dict[str, str]] = {
 _TYPE_HINTS = {"stock": "STOCK", "etf": "ETF", "fund": "FUND"}
 
 
+class ProbeUnavailableError(RuntimeError):
+    """所有候选都因**异常**没取到数(数据源不可达), 与「代码不存在」区分开。
+
+    路由据此返回 503(UI 显示「解析服务暂时不可用」); 否则网络抖动会被报成
+    「未找到该代码」, 把一次故障说成"这个代码不存在"。
+    """
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -147,17 +155,25 @@ def _exchange_of(code: str, explicit: str | None) -> str | None:
     return None
 
 
-def _types_for(code: str, exchange: str, type_hint: str | None, explicit_exchange: str | None = None) -> list[str]:
+def _types_for(
+    code: str, exchange: str, type_hint: str | None, explicit_exchange: str | None = None,
+) -> list[str]:
     """候选类型列表: 显式 hint 只返回该类型; 否则 主候选 + 场外基金(上限 3)。
 
-    类型与代码矛盾时(如 510300 当 STOCK)返回空列表——组合不可能存在,
-    继续请求只是白打一次数据源。一致性判断与数据源共用 `_assert_symbol_type`。
+    - **显式 `.OF`**(如 `513100.OF`, 场内 ETF 走蛋卷净值口径) → 只回 FUND。
+      ⚠ 必须放在 `_PRIMARY_TYPE` 之前: `OF` 不是交易所, 直接查表会 `KeyError: 'OF'`
+      (即"输入 513100.OF → 500"); 与 hint 矛盾时回空列表。
+    - 类型与代码矛盾时(如 510300 当 STOCK)返回空列表——组合不可能存在,
+      继续请求只是白打一次数据源。一致性判断与数据源共用 `_assert_symbol_type`。
     """
     hint = str(type_hint or "").strip().lower()
+    explicit_fund = explicit_exchange == "OF"
     if hint:
         normalized = _TYPE_HINTS.get(hint)
         if normalized is None:
             return []
+        if explicit_fund and normalized != "FUND":
+            return []  # 513100.OF 却选了"股票"/"ETF": 输入自相矛盾
         if normalized == "FUND":
             return ["FUND"]
         try:
@@ -165,6 +181,8 @@ def _types_for(code: str, exchange: str, type_hint: str | None, explicit_exchang
         except ResearchSourceError:
             return []
         return [normalized]
+    if explicit_fund:
+        return ["FUND"]
     primary = _PRIMARY_TYPE[exchange].get(code[0])
     types = [primary] if primary else []
     # 只在「未显式给交易所」时才并列场外基金候选: 显式 sh/sz 说明用户已指明场内标的,
@@ -198,7 +216,7 @@ def normalize_code(raw: str, type_hint: str | None = None) -> list[Candidate]:
             name=None,
             security_type=security_type,
             price_basis=_PRICE_BASIS[security_type],
-            source=_SOURCE_DEFAULT,
+            source=_FUND_SOURCE if security_type == "FUND" else _SOURCE_DEFAULT,
             resolved=False,
             latest_date=None,
             registered=False,
@@ -229,11 +247,50 @@ def describe_code_problem(raw: str) -> str | None:
 ProbeFetchFn = Callable[[str, int], tuple[str | None, str | None]]
 
 
+def _quote_name(quote: Any, tencent_code: str) -> str | None:
+    """腾讯 fqkline 响应的 `qt` 字段 → 标的名称。
+
+    ⚠ 实测(2026-09-19)该字段是 **dict 而不是 list**:
+        data["qt"] = {"sh601899": ["1", "紫金矿业", "601899", ...], "market": [...]}
+      旧写法 `qt[1]` 用的是 list 语义 → 该 dict 有 2 个键(len>1 成立), 于是必定
+      `KeyError: 1`; 异常被 probe 的兜底 except 吞掉, 表现为**所有股票/ETF 都解析
+      不到名称与最新日**(resolved=False) → UI 显示「无此标的」。名称在下标 1。
+
+    兼容三种形态, 不猜: dict(按 code 取, 退化时取第一个像行情的 list)、
+    list[list](旧镜像)、list[str](形如 "v_sh601899=1~名称~代码~...")。
+    """
+    if isinstance(quote, dict):
+        row = quote.get(tencent_code)
+        if row is None:
+            for key, value in quote.items():
+                if key != tencent_code and isinstance(value, list):
+                    row = value
+                    break
+        return _name_from_quote_row(row)
+    if isinstance(quote, list):
+        if quote and isinstance(quote[0], list):  # [["1", "名称", ...]]
+            return _name_from_quote_row(quote[0])
+        if quote and isinstance(quote[0], str) and "~" in quote[0]:  # ["1~名称~..."]
+            return _name_from_quote_row(quote[0])
+        return _name_from_quote_row(quote)  # ["1", "名称", ...]
+    return None
+
+
+def _name_from_quote_row(row: Any) -> str | None:
+    """行情行取名称: ["1", "紫金矿业", "601899", ...] 或 "1~紫金矿业~601899~..."。"""
+    if isinstance(row, list):
+        return str(row[1]).strip() if len(row) > 1 and row[1] else None
+    if isinstance(row, str):
+        parts = row.split("~")
+        return parts[1].strip() if len(parts) > 1 and parts[1] else None
+    return None
+
+
 def _default_probe_fetch(tencent_code: str, count: int) -> tuple[str | None, str | None]:
     """一次腾讯 fqkline 请求拿 (名称, 最新交易日); count ≤ 640 是硬上限。
 
     与 `_default_tencent_kline_fetch` 同源同 URL(count 参数在 >=640 时会被静默
-    截断为空数组); 这里不复用它是因为 probe 还要取 `qt[1]` 名称。
+    截断为空数组); 这里不复用它是因为 probe 还要顺带取名称(见 `_quote_name`)。
     """
     import requests  # noqa: PLC0415
 
@@ -243,8 +300,7 @@ def _default_probe_fetch(tencent_code: str, count: int) -> tuple[str | None, str
     response.raise_for_status()
     payload = response.json() or {}
     data = (payload.get("data") or {}).get(tencent_code) or {}
-    qt = data.get("qt") or {}
-    name = str(qt[1]).strip() if len(qt) > 1 and qt[1] else None
+    name = _quote_name(data.get("qt"), tencent_code)
     rows = data.get("day") or []
     latest = str(rows[-1][0])[:10] if rows else None
     return name, latest
@@ -290,10 +346,22 @@ def probe(
     股票/ETF 走腾讯(名称+最新交易日); 场外基金走蛋卷详情(名称/类型/成立日,
     ⚠ 该接口对场内 ETF 不可用, 失败按未解析降级, 不上抛)。
     网络异常捕获为 resolved=False, 不上抛(路由不得因为单一数据源抖动变 500)。
+
+    **只回可用候选**: 自动并列出来的候选(裸码才会并列 .OF)多半是空壳 ——
+    `601899` 会白搭一个 `601899.OF`, 留着只会让用户在一堆「（未解析到名称）」里挑。
+    判定 = `resolved or registered or 显式指定`, 三类各有理由:
+      · registered: 老标的不能因为数据源这次抖动就"查不到";
+      · 显式指定(.OF 或 type=fund): 用户要的就是这条 蛋卷 净值口径,
+        蛋卷**详情**接口对场内 ETF 不可用是已知事实(如 513100.OF), 但净值历史可同步。
+    一个都不剩且全程无异常 → 空列表(路由 404, 代码不存在);
+    腾讯链路整体不可达 → `ProbeUnavailableError`(路由 503, 服务不可用)。
     """
     candidates = normalize_code(code, type_hint)
     fetch = probe_fetch_fn or _default_probe_fetch
+    explicit_fund = _split_input(code)[1] == "OF" or str(type_hint or "").strip().lower() == "fund"
     results: list[dict[str, Any]] = []
+    errored = 0  # 腾讯链路抛异常(真·服务不可用信号)
+    fund_unresolved = 0  # 蛋卷详情拿不到(场内 ETF 常见, 已知降级, 不算服务不可用)
     for candidate in candidates:
         registered, row_count, first_date, last_date = _local_stats(db, candidate.symbol)
         base = {
@@ -314,6 +382,7 @@ def probe(
                 resolved = bool(name)
             except Exception as exc:  # noqa: BLE001 蛋卷详情对场内 ETF 等不可用, 降级不抛
                 logger.warning("probe 蛋卷详情失败(%s): %s", candidate.symbol, exc)
+                fund_unresolved += 1
             results.append({
                 **candidate.to_dict(),
                 **base,
@@ -321,6 +390,11 @@ def probe(
                 "type_desc": type_desc,
                 "latest_date": last_date or None,  # 已入库时本库最晚净值日; 否则未知
                 "resolved": resolved,
+                # 显式要场外基金却拿不到详情 → 说明白"名称取不到但净值能同步", 否则
+                # 用户看到「（未解析到名称）」会以为选错了
+                "note": None if resolved or not explicit_fund else (
+                    "蛋卷详情暂不可用（场内 ETF 常见），不影响净值同步"
+                ),
             })
             continue
         # 腾讯代码只需后缀: 600900.SH → sh600900(此处候选必带 .SH/.SZ)
@@ -330,6 +404,7 @@ def probe(
         except Exception as exc:  # noqa: BLE001 单个候选抓取失败不构成整体失败
             logger.warning("probe 解析失败(%s): %s", candidate.symbol, exc)
             name, latest_date, resolved = None, None, False
+            errored += 1
         else:
             resolved = latest_date is not None
         results.append({
@@ -339,7 +414,13 @@ def probe(
             "latest_date": latest_date,
             "resolved": resolved,
         })
-    return results
+    # 腾讯链路全挂(且其余候选也只是"蛋卷查不到") → 服务不可用, 而不是"代码不存在"
+    if errored and errored + fund_unresolved == len(results):
+        raise ProbeUnavailableError(f"数据源暂时不可用, 未能解析: {code}")
+    return [
+        row for row in results
+        if row["resolved"] or row["registered"] or (explicit_fund and row["security_type"] == "FUND")
+    ]
 
 
 # ---------------------------------------------------------------------------

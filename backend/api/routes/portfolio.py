@@ -7,6 +7,7 @@
 错误码契约:
 - code 写法非法 → 422(判定见 portfolio_assets.describe_code_problem)
 - 写法合法但没有候选 / 未知标的 id → 404
+- 数据源整体不可达(全部候选都抛异常) → 503(UI 显示「解析服务暂时不可用」)
 - 抓取失败不是 HTTP 错误: 写 last_sync_* 后原样返回, UI 据此给「重试」
 """
 from __future__ import annotations
@@ -56,11 +57,14 @@ def probe_asset(
     type_hint: str | None = Query(None, alias="type", description="stock | etf | fund; 缺省自动"),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    """解析代码返回候选数组(股票/ETF 走腾讯, 场外基金候选不带真实数据), **不落库**。"""
+    """解析代码返回候选数组(股票/ETF 走腾讯, 场外基金走蛋卷详情), **不落库**。"""
     problem = portfolio_assets.describe_code_problem(code)
     if problem:
         raise HTTPException(status_code=422, detail=problem)
-    candidates = portfolio_assets.probe(code, type_hint, db=db)
+    try:
+        candidates = portfolio_assets.probe(code, type_hint, db=db)
+    except portfolio_assets.ProbeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
     if not candidates:
         raise HTTPException(status_code=404, detail=f"未找到该代码: {code}")
     return candidates

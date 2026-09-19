@@ -195,7 +195,7 @@ defineExpose({ open: () => emit('update:modelValue', true), close, reset: resetA
     <el-input
       v-model="code"
       class="add-asset-input"
-      placeholder="支持 600900 / sh600900 / 600900.SH"
+      placeholder="支持 600900 / sh600900 / 600900.SH（场外基金 100018.OF）"
       clearable
       @keyup.enter="probeNow"
     />
@@ -207,9 +207,9 @@ defineExpose({ open: () => emit('update:modelValue', true), close, reset: resetA
     <div v-else-if="probeState === 'empty'" class="not-found">
       <p class="not-found-title">未找到该代码</p>
       <ul class="not-found-reasons">
-        <li>代码有误（沪市 60/68 开头、深市 00/30 开头、ETF 51/15/56/58 开头）</li>
-        <li>该数据源不覆盖（本期仅腾讯行情：沪深股票与 ETF）</li>
-        <li>场外基金本期未开通（链路 P1 实现）</li>
+        <li>代码有误（沪市股票 60/68、深市股票 00/30、ETF 51/15/56/58 开头）</li>
+        <li>数据源不覆盖：股票 / ETF 走腾讯行情，场外基金走蛋卷净值</li>
+        <li>场外基金用 6 位代码；场内 ETF 想用蛋卷净值口径，可写 513100.OF 这样带 .OF 的代码</li>
       </ul>
     </div>
     <div v-else-if="probeState === 'invalid'" class="not-found">

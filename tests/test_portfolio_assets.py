@@ -47,6 +47,11 @@ def _provider_factory(provider: FakeProvider):
     return lambda source: provider
 
 
+def _no_fund_detail(*args, **kwargs) -> dict:
+    """蛋卷详情不可用(场内 ETF 常见)。测试里一律注入, 禁止真触网。"""
+    raise RuntimeError("danjuan fund 详情响应缺少 data")
+
+
 # ---------------------------------------------------------------------------
 # 归一化(纯函数, 不触网)
 # ---------------------------------------------------------------------------
@@ -74,6 +79,20 @@ class TestNormalizeCode:
         assert [(c.symbol, c.security_type, c.price_basis) for c in got] == [
             ("000001.OF", "FUND", "NAV_ADJ")
         ]
+        assert got[0].source == "danjuan"  # 候选也要带对数据源, 别拿行情源冒充净值源
+
+    def test_explicit_of_suffix_is_fund_only(self) -> None:
+        """显式 .OF(场内 ETF 走蛋卷净值口径, 如 513100.OF) → 只回 FUND, 且不抛 500。
+
+        ⚠ 原实现直接查 `_PRIMARY_TYPE["OF"]` → KeyError: 'OF'(OF 不是交易所)。
+        """
+        got = portfolio_assets.normalize_code("513100.OF")
+        assert [(c.symbol, c.security_type) for c in got] == [("513100.OF", "FUND")]
+
+    def test_explicit_of_with_conflicting_hint_returns_empty(self) -> None:
+        """513100.OF 却选了「股票」/「ETF」→ 输入自相矛盾, 空列表而不是猜。"""
+        assert portfolio_assets.normalize_code("513100.OF", "stock") == []
+        assert portfolio_assets.normalize_code("513100.OF", "etf") == []
 
     @pytest.mark.parametrize("raw", ["12345", "abc", "6009001", ""])
     def test_unrecognized_returns_empty(self, raw: str) -> None:
@@ -109,7 +128,7 @@ class TestProbe:
         assert db.query(ResearchSecurity).count() == 0  # 不落库
 
     def test_fund_candidate_resolved_via_danjuan_detail(self, db) -> None:
-        """P1: FUND 候选走蛋卷详情拿名称/类型; 详情失败降级为未解析, 不抛。"""
+        """P1: FUND 候选走蛋卷详情拿名称/类型。"""
         def detail(code: str) -> dict:
             assert code == "000001"
             return {"data": {"fd_name": "华夏成长混合", "type_desc": "混合型-灵活"}}
@@ -122,28 +141,98 @@ class TestProbe:
         assert fund["name"] == "华夏成长混合"
         assert fund["type_desc"] == "混合型-灵活"
         assert fund["price_basis"] == "NAV_ADJ"
+        assert fund["source"] == "danjuan"
 
-        def not_on_sale(code: str) -> dict:  # 蛋卷详情对场内 ETF 等"暂不销售"
-            raise RuntimeError("该基金暂不销售")
+    def test_bare_code_drops_phantom_fund_candidate(self, db) -> None:
+        """⭐ 用户实测报障回归: 输入 601899 显示「无此标的」。
 
-        got2 = portfolio_assets.probe(
-            "000001", db=db, probe_fetch_fn=lambda *_: (None, None), fund_detail_fetch_fn=not_on_sale,
+        裸码会自动并列一个 .OF 空壳候选(601899.OF); 它取不到蛋卷详情时不该回给 UI —
+        否则用户要在「（未解析到名称）」里挑, 而股票候选稍有闪失就整条无法添加。
+        """
+        def fake_fetch(tencent_code: str, count: int) -> tuple[str | None, str | None]:
+            assert tencent_code == "sh601899"
+            return "紫金矿业", "2026-09-18"
+
+        def not_a_fund(code: str) -> dict:
+            raise RuntimeError("danjuan fund 详情响应缺少 data")
+
+        got = portfolio_assets.probe(
+            "601899", db=db, probe_fetch_fn=fake_fetch, fund_detail_fetch_fn=not_a_fund,
         )
-        fund2 = next(c for c in got2 if c["security_type"] == "FUND")
-        assert fund2["resolved"] is False
-        assert fund2["name"] is None
+        assert [c["symbol"] for c in got] == ["601899.SH"]
+        assert (got[0]["name"], got[0]["resolved"]) == ("紫金矿业", True)
 
-    def test_network_error_degrades_without_raising(self, db) -> None:
+    def test_explicit_of_keeps_fund_candidate_without_detail(self, db) -> None:
+        """显式 .OF: 蛋卷**详情**不可用也要保留(净值历史仍可同步)。
+
+        513100.OF 就是这样用的 —— 场内 ETF 想按蛋卷净值口径回测。前端据此放行
+        (resolved=False 的 FUND 不拦添加), 所以候选必须回给 UI, 只是标注清楚。
+        """
+        def not_on_sale(code: str) -> dict:
+            raise RuntimeError("danjuan fund 详情响应缺少 data")
+
+        got = portfolio_assets.probe("513100.OF", db=db, fund_detail_fetch_fn=not_on_sale)
+        assert [c["symbol"] for c in got] == ["513100.OF"]
+        assert got[0]["resolved"] is False
+        assert "净值同步" in (got[0]["note"] or "")
+
+    def test_source_down_raises_unavailable(self, db) -> None:
+        """腾讯链路整体不可达 → ProbeUnavailableError(路由转 503)。
+
+        不能报成 404「未找到该代码」: 那是把一次故障说成"这个代码不存在"。
+        """
         def boom(tencent_code: str, count: int) -> tuple[str | None, str | None]:
             raise RuntimeError("datasource down")
 
-        got = portfolio_assets.probe("600900.SH", db=db, probe_fetch_fn=boom)
-        assert got and got[0]["resolved"] is False  # 不向上抛
+        with pytest.raises(portfolio_assets.ProbeUnavailableError):
+            portfolio_assets.probe("600900.SH", db=db, probe_fetch_fn=boom)
+
+    def test_clean_empty_response_is_not_unavailable(self, db) -> None:
+        """数据源**正常响应但没有这只标的** → 空列表(404), 不是 503。"""
+        assert portfolio_assets.probe(
+            "601899", db=db, probe_fetch_fn=lambda *_: (None, None),
+        ) == []
 
     def test_probe_reports_local_stats_when_registered(self, db) -> None:
+        """已注册的标的即使这次取数失败也保留 —— 不能让老标的突然"查不到"。"""
         portfolio_assets.register("600900.SH", "STOCK", "长江电力", db=db)
         got = portfolio_assets.probe("600900.SH", db=db, probe_fetch_fn=lambda *_: (None, None))
+        assert len(got) == 1
         assert got[0]["registered"] is True
+
+
+# ---------------------------------------------------------------------------
+# 腾讯 `qt` 字段解析(纯函数)
+# ---------------------------------------------------------------------------
+
+class TestQuoteNameParse:
+    """实测(2026-09-19) fqkline 的 `qt` 是 **dict**: {"sh601899": [...], "market": [...]}。
+
+    旧写法按 list 语义取 `qt[1]` → 该 dict 有 2 个键(len>1 成立) → 必定 KeyError: 1;
+    异常被 probe 的兜底 except 吞掉, 表现为**所有股票/ETF 都解析不到名称与最新日**
+    → 用户看到的「无此标的」。
+    """
+
+    def test_dict_shape(self) -> None:
+        qt = {"sh601899": ["1", "紫金矿业", "601899", "31.41"], "market": ["2026-09-19|..."]}
+        assert portfolio_assets._quote_name(qt, "sh601899") == "紫金矿业"
+
+    def test_dict_shape_falls_back_to_first_list(self) -> None:
+        assert portfolio_assets._quote_name({"other": ["1", "长江电力"]}, "sh600900") == "长江电力"
+
+    def test_list_of_list_shape(self) -> None:
+        assert portfolio_assets._quote_name([["1", "长江电力"]], "sh600900") == "长江电力"
+
+    def test_flat_list_shape(self) -> None:
+        assert portfolio_assets._quote_name(["1", "长江电力", "600900"], "sh600900") == "长江电力"
+
+    def test_tilde_string_shape(self) -> None:
+        assert portfolio_assets._quote_name(["1~平安银行~000001~11.2"], "sz000001") == "平安银行"
+
+    def test_missing_or_empty(self) -> None:
+        assert portfolio_assets._quote_name(None, "sh600900") is None
+        assert portfolio_assets._quote_name({}, "sh600900") is None
+        assert portfolio_assets._quote_name([], "sh600900") is None
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +472,45 @@ class TestRoutes:
     def test_probe_unknown_code_returns_404(self, contract_client) -> None:
         """写法合法但无候选(如 sh000001 是指数, P0 不支持) → 404。"""
         assert contract_client.get(f"{BASE}/probe", params={"code": "sh000001"}).status_code == 404
+
+    def test_probe_bare_stock_code_resolves_single_candidate(self, contract_client, monkeypatch) -> None:
+        """⭐ 用户实测报障回归: 输入 601899 曾显示「无此标的」。
+
+        根因是腾讯 `qt` 被按 list 解析(实际是 dict) → 名称/最新日全取不到 →
+        resolved=False → 前端不给添加。现在必须回「紫金矿业」且不带 .OF 空壳。
+        """
+        monkeypatch.setattr(
+            portfolio_assets, "_default_probe_fetch",
+            lambda tencent_code, count: ("紫金矿业", "2026-09-18"),
+        )
+        monkeypatch.setattr(fund_nav, "fetch_fund_detail", _no_fund_detail)
+        r = contract_client.get(f"{BASE}/probe", params={"code": "601899"})
+        assert r.status_code == 200
+        body = r.json()
+        assert [c["symbol"] for c in body] == ["601899.SH"]
+        assert body[0]["name"] == "紫金矿业"
+
+    def test_probe_explicit_of_code_returns_200(self, contract_client, monkeypatch) -> None:
+        """显式 .OF 曾直接 500(`_PRIMARY_TYPE["OF"]` KeyError)。"""
+        monkeypatch.setattr(fund_nav, "fetch_fund_detail", _no_fund_detail)
+        r = contract_client.get(f"{BASE}/probe", params={"code": "513100.OF", "type": "fund"})
+        assert r.status_code == 200
+        assert r.json()[0]["symbol"] == "513100.OF"
+
+    def test_probe_source_down_returns_503(self, contract_client, monkeypatch) -> None:
+        """数据源整体不可达 → 503「解析服务暂时不可用」, 不能报成 404「未找到该代码」。"""
+        def boom(tencent_code: str, count: int) -> tuple[str | None, str | None]:
+            raise RuntimeError("datasource down")
+
+        monkeypatch.setattr(portfolio_assets, "_default_probe_fetch", boom)
+        r = contract_client.get(f"{BASE}/probe", params={"code": "600900.SH"})
+        assert r.status_code == 503
+
+    def test_probe_clean_empty_returns_404(self, contract_client, monkeypatch) -> None:
+        """数据源正常响应但查无此标的 → 404。"""
+        monkeypatch.setattr(portfolio_assets, "_default_probe_fetch", lambda *_: (None, None))
+        monkeypatch.setattr(fund_nav, "fetch_fund_detail", _no_fund_detail)
+        assert contract_client.get(f"{BASE}/probe", params={"code": "601899"}).status_code == 404
 
     def test_create_returns_201_and_running(self, contract_client, thread_db, monkeypatch) -> None:
         monkeypatch.setattr(portfolio_routes, "_session_factory", lambda: thread_db)
