@@ -212,6 +212,15 @@ catalog() 里
 | **链式复权被破坏** | ⚠ **关键设计**：`daily_return_pct`（蛋卷 `percentage`）是**不可变的历史事实**，而 `adj_nav` 是**由它链式推出的派生值**。所以：<br>① **持久化 `unit_nav` + `daily_return_pct`**（事实）<br>② **`adj_nav` 由链式重算**，不依赖增量递推<br>③ 分红/份额折算只会改 `unit_nav`，**不改 `daily_return_pct`** → 只要以 `daily_return_pct` 为准，历史就是自洽的 |
 | **历史被上游修订** | 低频（如每月）全量重拉一次，比对 `(symbol, trade_date, unit_nav, daily_return_pct)` 的哈希；有变化则记修订并重算该标的的 `adj_nav` |
 | **成立来区间不完整** | 首次同步用 `size=6000` **一个请求拉全历史**（实测 100018：5545 行 / 411KB / 0.6s）；若 `total_items > 6000` 则按 `total_pages` 翻页（尚无实例，但代码要支持） |
+| **名称只有详情接口给**（实测 2026-09-19） | `/djapi/fund/nav/history/{code}` 响应**只有** `items/current_page/size/total_items/total_pages` —— **不含基金名**。名称/类型/经理只在 `/djapi/fund/{code}`（详情）里 → **同步时拿不到名字，只能在注册时取**。实测 `161116→易方达黄金主题`、`100018→富国天利增长债券`、`090010→大成中证红利指数A` 均 OK；**`513100` 详情回「该基金暂不销售」**（场内 ETF）→ 回落腾讯行情取场内名（`sh513100→纳指ETF国泰`），净值仍走蛋卷 |
+
+**名称的落库与自愈（P2 补）**：`register()` 在调用方没给名字（空 / 名字就是代码）时按类型取一次真名
+（FUND → 蛋卷详情，STOCK/ETF → 腾讯行情，各 1 请求，失败降级）。因 `upsert_securities()` 会更新已有行的
+`name`，**重新注册一次即可修好历史脏名字**；已经写坏的用 `scripts/repair_asset_names.py` 批量修
+（默认预览，`--apply` 才写；串行、只改 `name` 一列、不碰 `source`/`selection_list`）。
+
+> ⚠ 踩坑记录：`seed_baseline_portfolio.py` 对 `--symbols` 自定义标的用 `name or symbol` 兜底，
+> 于是页面上基金名显示成 `161116.OF`。表面像"蛋卷取不到名字"，**实际是调用方没去取**。
 
 ---
 

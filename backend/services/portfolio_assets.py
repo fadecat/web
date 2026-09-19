@@ -502,12 +502,73 @@ def _security_payload(
     }
 
 
-def register(symbol: str, security_type: str, name: str, *, db: Session) -> dict[str, Any]:
+NameFetchFn = Callable[[str, str], str | None]
+
+
+def is_placeholder_name(name: str, code: str) -> bool:
+    """名字是空串、或就是代码本身(如 `513100.OF` / `161116`) → 视为"没解析到真名"。
+
+    ⚠ 这类"代码当名字"是真实踩过的坑: `seed_baseline_portfolio.py` 对 `--symbols` 自定义
+      标的用 `name or symbol` 兜底, 于是标的库/详情页上基金名显示成 `161116.OF`。
+      公开给 `scripts/repair_asset_names.py` 复用(判定口径只留一份)。
+    """
+    text = str(name or "").strip().upper()
+    if not text:
+        return True
+    return text in {code.upper(), f"{code}.OF", f"{code}.SH", f"{code}.SZ"}
+
+
+def _default_name_fetch(symbol: str, security_type: str) -> str | None:
+    """取标的**真名**: 场外基金走蛋卷详情, 股票/ETF 走腾讯行情(复用 probe 的解析)。
+
+    ⚠ 场内 ETF 以 `.OF` 形态注册(走蛋卷净值口径, 如 513100.OF)时, 蛋卷**详情**接口会
+      回「该基金暂不销售」→ 此时回落腾讯行情拿场内名(纳指ETF国泰) —— 只是名字,
+      净值仍走蛋卷。两个源都失败返回 None(名称是展示信息, 不得阻塞注册)。
+    """
+    code = symbol[:6]
+    if security_type == "FUND":
+        try:
+            detail = fund_nav.fetch_fund_detail(code)
+            if detail.get("name"):
+                return detail["name"]
+        except Exception as exc:  # noqa: BLE001 场内 ETF 的详情不可用是常态
+            logger.warning("取基金名失败(%s, 回落行情源): %s", symbol, exc)
+    exchange = _exchange_of(code, None)
+    if exchange is None:
+        return None
+    name, _ = _default_probe_fetch(f"{exchange.lower()}{code}", _PROBE_COUNT)
+    return name
+
+
+def resolve_asset_name(symbol: str, security_type: str) -> str | None:
+    """按类型取标的**真名**; 取不到返回 None(不抛)。
+
+    与注册自愈用**同一份实现**(`_default_name_fetch`); 供 `scripts/repair_asset_names.py`
+    修正历史脏数据用 —— 取名口径只应有一处。
+    """
+    try:
+        return _default_name_fetch(symbol, str(security_type or "").strip().upper())
+    except Exception as exc:  # noqa: BLE001 取名失败不影响调用方
+        logger.warning("取真名失败(%s): %s", symbol, exc)
+        return None
+
+
+def register(
+    symbol: str,
+    security_type: str,
+    name: str,
+    *,
+    db: Session,
+    resolve_name: bool = True,
+    name_fetch_fn: NameFetchFn | None = None,
+) -> dict[str, Any]:
     """写入 / 更新 research_security(只增不删), 返回标的行 + `created` 标记。
 
     - exchange: 股票/ETF 按代码后缀给 SSE/SZSE; FUND 给 OTC;
     - FUND 的 source 固定 danjuan(蛋卷净值链路), 不走 research.yaml 的行情源路由;
-    - 幂等: 重复注册同一 symbol 返回已存在的行, created=False(调用方据此决定是否首抓)。
+    - 幂等: 重复注册同一 symbol 返回已存在的行, created=False(调用方据此决定是否首抓);
+    - **名字自愈**: 调用方没给名字(空/就是代码)时, 按类型取一次真名(每个标的 1 请求, 失败降级)。
+      由于 `upsert_securities` 会更新已有行的 name, **重新注册一次即可修好历史脏名字**。
     """
     normalized_type = str(security_type or "").strip().upper()
     if normalized_type not in _PRICE_BASIS:
@@ -526,13 +587,21 @@ def register(symbol: str, security_type: str, name: str, *, db: Session) -> dict
         canonical = f"{code}.{exchange}"
     _assert_symbol_type(canonical, code, normalized_type)  # 类型/代码矛盾 → ResearchSourceError(ValueError)
 
+    resolved_name = str(name or "").strip()
+    if resolve_name and is_placeholder_name(resolved_name, code):
+        fetch_name = name_fetch_fn or _default_name_fetch
+        try:
+            resolved_name = fetch_name(canonical, normalized_type) or resolved_name
+        except Exception as exc:  # noqa: BLE001 取不到名字不能挡住注册
+            logger.warning("注册时取名失败(%s): %s", canonical, exc)
+
     if normalized_type == "FUND":
         source = _FUND_SOURCE
     else:
         source = str(load_research_settings().get("data_source") or _SOURCE_DEFAULT).strip().lower()
     targets: Sequence[dict[str, Any]] = [{
         "symbol": canonical,
-        "name": str(name or "").strip(),
+        "name": resolved_name,
         "type": normalized_type.lower(),
         "source": source,
         "selection_list": _SELECTION_LIST,

@@ -280,6 +280,98 @@ class TestRegister:
 
 
 # ---------------------------------------------------------------------------
+# 名字自愈: 调用方没给名字时按类型取真名
+# ---------------------------------------------------------------------------
+
+class TestNameSelfHeal:
+    """背景: `seed_baseline_portfolio.py` 对 `--symbols` 自定义标的曾用 `name or symbol`
+    兜底 → 标的库/详情页上基金名显示成 `161116.OF`("蛋卷取不到名字"的真相: 是调用方
+    没去取, 不是取不到)。修法: register 自愈 + `upsert_securities` 会更新已有行 → 重注册即可修好。
+    """
+
+    @pytest.mark.parametrize("name,code,expected", [
+        ("", "161116", True),
+        ("   ", "161116", True),
+        ("161116", "161116", True),      # 裸码
+        ("161116.OF", "161116", True),   # 规范代码当名字(seed 脚本的兜底形态)
+        ("161116.of", "161116", True),
+        ("600900.SH", "600900", True),
+        ("600900", "161116", False),     # 别的标的的代码不算占位
+        ("易方达黄金主题", "161116", False),
+        ("纳指ETF国泰", "513100", False),
+    ])
+    def test_placeholder_detection(self, name: str, code: str, expected: bool) -> None:
+        assert portfolio_assets.is_placeholder_name(name, code) is expected
+
+    def test_placeholder_name_triggers_fetch(self, db) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def fake_name_fetch(symbol: str, security_type: str) -> str | None:
+            calls.append((symbol, security_type))
+            return "易方达黄金主题"
+
+        row = portfolio_assets.register(
+            "161116.OF", "FUND", "161116.OF", db=db, name_fetch_fn=fake_name_fetch,
+        )
+        assert row["name"] == "易方达黄金主题"
+        assert calls == [("161116.OF", "FUND")]
+
+    def test_real_name_is_not_refetched(self, db) -> None:
+        def boom(*_args) -> str | None:
+            raise AssertionError("已有真名就不该再发请求")
+
+        row = portfolio_assets.register("600900.SH", "STOCK", "长江电力", db=db, name_fetch_fn=boom)
+        assert row["name"] == "长江电力"
+
+    def test_reregister_repairs_existing_row(self, db) -> None:
+        """⭐ 历史脏数据"重新注册一次"就能修 —— 不需要单独的数据迁移。"""
+        portfolio_assets.register("161116.OF", "FUND", "161116.OF", db=db, resolve_name=False)
+        again = portfolio_assets.register(
+            "161116.OF", "FUND", "", db=db, name_fetch_fn=lambda *_: "易方达黄金主题",
+        )
+        assert again["created"] is False  # 幂等: 不新增行
+        assert again["name"] == "易方达黄金主题"
+
+    def test_resolve_name_can_be_disabled(self, db) -> None:
+        row = portfolio_assets.register(
+            "161116.OF", "FUND", "161116.OF", db=db, resolve_name=False,
+            name_fetch_fn=lambda *_: "不该被调用",
+        )
+        assert row["name"] == "161116.OF"
+
+    def test_fetch_failure_does_not_block_registration(self, db) -> None:
+        """取名失败不能挡住注册; 名字回落到代码(不留空白) —— 之后可用修复脚本补。"""
+        def boom(*_args) -> str | None:
+            raise RuntimeError("danjuan down")
+
+        row = portfolio_assets.register("161116.OF", "FUND", "", db=db, name_fetch_fn=boom)
+        assert row["symbol"] == "161116.OF"   # 注册照常完成
+        assert row["name"] == "161116.OF"     # upsert_securities 用代码兜底(不留空白)
+
+    def test_fund_detail_failure_falls_back_to_quote_source(self, monkeypatch) -> None:
+        """`513100.OF` 这类场内 ETF: 蛋卷**详情**不可用 → 回落腾讯行情拿场内名。
+
+        净值仍走蛋卷(详情接口不给名, 不代表不能取净值)。
+        """
+        def detail_boom(code: str) -> dict:
+            raise RuntimeError("该基金暂不销售,基金代码：513100")
+
+        monkeypatch.setattr(fund_nav, "fetch_fund_detail", detail_boom)
+        monkeypatch.setattr(
+            portfolio_assets, "_default_probe_fetch",
+            lambda code, count: ("纳指ETF国泰", "2026-09-18"),
+        )
+        assert portfolio_assets.resolve_asset_name("513100.OF", "FUND") == "纳指ETF国泰"
+
+    def test_resolve_asset_name_returns_none_on_total_failure(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            portfolio_assets, "_default_probe_fetch",
+            lambda code, count: (_ for _ in ()).throw(RuntimeError("tencent down")),
+        )
+        assert portfolio_assets.resolve_asset_name("600900.SH", "STOCK") is None
+
+
+# ---------------------------------------------------------------------------
 # sync_one: 回写 last_sync_*
 # ---------------------------------------------------------------------------
 
