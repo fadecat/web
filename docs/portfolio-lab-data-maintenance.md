@@ -261,11 +261,24 @@ status = success  if fail==0 and success>0
 | 阶段 | 数据侧要做的事 | 状态 |
 | --- | --- | --- |
 | **P0** 股票/ETF 注册与按需抓取 | ① `security_type` 加 `FUND`（先搭好枚举）② `research_security` 加 4 个同步状态字段 ③ 抽出 `sync_one_symbol()` ④ 新增 `POST /api/portfolio/assets/{symbol}/sync` ⑤ `history_start` 放宽到 2013 ⑥ 顺带修 `catalog()` 的 source 硬编码 | ✅ **已完成**（2026-09-19，提交 `280a85b` / `bab81fe` / `9e16f92`） |
-| **P1** 场外基金链路 | ⑦ `DanjuanProvider`（实现 `capabilities` / `get_daily_bars` / 复用交易日历）⑧ 迁移 **0006**：建 `fund_nav_daily`（⚠ 原写 0005，已被 P0-1 的 `0005_add_research_security_sync_state` 占用）⑨ 新增 `fund_nav_sync` job + 注册进 `registry` / `EVERYDAY_JOB_IDS` / `data_catalog` ⑩ 蛋卷的 `_assert_symbol_type` 独立分支 | ✅ **已完成**（2026-09-19，提交 `6fd2350`） |
+| **P1** 场外基金链路 | ⑦ ~~`DanjuanProvider`（实现 `capabilities` / `get_daily_bars` / 复用交易日历）~~ → **`DanjuanProvider` 为独立 Provider，暴露净值序列接口，不实现 bar 协议**（2026-09-19 用户裁决，理由见下方 ⚠）⑧ 迁移 **0006**：建 `fund_nav_daily`（⚠ 原写 0005，已被 P0-1 的 `0005_add_research_security_sync_state` 占用）⑨ 新增 `fund_nav_sync` job + 注册进 `registry` / `EVERYDAY_JOB_IDS` / `data_catalog` ⑩ 蛋卷的 `_assert_symbol_type` 独立分支 | ✅ **已完成**（2026-09-19，提交 `6fd2350`） |
 | **P2** 序列层 | ⑪ `get_series()` 统一读两套表 ⑫ 口径标注（`HFQ` / `NAV_ADJ`）⑬ 交易日对齐（并集 + 前值填充） | ⬜ 未开始 |
 | **P3** 回测与展示 | ⑭ 数据就绪检查接入组合页 ⑮ 列表页三格的缓存刷新挂到 job 末尾 | ⬜ 未开始 |
 
 > **P0 是零风险起点**：不新增数据源、不建表、不做迁移，只是把标的入口从配置文件换成 API。做完这一步，"自由构建组合"的股票 + ETF 那一半就能用了。
+
+> ⚠ **P1 ⑦ 的措辞修正（2026-09-19 用户裁决）**：原文要求 `DanjuanProvider` 实现 bar 形状的
+> `get_daily_bars`，与本文 **§三「两类数据形态」** 的论证**自相矛盾**——§三 明确说场外基金是
+> **单序列**，把净值塞进 OHLC 会让"基金的开盘价是什么"永久留在表里。
+>
+> 裁决：**场外基金单独用表存储，不实现 bar 协议**。统一放在**消费层的序列层**（P2 的 `get_series()`，
+> 显式带 `price_basis = HFQ | NAV_ADJ`），而不是抓取层硬凑。
+>
+> **代价（如实记录）**：序列层 `get_series()` 必须**分支读两张表**（`research_daily_bar_adjusted`
+> / `fund_nav_daily`，按 `security_type` 分派）。这是独立表的真实成本，不白拿。
+> 实际落地形态：`backend/services/fund_nav.py`（解析 / 链式复权 / `upsert_fund_nav`），
+> `provider_factory("danjuan")` **未注册**——已确认无代码路径会调用它（`sync_one` 在 FUND 分支提前分流，
+> 且 `provider_factory` 只吃全局 `data_source`）。
 
 ---
 
