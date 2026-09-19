@@ -24,6 +24,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -83,4 +84,54 @@ class PortfolioAsset(Base):
     __table_args__ = (
         UniqueConstraint("portfolio_id", "symbol", name="uq_portfolio_asset_key"),
         Index("ix_portfolio_asset_portfolio", "portfolio_id", "sort_order"),
+    )
+
+
+class BacktestRun(Base):
+    """一次回测 = 一个**不可变 Run**(组合快照 + 参数 + 结果), P3。
+
+    三条设计要点:
+
+    1. **组合快照**: `members_json` 存"跑那一次时的成员与权重"。组合后续被编辑/覆盖后,
+       本 Run 仍能独立复现 —— 这是多组合下"旧结果不被改配置毁掉"的保证。
+    2. **参数归属**: `rebalance` / `benchmark_symbol` / `start_date` / `end_date` 属于 Run,
+       **不属于 portfolio**(见 docs/portfolio-lab-flow.md 第二节归属修正)。所以同一组合可以
+       有"不平衡/季平衡/年平衡"三个 Run 并存, 不需要建 9 个组合。
+    3. **结果内联为 JSON**: Run 是写完不再改的快照, 数据量是"3267 个净值点 × 1 个组合"级别,
+       JSON 最自然, 也避免为"按日期查序列"再建一张表。`nav_json` 除了本组合曲线, 还带上
+       对比基准的曲线(同一条日期轴), 前端画对照图不必二次取数。
+
+    `input_hash` = 组合快照 + 参数的摘要 → 相同输入直接复用已有 Run(幂等, 不重复计算)。
+    """
+
+    __tablename__ = "backtest_run"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("portfolio.id"), nullable=False, index=True,
+    )
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="success")  # success|failed
+    rebalance: Mapped[str] = mapped_column(String(16), nullable=False, default="none")  # none|quarterly|yearly
+    benchmark_symbol: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    # 用户选择(可为 None = 采用默认区间); actual_* 是**向前对齐后**真正生效的交易日
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    actual_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    actual_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    t0_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # 建仓日 = 各标的数据可得区间共同起点
+
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+    members_json: Mapped[str] = mapped_column(Text, nullable=False)          # 组合快照
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)     # 收益条/指标/回撤/相关性/详情表
+    nav_json: Mapped[str | None] = mapped_column(Text, nullable=True)        # 曲线(本组合 + 基准)
+    error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_backtest_run_portfolio_created", "portfolio_id", "created_at"),
     )

@@ -44,7 +44,8 @@ const selected = computed(
   () => candidates.value.find((item) => candidateKey(item) === selectedKey.value) || null,
 );
 
-// 未解析到的标的不允许添加(口径/区间都无从展示); 场外基金例外: 放行使后端 501 前端显式告知 P1
+// 未解析到的标的不允许添加(口径/区间都无从展示); 场外基金例外 —— 蛋卷详情接口不可用时
+// 只是"拿不到名称", 净值同步是独立链路, 仍应允许添加
 const addBlocked = computed(
   () => !!selected.value && selected.value.resolved === false
     && selected.value.security_type !== 'FUND',
@@ -125,7 +126,8 @@ const submit = async () => {
   } catch (err) {
     const status = err?.response?.status;
     if (status === 501) {
-      formError.value = '场外基金链路 P1 实现';
+      // P1 起场外基金已可注册, 这里只是兜底(后端旧版本仍会拒绝 FUND)
+      formError.value = err?.response?.data?.detail || '该类型标的暂不支持注册';
     } else if (status === 422) {
       formError.value = err?.response?.data?.detail || '参数非法，无法添加';
     } else {

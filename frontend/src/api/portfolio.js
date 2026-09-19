@@ -1,7 +1,8 @@
 import api from './index';
 
-// 组合实验室 P0: 标的注册与按需抓取(股票 / ETF)。
-// 场外基金(FUND)本期链路未通: 注册会返回 501, UI 需明示「场外基金链路 P1 实现」。
+// 组合实验室标的库: 标的注册与按需抓取(股票 / ETF / 场外基金)。
+// ⚠ P1 起场外基金链路已通(蛋卷净值), 注册不再返回 501; 前端仍保留 501 兜底,
+//    以防后端回退到旧版本时给出 500 而不是可读文案。
 
 // 代码解析: 返回候选数组(0/1/多条)。未解析到 → 404; 代码写法非法 → 422。
 // typeHint 为 null 时由后端自动判定(stock | etf | fund)。
@@ -56,3 +57,59 @@ export const patchPortfolio = (portfolioId, payload) =>
 // 软删(归档, 可恢复; 不级联删标的与 Run)
 export const deletePortfolio = (portfolioId) =>
   api.delete(`/portfolio/portfolios/${portfolioId}`, { timeout: 15000 }).then((r) => r.data);
+
+// ---------------------------------------------------------------------------
+// 回测 Run(P3)
+// ⚠ 再平衡 / 基准 / 区间**只在这里出现**, 不写进组合的读写字段 —— 它们属于 Run 不属于组合
+//    (见 docs/portfolio-lab-flow.md 第二节归属修正)。所以"看三种再平衡"不需要建三个组合。
+// ---------------------------------------------------------------------------
+
+// 运行回测: 后端同步执行并返回完整 Run(收益条/指标/回撤/相关性/详情表/曲线)。
+// 相同输入默认复用已有 Run(reuse=true); 改过组合或想强制重算时传 reuse=false。
+export const runBacktest = ({
+  portfolioId,
+  rebalance = 'none',
+  benchmarkSymbol = null,
+  start = null,
+  end = null,
+  reuse = true,
+} = {}) =>
+  api
+    .post(
+      '/portfolio/backtests',
+      {
+        portfolio_id: portfolioId,
+        rebalance,
+        benchmark_symbol: benchmarkSymbol,
+        start,
+        end,
+        reuse,
+      },
+      { timeout: 60000 },
+    )
+    .then((r) => r.data);
+
+// Run 列表(不含曲线, 只有对照用的摘要数字)
+export const listBacktests = ({ portfolioId = null, limit = 50 } = {}) =>
+  api
+    .get('/portfolio/backtests', { params: { portfolio_id: portfolioId, limit }, timeout: 20000 })
+    .then((r) => r.data);
+
+// 单 Run 详情: 详情页(区域①~⑧)的唯一数据来源
+export const getBacktest = (runId) =>
+  api.get(`/portfolio/backtests/${runId}`, { timeout: 30000 }).then((r) => r.data);
+
+// 多 Run 对照(同持仓 × 不同再平衡/区间/基准)
+export const compareBacktests = (runIds) =>
+  api
+    .get('/portfolio/backtests/compare', {
+      params: { ids: (runIds || []).join(',') },
+      timeout: 30000,
+    })
+    .then((r) => r.data);
+
+// 手动重算 L1 卡片三格(与详情页收益条共用同一条账本, 数字必然一致)
+export const refreshCachedMetrics = (portfolioId) =>
+  api
+    .post(`/portfolio/portfolios/${portfolioId}/cached-metrics`, null, { timeout: 60000 })
+    .then((r) => r.data);

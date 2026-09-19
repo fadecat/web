@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -21,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from backend.models.database import SessionLocal, get_db
 from backend.models.portfolio import PortfolioAsset
-from backend.services import portfolio_assets, portfolio_store
+from backend.services import backtest_service, portfolio_assets, portfolio_store
 from backend.services.market_data import ResearchSourceError
 
 router = APIRouter(prefix="/portfolio")
@@ -244,3 +245,99 @@ def _replace_assets(
         if member is not None:
             member.sort_order = index
     db.commit()
+
+
+# ---------------------------------------------------------------------------
+# 回测 Run(P3)
+# ---------------------------------------------------------------------------
+
+class BacktestRequest(BaseModel):
+    """运行回测的请求体。
+
+    ⚠ 再平衡 / 基准 / 区间**只出现在这里, 不出现在组合的读写字段里** ——
+    这是"组合只描述持有什么、怎么算属于 Run"的接口侧体现(docs/portfolio-lab-flow.md 第二节)。
+    """
+
+    portfolio_id: int = Field(..., description="组合 id")
+    rebalance: str = Field("none", description="none(不平衡) | quarterly(季平衡) | yearly(年平衡)")
+    benchmark_symbol: str | None = Field(
+        None, description="对比标的: 指数(如 000300)或任意股票/ETF/场外基金代码; 空 = 不画对照线",
+    )
+    start: date | None = Field(None, description="起始日; 早于建仓日 T0 会自动前移到 T0")
+    end: date | None = Field(None, description="结束日; 空 = 数据最新日")
+    reuse: bool = Field(True, description="相同输入复用已有 Run(幂等); false = 强制重算")
+
+
+def _backtest_error(exc: backtest_service.BacktestServiceError) -> HTTPException:
+    message = str(exc)
+    if message.startswith("未知回测 id"):
+        return HTTPException(status_code=404, detail=message)
+    return HTTPException(status_code=422, detail=message)
+
+
+# ⚠ 必须注册在 /backtests/{run_id} **之前**: FastAPI 按注册顺序匹配, 否则 "compare"
+#    会先撞上 {run_id} 的 int 解析而返回 422。
+@router.get("/backtests/compare")
+def compare_backtests(ids: str = Query(..., description="逗号分隔的 run id, 如 1,2,3"),
+                      db: Session = Depends(get_db)) -> dict[str, Any]:
+    """多 Run 对照(同持仓 × 不同再平衡/区间/基准)。返回各 Run 与其曲线的交集区间。"""
+    parsed: list[int] = []
+    for chunk in str(ids).split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            parsed.append(int(chunk))
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"非法的回测 id: {chunk!r}") from None
+    try:
+        return backtest_service.compare_runs(db, parsed)
+    except backtest_service.BacktestServiceError as exc:
+        raise _backtest_error(exc) from None
+
+
+@router.post("/backtests", status_code=201)
+def create_backtest(request: BacktestRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """跑一次回测并落库, 返回完整 Run(含收益条/指标/回撤/相关性/详情表/曲线)。
+
+    **同步执行**: 本地库读 4 只标的 3000+ 个交易日 + 账本计算是毫秒级, 没有必要为它
+    引入任务队列; 前端点「组合回测」直接拿到结果。相同输入默认复用已有 Run。
+    """
+    try:
+        return backtest_service.run_backtest(
+            db, request.portfolio_id,
+            rebalance=request.rebalance,
+            benchmark_symbol=request.benchmark_symbol,
+            start=request.start, end=request.end, reuse=request.reuse,
+        )
+    except backtest_service.BacktestServiceError as exc:
+        raise _backtest_error(exc) from None
+
+
+@router.get("/backtests")
+def list_backtests(
+    portfolio_id: int | None = Query(None, description="按组合过滤"),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """Run 列表(不含曲线, 只有对照用的摘要数字)。"""
+    return backtest_service.list_runs(db, portfolio_id=portfolio_id, limit=limit)
+
+
+@router.get("/backtests/{run_id}")
+def get_backtest(run_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """单 Run 详情: 结果 + 净值曲线。这是详情页(区域①~⑧)的唯一数据来源。"""
+    try:
+        return backtest_service.get_run(db, run_id)
+    except backtest_service.BacktestServiceError as exc:
+        raise _backtest_error(exc) from None
+
+
+@router.post("/portfolios/{portfolio_id}/cached-metrics")
+def refresh_cached_metrics(portfolio_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """手动重算 L1 卡片三格(日收益/近一月/今年以来)。
+
+    ⚠ 与详情页收益条**共用同一条账本实现** —— 规格 9.3 要求两页数字必须相同。
+    正常情况下由每日任务末尾批量刷新, 这个端点用于"刚改完组合想立刻看到数字"。
+    """
+    return backtest_service.refresh_cached_metrics(db, portfolio_id)

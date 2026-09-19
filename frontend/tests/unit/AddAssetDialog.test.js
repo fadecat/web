@@ -163,10 +163,10 @@ describe('AddAssetDialog 添加', () => {
     wrapper.unmount();
   });
 
-  it('⑤ 501 时显示「场外基金链路 P1 实现」', async () => {
+  it('⑤ 501 兜底: 展示后端给出的原因(P1 起场外基金已可注册, 此分支仅防旧后端)', async () => {
     probeAsset.mockResolvedValue([CANDIDATE_FUND]);
     createAsset.mockRejectedValue({
-      response: { status: 501, data: { detail: '场外基金链路 P1 实现' } },
+      response: { status: 501, data: { detail: '该类型标的暂不支持注册' } },
     });
     const wrapper = await mountDialog();
     await typeCode(wrapper, '000001');
@@ -174,7 +174,7 @@ describe('AddAssetDialog 添加', () => {
     await flushPromises();
 
     expect(createAsset).toHaveBeenCalledTimes(1);
-    expect(wrapper.text()).toContain('场外基金链路 P1 实现');
+    expect(wrapper.text()).toContain('该类型标的暂不支持注册');
     wrapper.unmount();
   });
 

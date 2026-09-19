@@ -43,6 +43,7 @@ JOBS: dict[str, dict[str, str]] = {
     "index_eod_daily": {"name": "指数收盘价（易方达）", "schedule": "每天 22:09"},
     "research_daily_sync": {"name": "研究行情日线(raw/hfq)", "schedule": "每天 17:30"},
     "fund_nav_sync": {"name": "场外基金净值", "schedule": "每天 23:10"},
+    "portfolio_cache_refresh": {"name": "组合卡片收益缓存", "schedule": "每天 23:30"},
 }
 
 # 成功率统计窗口(最近 N 次运行)

@@ -262,8 +262,8 @@ status = success  if fail==0 and success>0
 | --- | --- | --- |
 | **P0** 股票/ETF 注册与按需抓取 | ① `security_type` 加 `FUND`（先搭好枚举）② `research_security` 加 4 个同步状态字段 ③ 抽出 `sync_one_symbol()` ④ 新增 `POST /api/portfolio/assets/{symbol}/sync` ⑤ `history_start` 放宽到 2013 ⑥ 顺带修 `catalog()` 的 source 硬编码 | ✅ **已完成**（2026-09-19，提交 `280a85b` / `bab81fe` / `9e16f92`） |
 | **P1** 场外基金链路 | ⑦ ~~`DanjuanProvider`（实现 `capabilities` / `get_daily_bars` / 复用交易日历）~~ → **`DanjuanProvider` 为独立 Provider，暴露净值序列接口，不实现 bar 协议**（2026-09-19 用户裁决，理由见下方 ⚠）⑧ 迁移 **0006**：建 `fund_nav_daily`（⚠ 原写 0005，已被 P0-1 的 `0005_add_research_security_sync_state` 占用）⑨ 新增 `fund_nav_sync` job + 注册进 `registry` / `EVERYDAY_JOB_IDS` / `data_catalog` ⑩ 蛋卷的 `_assert_symbol_type` 独立分支 | ✅ **已完成**（2026-09-19，提交 `6fd2350`） |
-| **P2** 序列层 | ⑪ `get_series()` 统一读两套表 ⑫ 口径标注（`HFQ` / `NAV_ADJ`）⑬ 交易日对齐（并集 + 前值填充） | ⬜ 未开始 |
-| **P3** 回测与展示 | ⑭ 数据就绪检查接入组合页 ⑮ 列表页三格的缓存刷新挂到 job 末尾 | ⬜ 未开始 |
+| **P2** 序列层 | ⑪ `get_series()` 统一读两套表 ⑫ 口径标注（`HFQ` / `NAV_ADJ`）⑬ 交易日对齐（并集 + 前值填充） | ✅ **已完成**（2026-09-19，提交 `24a6326`；迁移 0007） |
+| **P3** 回测与展示 | ⑭ 数据就绪检查接入组合页 ⑮ 列表页三格的缓存刷新挂到 job 末尾 | ✅ **已完成**（2026-09-19；⑮ = `portfolio_cache_refresh` job，23:30，排在 `fund_nav_sync` 之后） |
 
 > **P0 是零风险起点**：不新增数据源、不建表、不做迁移，只是把标的入口从配置文件换成 API。做完这一步，"自由构建组合"的股票 + ETF 那一半就能用了。
 

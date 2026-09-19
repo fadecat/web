@@ -206,8 +206,15 @@ def nav_at(ledger: Ledger, target: date) -> tuple[date, float] | None:
 
 
 def window_return(ledger: Ledger, start_ref: date, end_ref: date) -> WindowReturn | None:
-    """区间收益: 两端都**向前对齐**到交易日, 取两点比值(规格 §三-6: 不重置权重)。"""
+    """区间收益: 两端都**向前对齐**到交易日, 取两点比值(规格 §三-6: 不重置权重)。
+
+    ⚠ 起点早于建仓日 T0(即数据历史短于该区间长度)时**退化为账本首点** —— 语义是
+      "自建仓以来的这段时间", 实际起点由 `actual_start` 如实回显, 而不是留一个空值。
+      例: T0=2024-06-01 的组合, "近3年" 实际就是"自建仓以来"。
+    """
     start = nav_at(ledger, start_ref)
+    if start is None and ledger.dates:
+        start = (ledger.dates[0], ledger.nav[0])
     end = nav_at(ledger, end_ref)
     if start is None or end is None or start[1] == 0:
         return None
@@ -402,9 +409,9 @@ def resolve_windows(
     韭圈儿页面自己也标注了(F 节)。
     """
     last_day = end or ledger.dates[-1]
-    inception = min(
-        (c.first_date for c in contracts.values() if c.first_date is not None), default=None,
-    )
+    # 「成立来」的起点 = **建仓日 T0**(账本首点) —— 不是"最早那只标的的首日"。
+    # 规格 §二-① 第 7 格: 成立来 = 建仓日 T0(= 各标的"数据可得区间"的共同起点)→ 末端。
+    inception = ledger.dates[0] if ledger.dates else None
     # ⚠ `d1` 走合成口径, 与其余六格**不是同一套算法**(韭圈儿页面自己也在 F 节标注了)
     composite = latest_day_composite(contracts, ledger.final_weights)
     out: dict[str, dict[str, object] | None] = {}

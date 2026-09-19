@@ -55,3 +55,18 @@ html.dark .page-card {
 html.dark .bond-row-selected {
   background: var(--el-color-primary-light-9) !important;
 }
+
+/* 涨跌配色: **涨红跌绿**(A 股习惯, 与欧美相反)。
+   组合实验室的收益数字跨多个组件(收益条/指标卡/详情表), 放全局避免各写一套。
+   页面内的 scoped 同名定义若存在会以更高优先级生效 —— 颜色值保持一致。 */
+.trend-up {
+  color: #d93025;
+}
+
+.trend-down {
+  color: #1a8f3c;
+}
+
+.trend-flat {
+  color: var(--el-text-color-secondary);
+}

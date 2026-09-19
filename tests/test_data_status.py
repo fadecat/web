@@ -91,7 +91,7 @@ def test_build_data_status_shape(db):
     # 10 个分组: 估值/股息率/K线/国债/转债快照/强赎/等权指数/高股息/研究行情日线/场外基金净值
     assert len(status["datasets"]) == 10
     assert all("entities" in g for g in status["datasets"])
-    assert len(status["jobs"]) == 11  # 含 P1 新增 fund_nav_sync
+    assert len(status["jobs"]) == 12  # 含 P1 fund_nav_sync 与 P3 portfolio_cache_refresh
     # 从未运行过的任务 status=never, 不报错
     job = status["jobs"][0]
     assert job["status"] == "never"
