@@ -69,6 +69,12 @@ const routes = [
         meta: { title: '信号回放', group: '研究' },
       },
       {
+        path: 'portfolio-assets',
+        name: 'portfolio-assets',
+        component: () => import('../pages/PortfolioAssets.vue'),
+        meta: { title: '标的库', group: '研究' },
+      },
+      {
         path: 'status',
         name: 'status',
         component: () => import('../pages/DataStatus.vue'),
