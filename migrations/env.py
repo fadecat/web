@@ -15,7 +15,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from backend.models.database import Base
-from backend.models import app_setting, commodity, data_status, jisilu_account, jisilu_stock, research, valuation  # noqa: F401
+from backend.models import app_setting, commodity, data_status, jisilu_account, jisilu_stock, portfolio, research, valuation  # noqa: F401
 
 config = context.config
 target_metadata = Base.metadata

@@ -30,6 +30,8 @@ EXPECTED_TABLES = {
     "research_corporate_event",
     # P1 场外基金净值(蛋卷, 单序列)
     "fund_nav_daily",
+    # P2 组合定义
+    "portfolio", "portfolio_asset",
 }
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
@@ -72,7 +74,7 @@ class TestEmptyDatabaseUpgrade:
         _upgrade(db_path)
         _upgrade(db_path)
         with closing(sqlite3.connect(db_path)) as conn:
-            assert conn.execute("select version_num from alembic_version").fetchone() == ("0006",)
+            assert conn.execute("select version_num from alembic_version").fetchone() == ("0007",)
 
     def test_downgrade_to_base_removes_business_tables(self, test_artifact_dir):
         """downgrade 只在临时库测试; 日常回退用备份恢复(见 runbook)。
@@ -100,10 +102,10 @@ class TestEmptyDatabaseUpgrade:
         engine = create_engine(f"sqlite:///{db_path.as_posix()}")
         Base.metadata.create_all(engine)
         engine.dispose()
-        _stamp(db_path, "0006")
+        _stamp(db_path, "0007")
         _upgrade(db_path)
         with closing(sqlite3.connect(db_path)) as conn:
-            assert conn.execute("select version_num from alembic_version").fetchone() == ("0006",)
+            assert conn.execute("select version_num from alembic_version").fetchone() == ("0007",)
 
 
 class TestSchemaBaseline:
