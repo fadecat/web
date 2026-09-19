@@ -98,6 +98,18 @@ const startNotice = computed(() => {
   return '';
 });
 
+// ⚠ page-spec §四: 起点**晚于末端**要**阻止提交** ——
+//   注意与上一行的区别: 起点太**早**只前移(不报错), 起点太**晚**则直接拦住。
+const lastDataDate = computed(() => result.value?.data_range?.last ?? null);
+const startOutOfRange = computed(
+  () => Boolean(form.start && lastDataDate.value && form.start >= lastDataDate.value),
+);
+const rangeWarning = computed(() => (
+  startOutOfRange.value
+    ? `起始日 ${form.start} 不早于数据最新日 ${lastDataDate.value}，区间不足两个交易日，无法回测`
+    : ''
+));
+
 // ---------------------------------------------------------------------------
 // 加载 / 回测 / 编辑
 // ---------------------------------------------------------------------------
@@ -341,10 +353,17 @@ onMounted(load);
               placeholder="如 000300 / 510300.SH"
               style="width: 180px"
             />
-            <el-button type="primary" size="small" :loading="running" @click="runIt(true)">
+            <el-button
+              type="primary"
+              size="small"
+              :loading="running"
+              :disabled="startOutOfRange"
+              @click="runIt(true)"
+            >
               组合回测
             </el-button>
             <span v-if="startNotice" class="notice">{{ startNotice }}</span>
+            <span v-if="rangeWarning" class="notice warn">{{ rangeWarning }}</span>
           </div>
 
           <div class="control-tip">
@@ -498,7 +517,7 @@ onMounted(load);
             <el-table-column label="复权口径" width="110">
               <template #default="{ row }">{{ priceBasisLabel(row.price_basis) }}</template>
             </el-table-column>
-            <el-table-column label="日涨幅" width="130">
+            <el-table-column label="日涨幅" width="130" align="right">
               <template #default="{ row }">
                 <div :class="`trend-${trendOf(row.daily_return)}`">
                   {{ formatReturnPct(row.daily_return) }}
@@ -506,17 +525,17 @@ onMounted(load);
                 <div class="asset-code">{{ formatDate(row.daily_return_date) }}</div>
               </template>
             </el-table-column>
-            <el-table-column label="添加后的收益" width="130">
+            <el-table-column label="添加后的收益" width="130" align="right">
               <template #default="{ row }">
                 <span :class="`trend-${trendOf(row.since_added_return)}`">
                   {{ formatReturnPct(row.since_added_return) }}
                 </span>
               </template>
             </el-table-column>
-            <el-table-column label="初始比例" width="100">
+            <el-table-column label="初始比例" width="100" align="right">
               <template #default="{ row }">{{ formatWeight(row.target_weight) }}</template>
             </el-table-column>
-            <el-table-column label="当前比例" width="100">
+            <el-table-column label="当前比例" width="100" align="right">
               <template #default="{ row }">
                 {{ formatWeight(row.current_weight) }}
               </template>
@@ -648,6 +667,16 @@ onMounted(load);
 .notice {
   font-size: 12px;
   color: var(--el-color-warning);
+}
+
+/* 起点越界是"拦住不让提交", 与"已自动前移"的黄字提示不同量级 → 用红色 */
+.notice.warn {
+  color: var(--el-color-danger);
+}
+
+/* page-spec §五: 表格行高 ≥48px(含两行名称)、数值列右对齐(由 align="right" 给) */
+:deep(.el-table td.el-table__cell) {
+  padding: 10px 0;
 }
 
 .control-tip {

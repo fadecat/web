@@ -153,9 +153,9 @@
 | `page-spec` §四 | 单标的 → **相关性区隐藏** | ✅ 已补 |
 | `page-spec` §四 | 回测中 → 已有结果**不清空** | ✅ 已补 |
 | `page-spec` §四 | 起点早于共同起始日 → 自动前移 + 提示 | ✅ 已有 |
-| `page-spec` §四 | **起点晚于末端 → 阻止提交 + 提示** | ❌ **未实现**（现为向前对齐到末端） |
+| `page-spec` §四 | **起点晚于末端 → 阻止提交 + 提示** | ✅ 已补（按钮置灰 + 红字说明） |
 | `page-spec` §四 | 无数据/代码无效 → 该行标红 | ⚠️ 部分 |
-| `page-spec` §五 | 视觉：首格 ~34px（现 28）· 表格行高 ≥48px · 数值右对齐 · 断点 1280/960 | ⚠️ 未逐项对齐 |
+| `page-spec` §五 | 视觉：首格 **34px** · 表格行高 ≥48px · 数值右对齐 | ✅ 已补（响应式断点 1280/960 未做） |
 | `page-spec` §八 | 契约命名：`effective_start`（现 `actual_start`）· `asset_class`（现 `security_type`）· `manager`（现 `fund_manager`）· `nav_series`（现 `nav.{dates,nav}`） | ⚠️ 语义一致、**命名不一致** |
 | `page-spec` §八 | `metrics` 应含 `worst_year` / `turnover` / `recovery_days` | ✅ `worst_year`+`turnover` 已补（`recovery_days` 仍在 `drawdown` 里） |
 | `page-spec` §9.6 | 新建/复制组合 → **立即**算三格 | ✅ 已补 |

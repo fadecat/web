@@ -54,15 +54,15 @@ const cells = computed(() => buildReturnCells(props.windows));
 }
 
 .value {
-  font-size: 16px;
+  font-size: 18px;   /* page-spec §五: 收益条其余格 ~18px */
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-/* 首格放大(规格: 字号约为其余 2 倍) */
+/* 首格放大(page-spec §五: ~34px, 约为其余 2 倍) */
 .is-featured .value {
-  font-size: 28px;
+  font-size: 34px;
 }
 
 .label {
